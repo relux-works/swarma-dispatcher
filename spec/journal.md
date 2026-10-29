@@ -1,6 +1,6 @@
 # Local durable journal contract
 
-**Status:** normative draft v0.2; implementation and independent acceptance are
+**Status:** normative draft v0.3; implementation and independent acceptance are
 pending. MUST/MUST NOT use RFC 2119 meanings; bare imperatives are requirements.
 This narrows local storage for [dispatcher §4.1](dispatcher.md#41-state-directory),
 not launch authority or a qualified service. Payloads are opaque transition
@@ -26,7 +26,8 @@ N is 1..1,048,576 bytes; frame size is 56 + N, at most 1,048,632 bytes.
 The file cap is 67,108,864 bytes (64 MiB). Sequence starts at 1, advances by
 exactly 1, and never wraps uint64. Zero, duplicates and gaps are invalid. Check
 header fields, checked arithmetic and remaining file capacity before body
-allocation/read; reject an oversized file before replay. Never scan for a later
+allocation/read; reject an oversized file as `corruption` before replay.
+No conforming writer can exceed the cap. Never scan for a later
 magic. No rotation, compaction, snapshot, preallocation extending file size or
 migration is specified. File size equals frame bytes plus any incomplete tail.
 These bounds are neither request/output quotas nor a control-space reserve.
@@ -44,8 +45,13 @@ Neither userspace-buffer flush nor `fdatasync` substitutes in this version.
 
 ## Ownership, storage and entries
 
-Installation (§11) supplies the protected state directory and protected ancestor
-path; neither entry point creates directories. Open that directory once with
+Installation (§11) supplies a nonsymlink ancestor chain: every ancestor is
+owned by root or the service UID, with no group/other write bits. This is an
+installation precondition the primitive does not verify; `O_NOFOLLOW` checks
+only the final component, not intermediate components. An untrusted, symlinked
+or other-principal-writable ancestor defeats cross-session protection. No
+installer/native proof is supplied here. Neither entry creates directories.
+Open the state directory once with
 `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`; `fstat` must show a service-owned directory
 with permission/special bits exactly 0700. Pin this descriptor for the session.
 All state opens, renames and directory syncs use it, or verified descendant
@@ -67,6 +73,19 @@ errors from required flock/file-sync/directory-sync operations (`EINVAL`,
 `ENOLCK`, `ENOSYS`, `EOPNOTSUPP`/`ENOTSUP`) also refuse `unsupported-storage`;
 if discovered after a write/sync attempt, poison as below. No weaker fallback.
 
+Before either entry touches state, the caller MUST establish a stable process
+umask satisfying `(umask & 0600) == 0` (0077 is valid); no concurrent umask
+changes are allowed. Reject a missing/violated prerequisite as `invalid-state`
+before opens or mutation. A restrictive 0277 is invalid: it masks owner write.
+The primitive does not change/probe umask or fchmod a file into compliance;
+creation with requested 0600 then preserves owner rw. Existing files still
+must pass the exact-mode check; no repair of a reused nonexclusive lock.
+
+State I/O in this contract means lock, journal, records, record temporary files
+and immutable inputs: only the exclusive owner accesses this journal state.
+Supervisor bounded private logs are separately governed by dispatcher §6 and
+its daemon-epoch obligations, not by permission to write journal state.
+
 Open every state file relative to the pinned directory with `O_NOFOLLOW` and
 `O_CLOEXEC`. Immediately `fstat` lock/journal/record/temporary descriptors:
 require regular file, link count 1, service UID ownership and permission/special
@@ -78,7 +97,7 @@ retain, duplicate or pass them. CLOEXEC alone does not prevent fork inheritance.
 
 | Entry | Directory | `lock` | `journal` |
 | --- | --- | --- | --- |
-| `initialize` | Must already exist and pass checks | `O_RDWR \| O_CREAT`, never exclusive, mode 0600; validate and take ownership | `O_RDWR \| O_CREAT \| O_EXCL`, mode 0600; any existing entry refuses `invalid-state` |
+| `initialize` | Must already exist and pass checks | `O_RDWR \| O_CREAT`, never exclusive, mode 0600; validate and take ownership | `O_RDWR \| O_CREAT \| O_EXCL`, mode 0600; existing entry refuses `invalid-state`; commit required first payload as sequence 1 before usable return |
 | `open-established` | Must already exist and pass checks | Same open/create rule; prior absence proves nothing | `O_RDWR`, no create/truncate/append flag; missing or empty refuses `missing-state` |
 
 Choose the entry explicitly; never infer it from missing/empty files or switch
@@ -95,15 +114,25 @@ durable daemon-instance epoch under the state-transition lock (§§4.1, 6).
 Stale writers are not adopted; supervisor log epoch obligations remain in §6.
 The advisory lock excludes cooperating owners, not a writer that ignores it.
 
-After exclusive journal creation, fsync journal then pinned directory before
-using it. Only that same unbroken ownership session may accept it empty and
-append its first frame. It cannot hand an empty store to another process as
-established history. Crashed initialization leaving an empty or partial journal
-cannot be automatically retried: initialize refuses the existing file;
-established opening refuses missing/empty or fails replay on a partial file.
-A complete valid but unacknowledged first frame can instead undergo established
-recovery, conservatively retaining its intent. Emptiness, creation or a failed
-initialization never certifies effect absence. Lost state follows
+`initialize` requires the first nonempty opaque payload as an argument.
+Validate entry arguments, consumer budget, first payload length 1..1,048,576
+and its projected size before any state access, including directory/lock opens.
+Missing/invalid first payload refuses `payload-invalid` before mutation: no
+file, sequence, session or effect is created. Oversized first payload is never
+a partially created store. No synthetic genesis or semantic authority is invented.
+After exclusive creation, perform the full-write rule below at offset 0 for
+sequence 1, fsync journal, then fsync its pinned parent directory. Return a
+usable session only after both succeed, with tracked EOF at that frame end and
+next sequence 2. No usable empty journal exists, even in its creating session.
+An idle session after successful initialize already has one committed frame.
+A clean end/abort before that boundary is failed initialization, like a crash;
+never expose a zero-frame usable session or silently retry initialization.
+Preserve any empty, partial or complete unacknowledged file. Initialize refuses
+any existing entry; established opening refuses missing/empty or fails replay
+on a partial file. A complete valid unacknowledged first frame may undergo
+established recovery only after the sync-failure prerequisite below is met.
+First-frame or directory sync failure triggers that barrier and process exit.
+Emptiness, creation and failure never certify effect absence. Lost state follows
 [§11.1](dispatcher.md#111-state-loss-and-restore-r-gen); no bytes are removed.
 
 ## Append, full write and state ordering
@@ -128,7 +157,14 @@ with a positive count, exhausted EINTR retries, uncertain count, or zero progres
 without error ends the attempt as `storage-write-failure`. Never restart the
 frame, rewrite uncertain bytes or retry a returned write error. Existing bytes
 before tracked EOF are never write targets. Other required syscalls are not
-retried after an error in this version.
+retried after an error in this version. Journal writes and every file/directory
+fsync MUST use direct syscall/error-count visibility (or an audited adapter
+exposing each individual syscall result without retries). No runtime wrapper
+may hide EINTR or short-write retries or turn an error into success. Open,
+metadata, rename, close and other state-call adapters likewise must return each
+syscall error without hidden retries. A fsync error is never retried, including
+EINTR; it triggers the sync-failure barrier. Standard convenience wrappers are
+not assumed conforming or qualified; implementation must establish visibility.
 
 After all frame bytes have been written, fsync journal. Only success commits
 the append and advances tracked EOF/sequence or permits durable-success
@@ -138,6 +174,22 @@ call, materialize journaled records using temporary-file full write, fsync,
 same-directory rename and directory fsync, in that order. Immutable inputs are
 written once and durable before acceptance (§4.2), never replacement targets.
 Their write/sync failures also poison, even before a journal append exists.
+
+Record temporary files use `.record-tmp-<nonce>-<counter>` basenames in the
+pinned target record directory: a fresh random 128-bit session nonce encoded
+as 32 lowercase hex digits and a per-session counter starting at 1, encoded as
+16 lowercase hex digits, never reused or wrapped. These name tokens confer no
+generation/launch authority. Create once per counter with
+`O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC`, requested mode 0600, then
+the existing fstat gates. A name collision is terminal `invalid-state`, not an
+overwrite or retry loop; do not open/truncate/delete that entry. Random-source
+failure is terminal `storage-read-failure`. Retained crashed temp entries are
+ignored, never replay history, and do not block fresh unique names absent an
+actual collision or storage exhaustion. This version authorizes no stale-cache
+cleanup: no fixed-name O_TRUNC, broad deletion or erasure of journal, immutable
+inputs, history or foreign entries. Rename only the exact newly created temp
+through pinned descriptors after full write/fsync; rename/dir-sync failure
+retains the committed journal and follows the failure rules.
 
 Journal the complete intent/in-flight marker before effects. The
 state-transition lock covers only local journal/state I/O: release it before
@@ -152,7 +204,7 @@ These are local semantic classes, not published refusal codes (§16):
 
 | Class | Trigger and disposition |
 | --- | --- |
-| `payload-invalid`, `journal-full` | Pre-write append checks are clean, no bytes or sequence consumed; oversized-file `journal-full` during open instead ends acquisition |
+| `payload-invalid`, `journal-full` | Pre-write append checks only are clean, no bytes or sequence consumed; invalid initialize payload also refuses before any state access |
 | `ownership-contended` | Nonblocking flock contention; fail acquisition and close descriptors |
 | `unsupported-storage` | Missing deployment precondition, type gate or required operation unsupported; end acquisition/session, no weaker retry |
 | `missing-state` | Missing required directory/journal, or empty established journal; end acquisition/session, §11.1 |
@@ -177,17 +229,42 @@ End the session promptly: reject/drain queued transitions without effects,
 quiesce its local state I/O, close journal/record/temporary/directory descriptors,
 then release/close flock last. No recovery/operator wait while retaining it.
 If quiescence cannot be ensured, terminate the owning process rather than
-release ownership while a writer may survive. This is session termination, not
-a requirement to kill the daemon on every clean refusal. Failed initialization
+release ownership while a writer may survive. Sync failures additionally require
+process exit as below; clean append refusals require neither session termination
+nor process exit. Failed initialization
 also preserves files; no automatic unlink, truncate, chmod or repair.
 
 **Sound recovery** means the failed session has ended and a new ownership
-session successfully completes `open-established`, both replay passes, journal
+session meets the sync-failure recovery prerequisite below and successfully
+completes `open-established`, both replay passes, journal
 recovery fsync, ordered record materialization and whole-consumer success below.
 No in-session reopen/reset clears poison. Unreadable/empty/corrupt/incomplete
 state cannot meet that definition; §11.1 reconciliation and any byte recovery
 remain outside this contract. Storage errors never prove absence, free capacity
 or successful cleanup; a full disk promises no writable recovery control path.
+
+### Sync-failure recovery prerequisite
+
+A failed file fsync leaves bytes since that file's last successful sync unknown;
+a failed directory fsync leaves intervening directory-entry durability unknown.
+A later successful fsync through any descriptor or process within the same boot
+is not evidence that those bytes/entries are durable. After any such failure,
+poison and quiesce, close state descriptors with flock released last, then the
+owning process MUST exit; it MUST NOT start another ownership session.
+Recovery of the affected journal requires a host restart before open-established,
+or original-evidence/operator disposition under dispatcher §11.1. A process
+restart alone is insufficient. Restart is a prerequisite, not proof of intact
+history: structural replay, reconciliation and all ordinary gates still apply.
+No automatic reboot, sync retry, reset, cleanup or byte repair is authorized.
+
+The caller/service manager MUST enforce this barrier across process restarts
+and prevent same-boot reopening after reported sync failure. If prior failure
+status is unknown, hold recovery until that prerequisite is independently
+established; cached frame validity or a successful new sync cannot clear it.
+The primitive cannot infer prior fsync failures from journal bytes or prove a
+host restart, and supplies no locally durable failure marker or boot attestation.
+Deployment must preserve/enforce the recovery hold outside this uncertain state;
+without that enforcement, this primitive cannot promise post-error durability.
 
 ## Replay and partial-header classification
 
@@ -198,7 +275,8 @@ The journal layer checks its presence/validity; the consumer charges retained
 and decoded allocations before use and aborts on excess. Streaming cannot hide
 an unbounded consumer or bypass this budget.
 
-Established recovery starts admission closed, under exclusive ownership. First
+Established recovery requires the sync-failure prerequisite first and starts
+admission closed, under exclusive ownership. First
 validate the entire journal structurally, from byte zero, one frame at a time,
 without consumer callbacks or record writes. Track validated EOF and expected
 sequence. Clean EOF at a frame boundary completes this pass; established empty
@@ -270,16 +348,26 @@ consumer semantics, adequate budget and storage/ownership preconditions.
 | Three N bytes `00 10 00` at O=0 can extend to N=1,048,576 | `00 10 01` cannot extend within the payload cap: corruption |
 | Complete valid header/payload/digest | Remove one payload/digest byte at EOF: incomplete-tail, no truncate |
 | N=1,048,576 within projected capacity | N=1,048,577 full header: corruption before body allocation; append refuses payload-invalid before write |
-| 63 maximum frames then sequence 64 with N=1,044,992: exactly 67,108,864 bytes, replays | Increase that final N by 1: 67,108,865 bytes refused journal-full before replay; projected append also refuses cleanly |
+| 63 maximum frames then sequence 64 with N=1,044,992: exactly 67,108,864 bytes, replays | Increase that final N by 1: 67,108,865 bytes is corruption before replay; removing its final digest byte leaves the same invalid header corrupt; projected append alone refuses journal-full cleanly |
 | Clean refusal, then fitting valid append at unchanged EOF/sequence | Consuming sequence or poisoning on payload-invalid/projected journal-full is forbidden |
 | Positive finite replay budget and consumer within it | Missing/zero budget refuses before callbacks; excess ends session consumer-failure |
 | One checked owner, descriptor-relative journal/record operations | Second owner: ownership-contended, no journal access; unsafe descriptor: invalid-state, no repair |
-| Same initialize session accepts empty then commits first real frame | Established empty: missing-state; initialize existing journal: invalid-state; no cross-process empty handoff or absence inference |
-| Complete first frame survives crash before acknowledgement: established recovery retains intent | Empty/partial crashed initialization cannot silently recreate history |
+| Initialize(valid first payload, budget) durably commits sequence 1 before usable return | No usable empty/zero-frame idle session; invalid first payload refuses before state access; aborted initialization preserves bytes, no silent retry |
+| Complete first frame survives crash before acknowledgement, recovery prerequisite satisfied: established replay retains intent | Empty/partial crashed initialization cannot silently recreate history |
 | Known short successful writes plus full completion and fsync commit | Returned error/zero progress, actual ENOSPC or failed sync: poison, no success/effect or uncertain retry |
 | Raw zero-transfer EINTR then successful same-offset retry | Retry after a returned full-write error or beyond the retry bound is forbidden |
 | Journal recovery fsync, then temp-write/fsync/rename/directory-fsync | Failed record/directory sync ends session; committed intent remains, no dependent effect |
-| New session fully replays/syncs/reconstructs; original effect ID retry | Same-session poison reset, stale supervisor direct write or new effect on lost reply is forbidden |
+| Qualified new session after recovery prerequisite fully replays/syncs/reconstructs; original effect ID retry | Same-session poison reset, stale supervisor direct write or new effect on lost reply is forbidden |
+
+Additional paired controls: umask 0077 permits creation; 0277 refuses before
+state opens without byte/sequence/effect changes. Fresh unique temp name creates
+once; a stale/colliding name refuses without overwrite/deletion/retry. First
+journal or directory fsync failure leaves initialization failed, bytes preserved,
+process exited and same-boot reopen forbidden. Static failure trace: write frame,
+fsync error, exit, new process/successful fsync in same boot **cannot recover**.
+The valid neighbor is separately established host restart or §11.1 original-
+evidence/operator disposition, then complete ordinary recovery; this is not
+reboot execution or evidence of durability from a cached read.
 
 These are contract examples, not executable or passing product tests. Static
 literal/arithmetic checks cannot qualify storage. Later isolated Linux tests

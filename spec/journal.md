@@ -1,16 +1,16 @@
 # Local durable journal contract
 
-This draft narrows the local storage choices needed to implement
-[dispatcher §4.1](dispatcher.md#41-state-directory). MUST and MUST NOT are
-normative. It specifies storage, not a launch path or an implemented/qualified
-service. Input, transition, in-flight marker and epoch encodings remain with
-their owning contracts; the journal stores opaque transition bytes and cannot
-by itself validate their authority or semantics.
+**Status:** normative draft v0.2; implementation and independent acceptance are
+pending. MUST/MUST NOT use RFC 2119 meanings; bare imperatives are requirements.
+This narrows local storage for [dispatcher §4.1](dispatcher.md#41-state-directory),
+not launch authority or a qualified service. Payloads are opaque transition
+bytes; input/marker/epoch schemas and their semantic authority remain with their
+owning contracts. Internal entry points and error classes below are not wires.
 
-## Framing and limits
+## Framing and bounds
 
-One journal is a concatenation of frames, without padding or a file preamble.
-All integers are unsigned, big-endian. The version-1 frame is:
+One journal concatenates frames without padding or a file preamble. Integers
+are unsigned, big-endian. Version 1 is:
 
 | Byte offset | Length | Value |
 | ---: | ---: | --- |
@@ -22,139 +22,271 @@ All integers are unsigned, big-endian. The version-1 frame is:
 | 24 | N | Exact payload bytes |
 | 24 + N | 32 | Raw SHA-256 of the complete 24-byte header followed by payload |
 
-N MUST be 1..1,048,576 bytes. Frame length is 56 + N, at most 1,048,632
-bytes. The journal file MUST NOT exceed 67,108,864 bytes (64 MiB). These are
-internal storage limits, not request/output quotas or a control-space reserve.
-Sequence starts at 1 and increases by exactly 1 for every frame; zero, gaps,
-duplicates and uint64 wrap are invalid. Unknown magic, version or flags,
-invalid length, sequence or digest MUST fail replay. Never scan ahead for a
-new magic value. Check the header and checked size arithmetic before body
-allocation/read, and the projected file size before any append. Reject a file
-over the cap before replay. No rotation, compaction, snapshot or migration is
-specified here; exhaustion refuses further appends without deleting history.
+N is 1..1,048,576 bytes; frame size is 56 + N, at most 1,048,632 bytes.
+The file cap is 67,108,864 bytes (64 MiB). Sequence starts at 1, advances by
+exactly 1, and never wraps uint64. Zero, duplicates and gaps are invalid. Check
+header fields, checked arithmetic and remaining file capacity before body
+allocation/read; reject an oversized file before replay. Never scan for a later
+magic. No rotation, compaction, snapshot, preallocation extending file size or
+migration is specified. File size equals frame bytes plus any incomplete tail.
+These bounds are neither request/output quotas nor a control-space reserve.
 
-## Local ownership and initialization
+Golden vector `F(1,0x61)`, 57 bytes; spaces separate fields, not stored bytes:
 
-This version targets a local Linux filesystem with working `flock`, file
-`fsync`, atomic same-directory rename and directory `fsync`; unsupported
-storage MUST refuse. In the protected state directory (§4.1), use regular
-files named `lock` and `journal`, mode 0600, with no symlink following or
-shared hard links. Take a nonblocking exclusive Linux `flock` on `lock`
-before opening/replaying the journal or touching record state. Hold it through
-all replay, append and record I/O until those operations and descriptors have
-closed. Prevent descriptor inheritance into children. A contender MUST fail
-ownership without reading or writing the journal. Never unlink or replace the
-lock inode, or release its flock while state I/O can still occur.
-State-directory replacement is outside ordinary operation.
+```text
+53444a524e4c3031 0001 0000 00000001 0000000000000001 61
+7cbca5bdd6e3f363ddc0daf2942196ceada4e8d7a329922773e755ad35a6dc83
+```
 
-Journal creation is permitted only for explicit fresh-state initialization,
-using exclusive creation, file flush and parent-directory flush before it is
-usable. Opening established state MUST NOT create a missing journal or use
-truncation. An existing empty journal is valid only in a known fresh-state
-context; emptiness cannot certify absence of prior effects. Missing/lost state
-uses [§11.1](dispatcher.md#111-state-loss-and-restore-r-gen), never automatic
-fresh initialization. Immutable inputs are written once and made durable
-before acceptance (§4.2); replay MUST NOT overwrite them.
+Every file flush/sync here means a successful `fsync` of that file descriptor,
+including size metadata; directory flush means successful directory `fsync`.
+Neither userspace-buffer flush nor `fdatasync` substitutes in this version.
 
-## Append and durability ordering
+## Ownership, storage and entries
 
-Serialize local transitions under the state-transition lock. After successful
-replay, fix the next sequence and immutable payload, write the entire frame at
-the validated EOF, then `fsync` the journal. A short, zero-progress or failed
-write is failure, not a complete append. Only successful full write and sync
-commit the append and permit a durable-success acknowledgement, publication
-of the transition or its dependent external effect. Do not advance the usable
-sequence or publish tentative state before that boundary.
+Installation (§11) supplies the protected state directory and protected ancestor
+path; neither entry point creates directories. Open that directory once with
+`O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`; `fstat` must show a service-owned directory
+with permission/special bits exactly 0700. Pin this descriptor for the session.
+All state opens, renames and directory syncs use it, or verified descendant
+directory descriptors, never re-resolve its root path. Descendants follow the
+same directory checks, with no symlink traversal, absolute names or `..` escape.
+Path replacement cannot redirect this session's writes; it does not prevent a
+new owner accessing a replacement tree. Cross-session replacement remains
+externally fenced maintenance/restore under §11.1, not a local-lock guarantee.
 
-Journal the complete intent and in-flight marker before issuing an effect.
-Apply the journaled record changes using §4.1's temporary-file write, flush,
-rename and directory-flush order before issuing the dependent call. Immutable
-inputs are never replacement targets. Release the state-transition lock
-before every downstream call or service wait; it covers only journal/local
-state I/O. Reacquire it to revalidate versions/fences and journal the result.
-The lifetime ownership lock is separate. Existing cancellation, late-result,
-daemon-epoch and per-record serialization requirements remain unchanged.
+The deployment MUST explicitly establish supported local Linux backing (ext4
+or XFS) with durable file/directory `fsync`, same-directory atomic rename and
+cooperating `flock`. Without that precondition, refuse `unsupported-storage`.
+Before creating state files, `fstatfs` on the pinned directory must return type
+0xEF53 or 0x58465342 respectively; all other types, including network, memory,
+FUSE and overlay types, are unsupported in this version. A type match is only
+a compatibility gate, never proof of the precise backing filesystem,
+durability, mount/device behavior or qualification. Unsupported
+errors from required flock/file-sync/directory-sync operations (`EINVAL`,
+`ENOLCK`, `ENOSYS`, `EOPNOTSUPP`/`ENOTSUP`) also refuse `unsupported-storage`;
+if discovered after a write/sync attempt, poison as below. No weaker fallback.
 
-Any write, sync or record-replacement failure, including ENOSPC, poisons
-forward admission and dependent effects until sound recovery. Preserve bytes,
-claims, pending obligations and the original effect IDs. Report the failed
-operation; never report durable success, roll back a committed intent or retry
-the uncertain append blindly. Failure after journal sync leaves a committed
-intent even if record publication or the caller's acknowledgement failed.
-No space-reclamation or successful cleanup is inferred from a storage error.
-This bounded store does not promise writable recovery controls on a full disk;
-independent containment remains governed by the dispatcher specification.
+Open every state file relative to the pinned directory with `O_NOFOLLOW` and
+`O_CLOEXEC`. Immediately `fstat` lock/journal/record/temporary descriptors:
+require regular file, link count 1, service UID ownership and permission/special
+bits exactly 0600. Reject violations as `invalid-state`; do not repair mode,
+owner or links implicitly. Directories have the distinct checks above.
+Every state descriptor is close-on-exec. Forked children must close inherited
+state descriptors before external code and perform no state I/O; they must not
+retain, duplicate or pass them. CLOEXEC alone does not prevent fork inheritance.
 
-## Replay, crash and corruption
+| Entry | Directory | `lock` | `journal` |
+| --- | --- | --- | --- |
+| `initialize` | Must already exist and pass checks | `O_RDWR \| O_CREAT`, never exclusive, mode 0600; validate and take ownership | `O_RDWR \| O_CREAT \| O_EXCL`, mode 0600; any existing entry refuses `invalid-state` |
+| `open-established` | Must already exist and pass checks | Same open/create rule; prior absence proves nothing | `O_RDWR`, no create/truncate/append flag; missing or empty refuses `missing-state` |
 
-Start with admission closed and exclusive ownership. Replay from byte zero,
-validating every frame before delivering it in sequence to a recovery consumer.
-Record files are derived state: replay must idempotently reconstruct journaled
-transitions over them, including a crash between commit and record replacement.
-Do not publish a partly replayed state or authorize effects from its prefix.
-A semantically invalid transition or consumer failure also aborts recovery.
+Choose the entry explicitly; never infer it from missing/empty files or switch
+entries on failure. `initialize` is only for installation-established fresh
+state, never an automatic response to lost history. Acquire nonblocking
+exclusive Linux `flock` on the checked `lock` descriptor before opening journal
+or accessing records. Contention refuses `ownership-contended` without journal
+access. Hold it for the whole ownership session, through replay/append/record
+I/O. Never unlink/replace the lock inode. Its creation supplies no absence proof.
 
-Clean EOF exactly at a frame boundary completes structural replay. EOF after
-1..23 header bytes, or before all N payload and 32 digest bytes of a validated
-header arrive, is an **incomplete tail**, never accepted as a committed frame.
-This structural label cannot prove the bytes were never previously committed
-or that no effect occurred. A full frame with a bad digest or other invalid
-field is **corruption**, including at EOF. An invalid full header fails
-immediately rather than being excused as
-an incomplete body. Read errors are storage failures, not clean EOF or absence.
-Every such failure keeps admission closed and the original file unchanged:
-no truncation, repair, skipped bytes or prefix-as-complete recovery. Preserve
-the validated prefix as evidence, not a basis for releasing capacity.
+Only the flock-holding process appends journal or replaces records. Supervisors
+and other components submit transitions to it; there it checks the current
+durable daemon-instance epoch under the state-transition lock (§§4.1, 6).
+Stale writers are not adopted; supervisor log epoch obligations remain in §6.
+The advisory lock excludes cooperating owners, not a writer that ignores it.
 
-A complete, valid frame is a replay candidate, not proof that its original
-writer's sync or acknowledgement succeeded. After a crash, conservatively
-replay every complete valid frame, including an unacknowledged final frame.
-Before recovery is durable, sync the validated journal, materialize and flush
-derived record changes, and require the consumer's whole-replay success.
-Sync/consumer failure keeps admission poisoned. Only then may appends resume;
-forward admission still needs §7.1 reconciliation/accounting and current
-authority. Retry an unresolved external effect with its original ID and
-arguments, never by appending a new intent merely because a reply was lost.
-Tail/corruption recovery needs an explicitly reviewed recovery procedure and
-independent evidence; this contract authorizes no byte repair or loss of debt.
+After exclusive journal creation, fsync journal then pinned directory before
+using it. Only that same unbroken ownership session may accept it empty and
+append its first frame. It cannot hand an empty store to another process as
+established history. Crashed initialization leaving an empty or partial journal
+cannot be automatically retried: initialize refuses the existing file;
+established opening refuses missing/empty or fails replay on a partial file.
+A complete valid but unacknowledged first frame can instead undergo established
+recovery, conservatively retaining its intent. Emptiness, creation or a failed
+initialization never certifies effect absence. Lost state follows
+[§11.1](dispatcher.md#111-state-loss-and-restore-r-gen); no bytes are removed.
 
-Replay MUST stream, retaining at most one raw frame (1,048,632 bytes), at most
-32,768 bytes of I/O scratch, and constant-size counters/hash state. No frame
-list or journal-sized buffer. This bounds storage replay buffers, not decoded
-application state: the consumer MUST set a finite state-memory budget before
-replay, charge retained/decoded allocations before use, and abort with admission
-closed on missing budget or excess. It MUST NOT hide unbounded buffering behind
-the streaming interface. Retained history remains bounded by the file cap.
+## Append, full write and state ordering
 
-A digest, sequence and local lock detect only their stated local properties.
-They are not authenticated state custody, restore completeness, a generation
-source, an external fence or a native-launcher guarantee. Internally consistent
-rollback is not locally detectable; §11.1's external fence, independent
-inventory and non-resurrection gates remain mandatory. No receiver observation,
-external-reference API, grant or operator/launch wire is introduced here.
+A usable session has completed initialization or established recovery. Track
+its validated EOF and next sequence. Under the state-transition lock, first
+`fstat` journal and require size equal to tracked EOF; mismatch is
+`invalid-state`, terminates/poisons the session, and writes nothing. Then check
+payload and projected frame size. `payload-invalid` (N outside bounds) and
+`journal-full` (projected cap excess or no next sequence) are clean refusals:
+write nothing, consume no sequence, leave a previously usable session usable.
+A full journal does not become writable by deleting history or releasing debt.
+
+Fix immutable payload/header/digest and perform one full-write attempt using
+offset-explicit writes (no `O_APPEND`) at tracked EOF plus exactly the known
+transferred count. Positive short progress without error continues on only the
+remaining suffix. Raw syscall `EINTR` that guarantees zero bytes transferred may
+be retried at that same offset, at most three consecutive retries per syscall;
+positive progress resets the counter. This exception occurs before reporting a
+full-write error. Any other error, any wrapper return carrying an error even
+with a positive count, exhausted EINTR retries, uncertain count, or zero progress
+without error ends the attempt as `storage-write-failure`. Never restart the
+frame, rewrite uncertain bytes or retry a returned write error. Existing bytes
+before tracked EOF are never write targets. Other required syscalls are not
+retried after an error in this version.
+
+After all frame bytes have been written, fsync journal. Only success commits
+the append and advances tracked EOF/sequence or permits durable-success
+acknowledgement and transition publication. A committed intent stays committed
+if a later operation or acknowledgement fails. Before a dependent external
+call, materialize journaled records using temporary-file full write, fsync,
+same-directory rename and directory fsync, in that order. Immutable inputs are
+written once and durable before acceptance (§4.2), never replacement targets.
+Their write/sync failures also poison, even before a journal append exists.
+
+Journal the complete intent/in-flight marker before effects. The
+state-transition lock covers only local journal/state I/O: release it before
+all downstream calls/service waits; reacquire it to revalidate versions/fences
+and journal results. Cancellation, per-record serialization, receiver fences
+and late-result obligations remain unchanged. Ownership flock has a separate
+lifetime; no downstream wait occurs under the state-transition lock.
+
+## Failure classes and session termination
+
+These are local semantic classes, not published refusal codes (§16):
+
+| Class | Trigger and disposition |
+| --- | --- |
+| `payload-invalid`, `journal-full` | Pre-write append checks are clean, no bytes or sequence consumed; oversized-file `journal-full` during open instead ends acquisition |
+| `ownership-contended` | Nonblocking flock contention; fail acquisition and close descriptors |
+| `unsupported-storage` | Missing deployment precondition, type gate or required operation unsupported; end acquisition/session, no weaker retry |
+| `missing-state` | Missing required directory/journal, or empty established journal; end acquisition/session, §11.1 |
+| `invalid-state` | Descriptor/protection/creation rule violated or tracked EOF changed; end acquisition/session; EOF change poisons |
+| `corruption`, `incomplete-tail` | Replay classification below; end session, preserve bytes |
+| `storage-read-failure` | Other open/metadata/read operation error; end acquisition/session |
+| `consumer-failure` | Invalid/missing replay budget, semantic rejection, allocation budget excess or consumer failure; end acquisition/session |
+| `storage-write-failure` | Full-write, non-unsupported fsync, rename, other local-state mutation or descriptor-close error; poison and end session |
+
+Apart from the two clean append refusals, failures are terminal to the current
+acquisition/session; preserve any more specific unsupported/classification
+cause. Poison is set for storage-write-failure, unsupported errors during state
+mutation/sync, observed EOF drift, and consumer/read failure after recovery
+materialization starts. Other terminal acquisition/validation/replay refusals
+do not set poison, but still end the session. No append, dependent effect,
+retry or new durable-success report is permitted in a failed/poisoned session.
+Previously committed intents and prior valid acknowledgements are not revoked.
+Retain input/journal bytes, claims, obligations and original effect IDs. ENOSPC
+from actual I/O is a write failure, not the clean projected-cap refusal.
+
+End the session promptly: reject/drain queued transitions without effects,
+quiesce its local state I/O, close journal/record/temporary/directory descriptors,
+then release/close flock last. No recovery/operator wait while retaining it.
+If quiescence cannot be ensured, terminate the owning process rather than
+release ownership while a writer may survive. This is session termination, not
+a requirement to kill the daemon on every clean refusal. Failed initialization
+also preserves files; no automatic unlink, truncate, chmod or repair.
+
+**Sound recovery** means the failed session has ended and a new ownership
+session successfully completes `open-established`, both replay passes, journal
+recovery fsync, ordered record materialization and whole-consumer success below.
+No in-session reopen/reset clears poison. Unreadable/empty/corrupt/incomplete
+state cannot meet that definition; §11.1 reconciliation and any byte recovery
+remain outside this contract. Storage errors never prove absence, free capacity
+or successful cleanup; a full disk promises no writable recovery control path.
+
+## Replay and partial-header classification
+
+Both entries require a positive finite integer consumer-memory budget as an
+explicit internal parameter, with no default; reject missing/zero/nonfinite or
+unrepresentable budgets as `consumer-failure` before callbacks or state mutation.
+The journal layer checks its presence/validity; the consumer charges retained
+and decoded allocations before use and aborts on excess. Streaming cannot hide
+an unbounded consumer or bypass this budget.
+
+Established recovery starts admission closed, under exclusive ownership. First
+validate the entire journal structurally, from byte zero, one frame at a time,
+without consumer callbacks or record writes. Track validated EOF and expected
+sequence. Clean EOF at a frame boundary completes this pass; established empty
+history is still `missing-state`. For a header starting at offset O, define
+U = min(1,048,576, 67,108,864 - O - 56), using checked signed arithmetic. If U < 1
+there is no valid further header. Otherwise admissible N is [1,U].
+
+EOF with 1..23 header bytes is `incomplete-tail` only if the bytes can extend
+to a header with the exact fixed magic/version/flags, expected sequence, and
+some admissible N. Compare every present fixed-field/sequence byte. For k present
+length bytes (0..4) with big-endian value v (v=0 when k=0), possible N is
+the closed interval
+[v * 256^(4-k), (v+1) * 256^(4-k) - 1]. Its intersection with [1,U] must be
+nonempty. No expected successor sequence, any contradictory byte, or infeasible
+length interval means `corruption`, even if no body follows. A full header must
+meet the same rules; invalid full header is corruption regardless of body EOF.
+
+After a valid header, EOF before all N payload and 32 digest bytes arrive is
+`incomplete-tail`; digest validation occurs on the complete frame. A complete
+bad digest is corruption. Read errors are `storage-read-failure`, never EOF.
+Neither tail classification nor a complete valid frame proves original sync,
+acknowledgement or absence of prior effects. On any failed replay preserve the
+entire file and treat the validated prefix only as evidence, not complete state.
+No truncation, skip, resynchronization, silent repair or capacity release.
+
+After a successful first pass, fsync the validated journal **before any derived
+record materialization**. Require its size to remain the first pass's EOF,
+including before and after the second pass; drift is terminal `invalid-state`.
+The second pass is bounded by that EOF and validates the same frames again
+and feeds the budgeted consumer, which idempotently reconstructs records using
+temporary-file full write, fsync, rename and directory fsync. Consumer failure
+may leave derived cache files partially materialized, but cannot publish
+readiness or effects; the next recovery reconstructs them again, never treating
+those caches as history. Require complete second-pass and whole-consumer
+success before publishing recovered state or resuming appends. Any failure
+ends the session as above. This two-pass ordering bounds memory without making
+record state durable ahead of its journal.
+
+Replay conservatively includes every complete valid unacknowledged frame,
+including a first frame. Retries resolve the original effect ID and immutable
+arguments; a lost reply does not authorize a new intent or effect. Forward
+admission still requires §7.1 reconciliation/accounting and current authority;
+local replay alone supplies neither. No tail-repair procedure is introduced.
+
+Append and replay each retain at most one frame's raw storage (1,048,632 bytes,
+including owned payload copies), at most 32,768 bytes I/O scratch and constant
+counters/hash state; no frame list, second assembled copy or journal buffer.
+Borrowed caller payload and separately budgeted consumer state are not hidden
+storage copies. Bounded queued/in-flight work remains required by §4.1.
+
+Checksum, sequence, file cap and advisory ownership are integrity/bounds only,
+not authenticated custody, generation sources, restore completeness, external
+fences or native-launcher guarantees. Consistent rollback is locally
+undetectable; §11.1's independent inventory, external fence and non-resurrection
+requirements remain mandatory. No receiver outcome, external-reference API,
+launch/grant/operator wire or authority is added.
 
 ## Adjacent contract examples
 
-Let `F(s,p)` mean the frame above with sequence s, payload p and a correct
-digest; `a` and `b` each denote one opaque byte. Examples describe storage
-verdicts only, assuming valid consumer semantics and required ownership.
+`F(s,p)` is a correctly hashed frame; a/b are single bytes. These assume valid
+consumer semantics, adequate budget and storage/ownership preconditions.
 
 | Valid control | Forbidden/failed neighbor and required disposition |
 | --- | --- |
-| `F(1,a) \|\| F(2,b)` replays both | `F(1,a) \|\| F(3,b)` fails sequence validation; no skip or capacity release |
-| Unchanged `F(1,a)` validates | Change its payload to b without recomputing digest, or change digest alone: corruption, preserve bytes |
-| Complete 24-byte header and body/digest | EOF at header byte 23, or one missing payload/digest byte: incomplete tail, admission closed, no truncation |
-| N=1,048,576 with complete bytes is within the frame bound | N=1,048,577 in a full header fails before body allocation, even if no body follows |
-| One owner holds `flock` through replay/append | Second process refuses ownership and performs no journal access |
-| Full frame write + successful sync commits | Short write, ENOSPC or failed sync: no acknowledgement/effect, poisoned admission, no blind append retry |
-| Journal synced, crash before record rename: replay reconstructs the transition | Failed record/directory flush cannot authorize the dependent call; committed intent remains for recovery |
-| Complete unacknowledged `F(2,b)` after `F(1,a)`: replay and successful recovery sync retain both | Lost reply does not authorize a second intent/new effect ID; retry only after sound recovery and reconciliation |
+| New journal, first frame sequence 1 | First sequence 0 or 2: corruption; never skip |
+| `F(1,a)` then `F(2,b)` | `F(1,a)` then `F(3,b)`: corruption; claims retained |
+| Unchanged golden vector | Change payload without rehash or digest alone: corruption |
+| First 23 bytes of the expected golden header: incomplete-tail | Wrong first magic byte, expected-sequence prefix or infeasible N prefix: corruption, not tail |
+| Three N bytes `00 10 00` at O=0 can extend to N=1,048,576 | `00 10 01` cannot extend within the payload cap: corruption |
+| Complete valid header/payload/digest | Remove one payload/digest byte at EOF: incomplete-tail, no truncate |
+| N=1,048,576 within projected capacity | N=1,048,577 full header: corruption before body allocation; append refuses payload-invalid before write |
+| 63 maximum frames then sequence 64 with N=1,044,992: exactly 67,108,864 bytes, replays | Increase that final N by 1: 67,108,865 bytes refused journal-full before replay; projected append also refuses cleanly |
+| Clean refusal, then fitting valid append at unchanged EOF/sequence | Consuming sequence or poisoning on payload-invalid/projected journal-full is forbidden |
+| Positive finite replay budget and consumer within it | Missing/zero budget refuses before callbacks; excess ends session consumer-failure |
+| One checked owner, descriptor-relative journal/record operations | Second owner: ownership-contended, no journal access; unsafe descriptor: invalid-state, no repair |
+| Same initialize session accepts empty then commits first real frame | Established empty: missing-state; initialize existing journal: invalid-state; no cross-process empty handoff or absence inference |
+| Complete first frame survives crash before acknowledgement: established recovery retains intent | Empty/partial crashed initialization cannot silently recreate history |
+| Known short successful writes plus full completion and fsync commit | Returned error/zero progress, actual ENOSPC or failed sync: poison, no success/effect or uncertain retry |
+| Raw zero-transfer EINTR then successful same-offset retry | Retry after a returned full-write error or beyond the retry bound is forbidden |
+| Journal recovery fsync, then temp-write/fsync/rename/directory-fsync | Failed record/directory sync ends session; committed intent remains, no dependent effect |
+| New session fully replays/syncs/reconstructs; original effect ID retry | Same-session poison reset, stale supervisor direct write or new effect on lost reply is forbidden |
 
-These are contract examples, not executable or passing tests. Implementation
-requires isolated Linux tests for framing/boundaries and valid controls beside
-each rejection; actual process contention, bounded replay/consumer memory,
-short/zero writes, ENOSPC, file/directory sync errors and crash points before
-and after append/sync/rename/acknowledgement require executable fault injection.
-Verify preserved journal/input bytes, closed admission, retained claims and
-no premature/duplicate effect, not merely an arbitrary error. Static review
-cannot qualify durability, restore custody or native execution.
+These are contract examples, not executable or passing product tests. Static
+literal/arithmetic checks cannot qualify storage. Later isolated Linux tests
+must pair valid controls with framing/partial-header/cap/budget rejections,
+actual process contention and unsafe-file/descriptor plants, short/zero/error
+writes, bounded EINTR behavior, ENOSPC, file/directory sync/rename failures and
+crashes around creation/append/sync/rename/acknowledgement. Assert unchanged
+bytes/sequence on clean refusal, session termination/ownership release, bounded
+memory, retained claims and no early success/duplicate effects. Durability,
+restore custody and native execution remain unqualified.

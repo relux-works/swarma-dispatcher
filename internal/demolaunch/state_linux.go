@@ -28,9 +28,10 @@ type stopIntent struct {
 	Time        string `json:"time"`
 }
 type stateStore struct {
-	dir  *os.File
-	uid  uint32
-	sync func(*os.File) error
+	dir         *os.File
+	uid         uint32
+	sync        func(*os.File) error
+	createFault func(string) error // Nil in production; tests can fail before naming.
 }
 
 func openState(name string, uid uint32) (*stateStore, error) {
@@ -53,6 +54,11 @@ func openState(name string, uid uint32) (*stateStore, error) {
 // No state path is removed, renamed, reopened for writing or truncated.
 // Even an uncertain write leaves its exclusive name reserved forever.
 func (s *stateStore) create(name string, b []byte) error {
+	if s.createFault != nil {
+		if err := s.createFault(name); err != nil {
+			return err
+		}
+	}
 	f, e := openAt(s.dir, name, syscall.O_CREAT|syscall.O_EXCL|syscall.O_WRONLY, 0600)
 	if e != nil {
 		return e
@@ -133,6 +139,7 @@ func (e *engine) load() error {
 	if err != nil {
 		return err
 	}
+	latchAtStartup := false
 	torn := map[string]bool{}
 	known := map[string]bool{"closed": true}
 	for _, a := range e.accounts {
@@ -168,6 +175,7 @@ func (e *engine) load() error {
 			continue
 		}
 		if n == "closed" {
+			latchAtStartup = true
 			if b, x := e.store.read(n); x == nil && (len(b) == 0 || !json.Valid(b)) {
 				e.torn = append(e.torn, n)
 				e.closed = true
@@ -197,6 +205,9 @@ func (e *engine) load() error {
 	}
 	if err = e.store.closedPresent(); err == nil {
 		e.closed = true
+		if latchAtStartup {
+			e.latchWritten = true
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -217,7 +228,7 @@ func (e *engine) load() error {
 		}
 		e.attempts[name] = at
 		b, err = e.store.read("stop-" + a.Generation)
-		if err == nil && torn["stop-"+a.Generation] {
+		if errors.Is(err, os.ErrNotExist) || (err == nil && torn["stop-"+a.Generation]) {
 			e.tornIntents[name] = true
 		} else if err == nil {
 			si, x := parseIntent(b)
@@ -236,20 +247,15 @@ func (e *engine) load() error {
 		if err == nil && torn["stopped-"+a.Generation] {
 			// A torn completion is never an absence fact.
 		} else if err == nil {
-			if e.stops[name] == nil && !e.tornIntents[name] {
-				return ErrInvalid
-			}
 			var record stoppedRecord
 			if _, x := object(b, 4096, "execution_id timing closed code", ""); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != "" && record.Code != "latch_uncertain") || (record.Timing != "timely" && record.Timing != "missed" && record.Timing != "unknown") {
 				return ErrInvalid
 			}
-			if (record.Timing != "timely" || record.Code != "") && !record.Closed {
+			if (e.tornIntents[name] && (record.Timing == "timely" || !record.Closed)) || ((record.Timing != "timely" || record.Code != "") && !record.Closed) {
 				return ErrInvalid
 			}
 			if record.Closed {
-				if x := e.closeAdmission("restored_closed_stop"); x != nil {
-					return x
-				}
+				_ = e.closeAdmission("restored_closed_stop")
 			}
 			e.stopped[name] = true
 			if e.tornIntents[name] {
@@ -257,9 +263,7 @@ func (e *engine) load() error {
 			} // No original arguments to replay.
 			e.stops[name].terminal = &response{State: "absent", Timing: record.Timing, Closed: e.closed, Stopped: true, Code: record.Code}
 		} else if errors.Is(err, os.ErrNotExist) {
-			if err = e.closeAdmission("startup_unstopped"); err != nil && len(e.torn) == 0 {
-				return err
-			}
+			_ = e.closeAdmission("startup_unstopped")
 		} else {
 			return err
 		}
@@ -292,6 +296,18 @@ func (e *engine) closeAdmission(reason string) error {
 	err := e.store.create("closed", marshal(map[string]string{"reason": reason, "time": time.Now().UTC().Format(time.RFC3339Nano)}))
 	if errors.Is(err, os.ErrExist) {
 		err = e.store.closedPresent()
+		if err == nil {
+			// An earlier failed write may have left the name without durability.
+			var f *os.File
+			f, err = openAt(e.store.dir, "closed", syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+			if err == nil {
+				err = e.store.sync(f)
+				f.Close()
+			}
+			if err == nil {
+				err = e.store.sync(e.store.dir)
+			}
+		}
 	}
 	if err == nil {
 		e.latchWritten = true

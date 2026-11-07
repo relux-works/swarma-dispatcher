@@ -39,6 +39,7 @@ func TestSnapshotProtection(t *testing.T) {
 	if err := os.WriteFile(name, content, 0440); err != nil {
 		t.Fatal(err)
 	}
+	must(t, os.Chmod(name, 0440))
 	if b, err := sourceSnapshot(name, true); b != nil || err == nil {
 		t.Fatal("unprotected config accepted")
 	}
@@ -74,7 +75,7 @@ func TestStateProtectionAndSyncOrder(t *testing.T) {
 		t.Fatal("not file then directory", kinds)
 	}
 	if err = s.create("probe", []byte("second")); !errors.Is(err, os.ErrExist) {
-		t.Fatal(err)
+		t.Fatalf("exclusive state name reused: %v", err)
 	}
 	b, err := s.read("probe")
 	if err != nil || string(b) != "first" {
@@ -109,9 +110,34 @@ func TestReceiptContract(t *testing.T) {
 	if r, err := parseReceipt([]byte(good), execution); err != nil || r.PID != 12 {
 		t.Fatal(r, err)
 	}
+	if _, err := parseReceipt([]byte(strings.Replace(good, boot, "abcdef12-abcd-abcd-abcd-abcdef123456", 1)), execution); err != nil {
+		t.Fatalf("valid lowercase receipt refused: %v", err)
+	}
 	for _, bad := range []string{good + `{}`, strings.Replace(good, `"pid":12`, `"pid":12,"pid":12`, 1), strings.Replace(good, `"epoch":1`, `"epoch":2`, 1), strings.Replace(good, `"pid":12`, `"extra":12`, 1), strings.Replace(good, `"pid":12`, `"pid":0`, 1), strings.Repeat(" ", 4096) + good} {
 		if _, err := parseReceipt([]byte(bad), execution); !errors.Is(err, ErrInvalid) {
 			t.Fatal(bad, err)
+		}
+	}
+	for _, bad := range []string{
+		strings.Replace(good, `"session_id":12`, `"session_id":0`, 1),
+		strings.Replace(good, `"start_time":33`, `"start_time":0`, 1),
+		strings.Replace(good, boot, strings.ToUpper(boot), 1),
+		strings.Replace(good, boot, "ABCDEF12-1234-1234-1234-123456789abc", 1),
+		strings.Replace(good, boot, "12345678-ABCD-1234-1234-123456789abc", 1),
+		strings.Replace(good, boot, "12345678-1234-ABCD-1234-123456789abc", 1),
+		strings.Replace(good, boot, "12345678-1234-1234-ABCD-123456789abc", 1),
+		strings.Replace(good, boot, "12345678-1234-1234-1234-123456789ab", 1),
+		strings.Replace(good, boot, "12345678-1234-1234-1234-123456789abg", 1),
+		strings.Replace(good, boot, "1234567-12345-1234-1234-123456789abc", 1),
+	} {
+		if _, err := parseReceipt([]byte(bad), execution); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("receipt field accepted: %s err=%v", bad, err)
+		}
+		h := fixture(t, "good")
+		h.e.readReceipt = func(_ account, id string) ([]byte, error) { return []byte(strings.Replace(bad, execution, id, 1)), nil }
+		r := h.e.handle(launchBytes("demo"))
+		if r.State != "unknown" || r.Code != "receipt_mismatch" {
+			t.Fatalf("receipt field promoted: %+v", r)
 		}
 	}
 	if _, err := parseReceipt([]byte(good), "EX-ffffffffffffffffffffffffffffffff"); !errors.Is(err, ErrInvalid) {
@@ -220,12 +246,7 @@ func TestStateMutationChecker(t *testing.T) {
 // Fixed command construction has exactly sudo -n and one compiled path, an
 // empty environment, no shell or credential inheritance; this never executes sudo.
 func TestFixedRunnerCommand(t *testing.T) {
-	for _, path := range []string{launcherPath, managerPath} {
-		c := fixedRunner(path)
-		if c.Path != "/usr/bin/sudo" || len(c.Args) != 3 || c.Args[0] != "/usr/bin/sudo" || c.Args[1] != "-n" || c.Args[2] != path || c.Env == nil || len(c.Env) != 0 || c.Dir != "/" || (c.SysProcAttr != nil && c.SysProcAttr.Pdeathsig != 0) {
-			t.Fatal("command changed", c.Path, c.Args, c.Env, c.Dir)
-		}
-	}
+	TestProductionDefaults(t)
 }
 
 // An expired original budget permits safe narrowing but never timely. A successful

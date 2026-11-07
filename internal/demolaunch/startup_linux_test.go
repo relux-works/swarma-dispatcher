@@ -14,8 +14,8 @@ import (
 )
 
 // Every corrupt auxiliary record has a valid neighboring startup control.
-// Intended witness for accepting orphan stopped facts, unchecked logs/flags and lost startup
-// latch persistence errors. No startup repairs or removes fixture evidence.
+// Rejects invalid orphan facts and unchecked logs/flags; latch persistence
+// failure retains startup with admission closed. No fixture evidence is repaired.
 func TestStartupStateRows(t *testing.T) {
 	for _, variant := range []string{"valid", "unstopped", "garbage-closed", "stopped-without-intent", "orphan", "unknown", "attempt-corrupt", "intent-corrupt", "intent-binding", "stopped-corrupt", "stopped-binding", "log-mode", "log-directory", "log-fifo", "log-link", "truncated-content", "lost-content", "startup-latch-sync"} {
 		t.Run(variant, func(t *testing.T) {
@@ -61,6 +61,7 @@ func TestStartupStateRows(t *testing.T) {
 				must(t, os.Symlink("attempt-"+gen, log))
 			case "log-mode":
 				must(t, os.WriteFile(log, nil, 0644))
+				must(t, os.Chmod(log, 0644))
 			default:
 				must(t, h.e.store.create("output-"+gen+"-stdout.log", []byte("log")))
 			}
@@ -110,8 +111,8 @@ func TestStartupStateRows(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "startup-latch-sync":
-				if !errors.Is(err, syscall.EIO) {
-					t.Fatal(err)
+				if err != nil || !e.closed || e.latchWritten {
+					t.Fatalf("startup latch must retain stop: %v", err)
 				}
 				fileBytes(t, h, "closed")
 			default:
@@ -147,6 +148,7 @@ func TestProtectedReadsAndEntrypoints(t *testing.T) {
 				must(t, os.Mkdir(name, 0444))
 			} else {
 				must(t, os.WriteFile(name, body, 0444))
+				must(t, os.Chmod(name, 0444))
 			}
 			owner, group := uint32(os.Geteuid()), uint32(os.Getegid())
 			if variant == "owner" {
@@ -186,6 +188,7 @@ func TestProtectedReadsAndEntrypoints(t *testing.T) {
 	name := filepath.Join(root, "config")
 	body := marshal(cfgFixture())
 	must(t, os.WriteFile(name, body, 0440))
+	must(t, os.Chmod(name, 0440))
 	old := syscall.Umask(022)
 	defer syscall.Umask(old)
 	if err := Daemon(name); !errors.Is(err, ErrConfig) {
@@ -214,7 +217,9 @@ func TestServerProtectedInputWiring(t *testing.T) {
 			config := filepath.Join(root, "config")
 			roster := filepath.Join(root, "roster")
 			must(t, os.WriteFile(config, marshal(cfgFixture()), 0440))
+			must(t, os.Chmod(config, 0440))
 			must(t, os.WriteFile(roster, rosterFixture(30000), 0644))
+			must(t, os.Chmod(roster, 0644))
 			if variant == "config-mode" {
 				must(t, os.Chmod(config, 0644))
 			}
@@ -310,6 +315,7 @@ func TestSnapshotPostReadChecks(t *testing.T) {
 			name := filepath.Join(dir, "config")
 			body := []byte(`{"v":1}`)
 			must(t, os.WriteFile(name, body, 0444))
+			must(t, os.Chmod(name, 0444))
 			read := func(r io.Reader, n int) ([]byte, error) {
 				b, err := readSnapshot(r, n)
 				if err != nil {
@@ -321,6 +327,7 @@ func TestSnapshotPostReadChecks(t *testing.T) {
 				case "replace":
 					must(t, os.Rename(name, name+"-old"))
 					must(t, os.WriteFile(name, body, 0444))
+					must(t, os.Chmod(name, 0444))
 				case "size":
 					must(t, os.Chmod(name, 0644))
 					f, err := os.OpenFile(name, os.O_APPEND|os.O_WRONLY, 0)
@@ -393,12 +400,12 @@ func TestRuntimeIdentity(t *testing.T) {
 	cfg := commonConfig{ServiceUID: uint32(os.Geteuid()), ServiceGID: uint32(os.Getegid()), ConnectGID: uint32(os.Getegid())}
 	must(t, runtimeConfig(cfg, cfg.ServiceUID, true))
 	if err := runtimeConfig(cfg, cfg.ServiceUID+1, true); !errors.Is(err, ErrIdentity) {
-		t.Fatal(err)
+		t.Fatal("runtime identity assertion", err)
 	}
 	wrong := cfg
 	wrong.ServiceGID++
 	if err := runtimeConfig(wrong, cfg.ServiceUID, true); !errors.Is(err, ErrIdentity) {
-		t.Fatal(err)
+		t.Fatal("runtime identity assertion", err)
 	}
 	for g := uint32(100000); ; g++ {
 		member, err := groupMember(g)
@@ -410,10 +417,10 @@ func TestRuntimeIdentity(t *testing.T) {
 		}
 	}
 	if err := runtimeConfig(wrong, cfg.ServiceUID, true); !errors.Is(err, ErrIdentity) {
-		t.Fatal(err)
+		t.Fatal("runtime identity assertion", err)
 	}
 	if err := runtimeConfig(cfg, cfg.ServiceUID, false); !errors.Is(err, ErrIdentity) {
-		t.Fatal("client belongs to private group", err)
+		t.Fatal("runtime identity assertion", "client belongs to private group", err)
 	}
 	wrong = cfg
 	wrong.ServiceGID = wrong.ConnectGID + 100000

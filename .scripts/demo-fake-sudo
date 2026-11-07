@@ -1,0 +1,29 @@
+#!/usr/bin/python3
+"""Recording substitute for sudo on a disposable mutation host only."""
+import json
+import os
+import sys
+
+
+def log_path():
+    path = os.environ.get('DEMO_FAKE_SUDO_LOG')
+    if path:
+        return path
+    # fixedRunner deliberately clears Env. Its same-UID test parent inherits
+    # this one harness variable from the mutation runner. Never log other data.
+    key = b'DEMO_FAKE_SUDO_LOG='
+    with open('/proc/' + str(os.getppid()) + '/environ', 'rb') as parent:
+        for entry in parent.read(2 * 1024 * 1024).split(b'\0'):
+            if entry.startswith(key):
+                return os.fsdecode(entry[len(key):])
+    raise RuntimeError('DEMO_FAKE_SUDO_LOG unavailable')
+
+
+def main():
+    with open(log_path(), 'a', encoding='utf-8') as log:
+        log.write(json.dumps({'argv': sys.argv, 'cwd': os.getcwd()}) + '\n')
+    return 77
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

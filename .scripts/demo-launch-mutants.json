@@ -9,19 +9,8 @@
       "run": "^TestStopActiveBeforeChild$"
     },
     "row": "one helper: active reservation",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-T05",
-    "file": "internal/demolaunch/engine_linux.go",
-    "find": "\t}\n\tif s != nil && s.active {\n\t\te.mu.Unlock()\n",
-    "replace": "\t}\n\tif false && s != nil && s.active {\n\t\te.mu.Unlock()\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestStopActiveBeforeChild$"
-    },
-    "row": "one helper: active reservation",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "active helper guard admitted overlapping constructor|want refused/stop_in_flight"
   },
   {
     "id": "S1-E09",
@@ -33,67 +22,41 @@
       "run": "^TestStopLiveChildClosedPipes$"
     },
     "row": "one helper: live process",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-T09",
-    "file": "internal/demolaunch/engine_linux.go",
-    "find": "\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t\te.mu.Unlock()\n\t\t\treturn refusal(\"stop_in_flight\")\n\t\t}\n\t\tselect {\n",
-    "replace": "\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t}\n\t\tselect {\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestStopLiveChildClosedPipes$"
-    },
-    "row": "one helper: live process",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "want refused/stop_in_flight"
   },
   {
     "id": "S1-Z02",
     "file": "internal/demolaunch/engine_linux.go",
-    "find": "\t}\n\tif s != nil && s.active {\n\t\te.mu.Unlock()\n\t\treturn refusal(\"stop_in_flight\")\n\t}\n\tif s != nil && s.terminal != nil {\n\t\tret := *s.terminal\n\t\te.mu.Unlock()\n\t\treturn ret\n\t}\n\ta := e.accounts[r.Account]\n\tif s == nil {\n\t\t// One caller-scoped stop ID must not target a different account.\n\t\tfor _, other := range e.stops {\n\t\t\tif other.intent.RequestID == r.RequestID {\n\t\t\t\te.mu.Unlock()\n\t\t\t\treturn refusal(\"stop_conflict\")\n\t\t\t}\n\t\t}\n\t\tnow := time.Now()\n\t\ts = &stopRecord{intent: stopIntent{r.RequestID, at.ExecutionID, r.Grace, now.UTC().Format(time.RFC3339Nano)}, deadline: callDeadline}\n\t\tif e.tornIntents[r.Account] {\n\t\t\ts.deadline = time.Time{}\n\t\t}\n\t\t// Keep original arguments in memory even when the exclusive file is torn.\n\t\tif err := e.store.create(\"stop-\"+a.Generation, marshal(s.intent)); err != nil {\n\t\t\t_ = e.closeAdmission(\"stop_intent_uncertain\")\n\t\t}\n\t\te.stops[r.Account] = s\n\t}\n\tif s.child != nil {\n\t\tselect {\n\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t\te.mu.Unlock()\n\t\t\treturn refusal(\"stop_in_flight\")\n\t\t}\n",
-    "replace": "\t}\n\tif false && s != nil && s.active {\n\t\te.mu.Unlock()\n\t\treturn refusal(\"stop_in_flight\")\n\t}\n\tif s != nil && s.terminal != nil {\n\t\tret := *s.terminal\n\t\te.mu.Unlock()\n\t\treturn ret\n\t}\n\ta := e.accounts[r.Account]\n\tif s == nil {\n\t\t// One caller-scoped stop ID must not target a different account.\n\t\tfor _, other := range e.stops {\n\t\t\tif other.intent.RequestID == r.RequestID {\n\t\t\t\te.mu.Unlock()\n\t\t\t\treturn refusal(\"stop_conflict\")\n\t\t\t}\n\t\t}\n\t\tnow := time.Now()\n\t\ts = &stopRecord{intent: stopIntent{r.RequestID, at.ExecutionID, r.Grace, now.UTC().Format(time.RFC3339Nano)}, deadline: callDeadline}\n\t\tif e.tornIntents[r.Account] {\n\t\t\ts.deadline = time.Time{}\n\t\t}\n\t\t// Keep original arguments in memory even when the exclusive file is torn.\n\t\tif err := e.store.create(\"stop-\"+a.Generation, marshal(s.intent)); err != nil {\n\t\t\t_ = e.closeAdmission(\"stop_intent_uncertain\")\n\t\t}\n\t\te.stops[r.Account] = s\n\t}\n\tif s.child != nil {\n\t\tselect {\n\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t}\n",
+    "find": "if s != nil && s.active {",
+    "replace": "if false && s != nil && s.active {",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestStopActiveBeforeChild$"
     },
     "row": "one helper: combined active and live guards",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-CB-T05+T09",
-    "file": "internal/demolaunch/engine_linux.go",
-    "find": "\t}\n\tif s != nil && s.active {\n\t\te.mu.Unlock()\n\t\treturn refusal(\"stop_in_flight\")\n\t}\n\tif s != nil && s.terminal != nil {\n\t\tret := *s.terminal\n\t\te.mu.Unlock()\n\t\treturn ret\n\t}\n\ta := e.accounts[r.Account]\n\tif s == nil {\n\t\t// One caller-scoped stop ID must not target a different account.\n\t\tfor _, other := range e.stops {\n\t\t\tif other.intent.RequestID == r.RequestID {\n\t\t\t\te.mu.Unlock()\n\t\t\t\treturn refusal(\"stop_conflict\")\n\t\t\t}\n\t\t}\n\t\tnow := time.Now()\n\t\ts = &stopRecord{intent: stopIntent{r.RequestID, at.ExecutionID, r.Grace, now.UTC().Format(time.RFC3339Nano)}, deadline: callDeadline}\n\t\tif e.tornIntents[r.Account] {\n\t\t\ts.deadline = time.Time{}\n\t\t}\n\t\t// Keep original arguments in memory even when the exclusive file is torn.\n\t\tif err := e.store.create(\"stop-\"+a.Generation, marshal(s.intent)); err != nil {\n\t\t\t_ = e.closeAdmission(\"stop_intent_uncertain\")\n\t\t}\n\t\te.stops[r.Account] = s\n\t}\n\tif s.child != nil {\n\t\tselect {\n\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t\te.mu.Unlock()\n\t\t\treturn refusal(\"stop_in_flight\")\n\t\t}\n",
-    "replace": "\t}\n\tif false && s != nil && s.active {\n\t\te.mu.Unlock()\n\t\treturn refusal(\"stop_in_flight\")\n\t}\n\tif s != nil && s.terminal != nil {\n\t\tret := *s.terminal\n\t\te.mu.Unlock()\n\t\treturn ret\n\t}\n\ta := e.accounts[r.Account]\n\tif s == nil {\n\t\t// One caller-scoped stop ID must not target a different account.\n\t\tfor _, other := range e.stops {\n\t\t\tif other.intent.RequestID == r.RequestID {\n\t\t\t\te.mu.Unlock()\n\t\t\t\treturn refusal(\"stop_conflict\")\n\t\t\t}\n\t\t}\n\t\tnow := time.Now()\n\t\ts = &stopRecord{intent: stopIntent{r.RequestID, at.ExecutionID, r.Grace, now.UTC().Format(time.RFC3339Nano)}, deadline: callDeadline}\n\t\tif e.tornIntents[r.Account] {\n\t\t\ts.deadline = time.Time{}\n\t\t}\n\t\t// Keep original arguments in memory even when the exclusive file is torn.\n\t\tif err := e.store.create(\"stop-\"+a.Generation, marshal(s.intent)); err != nil {\n\t\t\t_ = e.closeAdmission(\"stop_intent_uncertain\")\n\t\t}\n\t\te.stops[r.Account] = s\n\t}\n\tif s.child != nil {\n\t\tselect {\n\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t}\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestStopActiveBeforeChild$"
-    },
-    "row": "one helper: combined active and live guards",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "edits": [
+      {
+        "file": "internal/demolaunch/engine_linux.go",
+        "find": "\n\tif s.child != nil {",
+        "replace": "\n\tif false && s.child != nil {"
+      }
+    ],
+    "expect": "active helper guard admitted overlapping constructor|want refused/stop_in_flight"
   },
   {
     "id": "S1-E02",
     "file": "internal/demolaunch/engine_linux.go",
-    "find": "\ts := e.stops[r.Account]\n\tif s != nil && (s.intent.RequestID != r.RequestID || s.intent.Grace != r.Grace) {\n\t\te.mu.Unlock()\n",
-    "replace": "\ts := e.stops[r.Account]\n\tif s != nil && (s.intent.Grace != r.Grace) {\n\t\te.mu.Unlock()\n",
+    "find": "if s != nil && (s.intent.RequestID != r.RequestID || s.intent.Grace != r.Grace) {",
+    "replace": "if s != nil && (s.intent.Grace != r.Grace) {",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestStopRetryRequestID$"
     },
     "row": "retry request ID",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-T03",
-    "file": "internal/demolaunch/engine_linux.go",
-    "find": "\ts := e.stops[r.Account]\n\tif s != nil && (s.intent.RequestID != r.RequestID || s.intent.Grace != r.Grace) {\n\t\te.mu.Unlock()\n",
-    "replace": "\ts := e.stops[r.Account]\n\tif s != nil && (s.intent.Grace != r.Grace) {\n\t\te.mu.Unlock()\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestStopRetryRequestID$"
-    },
-    "row": "retry request ID",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "want refused/stop_conflict"
   },
   {
     "id": "S1-E12",
@@ -105,19 +68,8 @@
       "run": "^TestStopElapsedBudgets$"
     },
     "row": "original call deadline",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-T11",
-    "file": "internal/demolaunch/engine_linux.go",
-    "find": "\tif !s.deadline.IsZero() && time.Now().Before(s.deadline) && s.deadline.Before(callDeadline) {\n\t\tcallDeadline = s.deadline\n\t}\n",
-    "replace": "\tif !s.deadline.IsZero() && time.Now().Before(s.deadline) && s.deadline.Before(callDeadline) {\n\t\tcallDeadline = time.Now().Add(e.stopWait)\n\t}\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestStopElapsedBudgets$"
-    },
-    "row": "original call deadline",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "elapsed|retry budget|stop budget"
   },
   {
     "id": "S1-E28",
@@ -129,8 +81,9 @@
       "run": "^TestStopElapsedBudgets$"
     },
     "row": "45 second stop wait",
-    "qualification": "intended, parent runs it",
-    "timeout_seconds": 180
+    "qualification": "Requires execution on an isolated Linux host.",
+    "timeout_seconds": 180,
+    "expect": "elapsed|retry budget|stop budget"
   },
   {
     "id": "S1-X01",
@@ -142,19 +95,8 @@
       "run": "^TestComposedChildInheritance$"
     },
     "row": "only stdio: openAt CLOEXEC",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-F05",
-    "file": "internal/demolaunch/files_linux.go",
-    "find": "func openAt(dir *os.File, name string, flags int, mode uint32) (*os.File, error) {\n\tfd, err := syscall.Openat(int(dir.Fd()), name, flags|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, mode)\n\tif err != nil {\n",
-    "replace": "func openAt(dir *os.File, name string, flags int, mode uint32) (*os.File, error) {\n\tfd, err := syscall.Openat(int(dir.Fd()), name, flags|syscall.O_NOFOLLOW, mode)\n\tif err != nil {\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestComposedChildInheritance$"
-    },
-    "row": "only stdio: openAt CLOEXEC",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "sealed reply=|unsealed reply=|child="
   },
   {
     "id": "S1-X02",
@@ -166,7 +108,8 @@
       "run": "^TestComposedChildInheritance$"
     },
     "row": "only stdio: accepted descriptor",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "sealed reply=|unsealed reply=|child="
   },
   {
     "id": "S1-X03",
@@ -178,7 +121,8 @@
       "run": "^TestComposedChildInheritance$"
     },
     "row": "only stdio: listener",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "sealed reply=|unsealed reply=|child="
   },
   {
     "id": "S1-X05",
@@ -190,7 +134,8 @@
       "run": "^TestComposedChildInheritance$"
     },
     "row": "only stdio: ExtraFiles",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "sealed reply=|unsealed reply=|child="
   },
   {
     "id": "S2-C05",
@@ -202,7 +147,8 @@
       "run": "^TestComposedChildInheritance$"
     },
     "row": "empty composed child environment",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "sealed reply=|unsealed reply=|child="
   },
   {
     "id": "S2-C03",
@@ -214,7 +160,8 @@
       "run": "^TestFixedRunnerCommand$"
     },
     "row": "no parent death signal",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "command changed"
   },
   {
     "id": "S1-C11",
@@ -226,7 +173,8 @@
       "run": "^TestProductionDefaults$"
     },
     "row": "root receipt owner",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "production defaults changed"
   },
   {
     "id": "S1-C12",
@@ -238,7 +186,8 @@
       "run": "^TestProductionDefaults$"
     },
     "row": "root receipt group",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "production defaults changed"
   },
   {
     "id": "S2-RC15",
@@ -250,7 +199,8 @@
       "run": "^TestProductionDefaults$"
     },
     "row": "root receipt defaults",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "production defaults changed"
   },
   {
     "id": "S1-H01",
@@ -262,19 +212,8 @@
       "run": "^TestChildStdinDeadline$"
     },
     "row": "stdin five second budget",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-C13",
-    "file": "internal/demolaunch/runner_linux.go",
-    "find": "\t}()\n\tintake := time.Now().Add(5 * time.Second)\n\tif deadline.Before(intake) {\n",
-    "replace": "\t}()\n\tintake := time.Now().Add(50 * time.Second)\n\tif deadline.Before(intake) {\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestChildStdinDeadline$"
-    },
-    "row": "stdin five second budget",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "stdin elapsed"
   },
   {
     "id": "S1-H02",
@@ -286,19 +225,8 @@
       "run": "^TestChildStdinDeadline$"
     },
     "row": "stdin deadline applied",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-C14",
-    "file": "internal/demolaunch/runner_linux.go",
-    "find": "\t}\n\terr = inW.SetWriteDeadline(intake)\n\tif err == nil {\n",
-    "replace": "\t}\n\t_ = intake\n err = nil\n\tif err == nil {\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestChildStdinDeadline$"
-    },
-    "row": "stdin deadline applied",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "stdin elapsed"
   },
   {
     "id": "S1-H03",
@@ -310,19 +238,8 @@
       "run": "^TestChildStdinDeadline$"
     },
     "row": "stdin bounds combined",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-C15",
-    "file": "internal/demolaunch/runner_linux.go",
-    "find": "\t}()\n\tintake := time.Now().Add(5 * time.Second)\n\tif deadline.Before(intake) {\n\t\tintake = deadline\n\t}\n\terr = inW.SetWriteDeadline(intake)\n\tif err == nil {\n",
-    "replace": "\t}()\n\tintake := time.Now().Add(50 * time.Second)\n\tif deadline.Before(intake) {\n\t\tintake = deadline\n\t}\n\t_ = intake\n err = nil\n\tif err == nil {\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestChildStdinDeadline$"
-    },
-    "row": "stdin bounds combined",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "stdin elapsed"
   },
   {
     "id": "S1-H07",
@@ -334,19 +251,8 @@
       "run": "^TestStopResults$"
     },
     "row": "signalled helper is not success",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-C12",
-    "file": "internal/demolaunch/runner_linux.go",
-    "find": "\t\t\tif pid == c.Process.Pid {\n\t\t\t\tif !status.Exited() || status.ExitStatus() != 0 {\n\t\t\t\t\tch.err = errors.New(\"child_exit_nonzero\")\n",
-    "replace": "\t\t\tif pid == c.Process.Pid {\n\t\t\t\tif status.Exited() && status.ExitStatus() != 0 {\n\t\t\t\t\tch.err = errors.New(\"child_exit_nonzero\")\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestStopResults$"
-    },
-    "row": "signalled helper is not success",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "want unresolved/|helper capture bound|stop result timing assertion:"
   },
   {
     "id": "S1-H10",
@@ -358,19 +264,8 @@
       "run": "^TestStopResults$"
     },
     "row": "helper capture bound",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-T18",
-    "file": "internal/demolaunch/engine_linux.go",
-    "find": "\t}\n\tout, stderr := &capture{limit: 16384}, &capture{limit: 16384}\n\tch, err := startChild(e.ctx, e.run, managerPath, payload, callDeadline, out, stderr)\n",
-    "replace": "\t}\n\tout, stderr := &capture{limit: 1<<20}, &capture{limit: 16384}\n\tch, err := startChild(e.ctx, e.run, managerPath, payload, callDeadline, out, stderr)\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestStopResults$"
-    },
-    "row": "helper capture bound",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "want unresolved/|helper capture bound|stop result timing assertion:"
   },
   {
     "id": "S1-D41b",
@@ -382,19 +277,8 @@
       "run": "^TestStopResults$"
     },
     "row": "helper overflow refused",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-T19F",
-    "file": "internal/demolaunch/engine_linux.go",
-    "find": "\tb, overflow, err := out.snapshot()\n\tif err != nil || overflow {\n\t\treturn e.unresolved(\"helper_result_invalid\", s)\n",
-    "replace": "\tb, overflow, err := out.snapshot()\n\t_ = overflow\n if err != nil {\n\t\treturn e.unresolved(\"helper_result_invalid\", s)\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestStopResults$"
-    },
-    "row": "helper overflow refused",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "want unresolved/|helper capture bound|stop result timing assertion:"
   },
   {
     "id": "S2-H11",
@@ -406,7 +290,8 @@
       "run": "^TestHelperMemberSets$"
     },
     "row": "empty helper error code",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "helper member accepted:"
   },
   {
     "id": "S2-H0506",
@@ -418,7 +303,8 @@
       "run": "^TestHelperMemberSets$"
     },
     "row": "ok true exact members",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "helper member accepted:"
   },
   {
     "id": "S2-C23",
@@ -430,7 +316,8 @@
       "run": "^TestPostReceiptOutputLoss$"
     },
     "row": "draining after capture error",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "child write failed|output loss assertion:|loss not durable|loss forgotten"
   },
   {
     "id": "S1-J27",
@@ -442,19 +329,8 @@
       "run": "^TestAncestorInitialBits$"
     },
     "row": "ancestor group writable",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-F01",
-    "file": "internal/demolaunch/files_linux.go",
-    "find": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0022 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
-    "replace": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0002 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestAncestorInitialBits$"
-    },
-    "row": "ancestor group writable",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "ancestor writable mode accepted:"
   },
   {
     "id": "S1-J28",
@@ -466,19 +342,8 @@
       "run": "^TestAncestorInitialBits$"
     },
     "row": "ancestor world writable",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-F02",
-    "file": "internal/demolaunch/files_linux.go",
-    "find": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0022 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
-    "replace": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0020 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestAncestorInitialBits$"
-    },
-    "row": "ancestor world writable",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "ancestor writable mode accepted:"
   },
   {
     "id": "S1-Z08",
@@ -490,79 +355,60 @@
       "run": "^TestAncestorInitialBits$"
     },
     "row": "ancestor both writable bits",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "ancestor writable mode accepted:"
   },
   {
     "id": "S1-A18",
     "file": "internal/demolaunch/state_linux.go",
-    "find": "\t\t\t}\n\t\t\tif record.Closed {\n\t\t\t\tif x := e.closeAdmission(\"restored_closed_stop\"); x != nil {\n",
-    "replace": "\t\t\t}\n\t\t\tif false && record.Closed {\n\t\t\t\tif x := e.closeAdmission(\"restored_closed_stop\"); x != nil {\n",
+    "find": "if record.Closed {\n\t\t\t\t_ = e.closeAdmission(\"restored_closed_stop\")",
+    "replace": "if false && record.Closed {\n\t\t\t\t_ = e.closeAdmission(\"restored_closed_stop\")",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestStoppedRestoresMissingLatch$"
     },
     "row": "stopped closed restoration",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-A27",
-    "file": "internal/demolaunch/state_linux.go",
-    "find": "\t\t\t}\n\t\t\tif record.Closed {\n\t\t\t\tif x := e.closeAdmission(\"restored_closed_stop\"); x != nil {\n",
-    "replace": "\t\t\t}\n\t\t\tif false && record.Closed {\n\t\t\t\tif x := e.closeAdmission(\"restored_closed_stop\"); x != nil {\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestStoppedRestoresMissingLatch$"
-    },
-    "row": "stopped closed restoration",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "closed fact lost|closed no such file"
   },
   {
     "id": "S1-A19",
     "file": "internal/demolaunch/state_linux.go",
-    "find": "\t\t\tif record.Closed {\n\t\t\t\tif x := e.closeAdmission(\"restored_closed_stop\"); x != nil {\n\t\t\t\t\treturn x\n",
-    "replace": "\t\t\tif record.Closed {\n\t\t\t\tif x := error(nil); x != nil {\n\t\t\t\t\treturn x\n",
+    "find": "if record.Closed {\n\t\t\t\t_ = e.closeAdmission(\"restored_closed_stop\")",
+    "replace": "if record.Closed {\n\t\t\t\te.closed = true",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestStoppedRestoresMissingLatch$"
     },
     "row": "stopped durable latch restoration",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-A28",
-    "file": "internal/demolaunch/state_linux.go",
-    "find": "\t\t\tif record.Closed {\n\t\t\t\tif x := e.closeAdmission(\"restored_closed_stop\"); x != nil {\n\t\t\t\t\treturn x\n",
-    "replace": "\t\t\tif record.Closed {\n\t\t\t\tif x := error(nil); x != nil {\n\t\t\t\t\treturn x\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestStoppedRestoresMissingLatch$"
-    },
-    "row": "stopped durable latch restoration",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "closed fact lost|closed no such file"
   },
   {
     "id": "S2-A25",
     "file": "internal/demolaunch/state_linux.go",
-    "find": "\t\t\t}\n\t\t\tif (record.Timing != \"timely\" || record.Code != \"\") && !record.Closed {\n\t\t\t\treturn ErrInvalid\n",
-    "replace": "\t\t\t}\n\t\t\tif record.Code != \"\" && !record.Closed {\n\t\t\t\treturn ErrInvalid\n",
+    "find": "((record.Timing != \"timely\" || record.Code != \"\") && !record.Closed)",
+    "replace": "((record.Code != \"\") && !record.Closed)",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestParseableStateFields$"
     },
     "row": "non timely stopped must be closed",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "state field accepted:"
   },
   {
     "id": "S2-A26",
     "file": "internal/demolaunch/state_linux.go",
-    "find": "\t\t\t}\n\t\t\tif (record.Timing != \"timely\" || record.Code != \"\") && !record.Closed {\n\t\t\t\treturn ErrInvalid\n",
-    "replace": "\t\t\t}\n\t\t\tif record.Timing != \"timely\" && !record.Closed {\n\t\t\t\treturn ErrInvalid\n",
+    "find": "((record.Timing != \"timely\" || record.Code != \"\") && !record.Closed)",
+    "replace": "((record.Timing != \"timely\") && !record.Closed)",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestParseableStateFields$"
     },
     "row": "uncertain stopped must be closed",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "state field accepted:"
   },
   {
     "id": "S1-B22",
@@ -574,19 +420,8 @@
       "run": "^TestDemoFrameBoundsAndBudgets$"
     },
     "row": "oversize frame prefix",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-K02",
-    "file": "internal/demolaunch/socket_linux.go",
-    "find": "\t}\n\tif size > frame.MaxPayloadSize {\n\t\treturn nil, frame.ErrFrameTooLarge\n",
-    "replace": "\t}\n\tif false && size > frame.MaxPayloadSize {\n\t\treturn nil, frame.ErrFrameTooLarge\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestDemoFrameBoundsAndBudgets$"
-    },
-    "row": "oversize frame prefix",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "frame bound panicked instead of refusing|frame bound refusal:|frame payload size:|frozen budgets|stage wait"
   },
   {
     "id": "S2-K01",
@@ -598,7 +433,8 @@
       "run": "^TestDemoFrameBoundsAndBudgets$"
     },
     "row": "empty frame prefix",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "frame bound panicked instead of refusing|frame bound refusal:|frame payload size:|frozen budgets|stage wait"
   },
   {
     "id": "S1-B25",
@@ -610,19 +446,8 @@
       "run": "^TestDemoFrameBoundsAndBudgets$"
     },
     "row": "stage frozen budget",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-K04",
-    "file": "internal/demolaunch/socket_linux.go",
-    "find": "\nconst stageBudget = 2 * time.Second\nconst sessionBudget = 55 * time.Second\n",
-    "replace": "\nconst stageBudget = 20 * time.Second\nconst sessionBudget = 55 * time.Second\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestDemoFrameBoundsAndBudgets$"
-    },
-    "row": "stage frozen budget",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "frame bound panicked instead of refusing|frame bound refusal:|frame payload size:|frozen budgets|stage wait"
   },
   {
     "id": "S1-B26",
@@ -634,19 +459,8 @@
       "run": "^TestDemoFrameBoundsAndBudgets$"
     },
     "row": "session frozen budget",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-K05",
-    "file": "internal/demolaunch/socket_linux.go",
-    "find": "const stageBudget = 2 * time.Second\nconst sessionBudget = 55 * time.Second\n\n",
-    "replace": "const stageBudget = 2 * time.Second\nconst sessionBudget = 5 * time.Second\n\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestDemoFrameBoundsAndBudgets$"
-    },
-    "row": "session frozen budget",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "frame bound panicked instead of refusing|frame bound refusal:|frame payload size:|frozen budgets|stage wait"
   },
   {
     "id": "S2-K08",
@@ -658,7 +472,8 @@
       "run": "^TestDemoFrameBoundsAndBudgets$"
     },
     "row": "stage budget use",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "frame bound panicked instead of refusing|frame bound refusal:|frame payload size:|frozen budgets|stage wait"
   },
   {
     "id": "S2-K06F",
@@ -670,7 +485,8 @@
       "run": "^TestDemoFrameBoundsAndBudgets$"
     },
     "row": "session clamps stage",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "frame bound panicked instead of refusing|frame bound refusal:|frame payload size:|frozen budgets|stage wait"
   },
   {
     "id": "S1-B27",
@@ -682,19 +498,8 @@
       "run": "^TestClientReplyValidation$"
     },
     "row": "client reply wait",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-V32",
-    "file": "internal/demolaunch/service_linux.go",
-    "find": "\t// The reply may wait for a 45-second stop, but intake stages remain two seconds.\n\twire.responseWait = true\n\tb, err = wire.readFrame()\n",
-    "replace": "\t// The reply may wait for a 45-second stop, but intake stages remain two seconds.\n\twire.responseWait = false\n\tb, err = wire.readFrame()\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestClientReplyValidation$"
-    },
-    "row": "client reply wait",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "kind=.*want request_invalid|client valid reply failed:"
   },
   {
     "id": "S2-V31",
@@ -706,7 +511,8 @@
       "run": "^TestClientReplyValidation$"
     },
     "row": "client hello",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "kind=.*want request_invalid|client valid reply failed:"
   },
   {
     "id": "S2-V33",
@@ -718,7 +524,8 @@
       "run": "^TestClientReplyValidation$"
     },
     "row": "client exact reply members",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "kind=.*want request_invalid|client valid reply failed:"
   },
   {
     "id": "S2-V34",
@@ -730,7 +537,8 @@
       "run": "^TestClientReplyValidation$"
     },
     "row": "client state vocabulary",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "kind=.*want request_invalid|client valid reply failed:"
   },
   {
     "id": "S2-V35",
@@ -742,7 +550,8 @@
       "run": "^TestClientReplyValidation$"
     },
     "row": "client receipt predicate",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "kind=.*want request_invalid|client valid reply failed:"
   },
   {
     "id": "S2-L14",
@@ -754,7 +563,8 @@
       "run": "^TestReceiptElapsedBudget$"
     },
     "row": "receipt elapsed budget",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "receipt budget|want unknown/receipt_timeout"
   },
   {
     "id": "S2-L26",
@@ -766,7 +576,8 @@
       "run": "^TestShutdownLaunchClassification$"
     },
     "row": "shutdown during read",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "shutdown classification assertion:|want refused/shutdown|want unknown/shutdown|unexpected file|wrong durable reason"
   },
   {
     "id": "R4-shutdown-before",
@@ -778,7 +589,8 @@
       "run": "^TestShutdownLaunchClassification$"
     },
     "row": "shutdown before marker",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "shutdown classification assertion:|want refused/shutdown|want unknown/shutdown|unexpected file|wrong durable reason"
   },
   {
     "id": "R4-stop-collision",
@@ -790,7 +602,8 @@
       "run": "^TestLaunchStopIDCollision$"
     },
     "row": "launch stop ID collision",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "want refused/request_id_conflict"
   },
   {
     "id": "S1-B10",
@@ -802,7 +615,8 @@
       "run": "^TestServePeerBeforeFrameIntake$"
     },
     "row": "refusal slot release B10",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "peer consumed input|refusal leaked global slot|intake caused effect"
   },
   {
     "id": "S1-B11",
@@ -814,7 +628,8 @@
       "run": "^TestServePeerBeforeFrameIntake$"
     },
     "row": "refusal slot release B11",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "peer consumed input|refusal leaked global slot|intake caused effect"
   },
   {
     "id": "S1-B12",
@@ -826,7 +641,8 @@
       "run": "^TestServePeerBeforeFrameIntake$"
     },
     "row": "refusal slot release B12",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "peer consumed input|refusal leaked global slot|intake caused effect"
   },
   {
     "id": "S1-B13",
@@ -838,7 +654,8 @@
       "run": "^TestServePeerBeforeFrameIntake$"
     },
     "row": "refusal slot release B13",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "peer consumed input|refusal leaked global slot|intake caused effect"
   },
   {
     "id": "S1-X11",
@@ -850,7 +667,8 @@
       "run": "^TestServePeerBeforeFrameIntake$"
     },
     "row": "root not implicitly allowed",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "peer consumed input|refusal leaked global slot|intake caused effect"
   },
   {
     "id": "S1-X12",
@@ -862,7 +680,8 @@
       "run": "^TestServePeerBeforeFrameIntake$"
     },
     "row": "service UID not implicitly allowed",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "peer consumed input|refusal leaked global slot|intake caused effect"
   },
   {
     "id": "S1-K01",
@@ -874,7 +693,8 @@
       "run": "^TestLifetimeLock$"
     },
     "row": "singleton lock",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "duplicate lock admitted|lock replaced or deleted|bad lock accepted|lock repaired"
   },
   {
     "id": "S1-K03",
@@ -886,7 +706,8 @@
       "run": "^TestEndpointOwnership$"
     },
     "row": "identity scoped cleanup",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "foreign replacement cleanup passed|foreign data changed|live endpoint adopted|published socket"
   },
   {
     "id": "S1-K05",
@@ -898,7 +719,8 @@
       "run": "^TestPublicationIdentity$"
     },
     "row": "publication identity",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "publication identity accepted replacement:"
   },
   {
     "id": "S1-A25",
@@ -910,19 +732,8 @@
       "run": "^TestParseableStateFields$"
     },
     "row": "parseable state field S1-A25 S2-A09",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-A09",
-    "file": "internal/demolaunch/state_linux.go",
-    "find": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
-    "replace": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || false || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestParseableStateFields$"
-    },
-    "row": "parseable state field S1-A25 S2-A09",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "state field accepted:"
   },
   {
     "id": "S1-A26",
@@ -934,19 +745,8 @@
       "run": "^TestParseableStateFields$"
     },
     "row": "parseable state field S1-A26 S2-A10",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-A10",
-    "file": "internal/demolaunch/state_linux.go",
-    "find": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
-    "replace": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || false {\n\t\treturn attempt{}, ErrInvalid\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestParseableStateFields$"
-    },
-    "row": "parseable state field S1-A26 S2-A10",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "state field accepted:"
   },
   {
     "id": "S1-A27",
@@ -958,19 +758,8 @@
       "run": "^TestParseableStateFields$"
     },
     "row": "parseable state field S1-A27 S2-A11",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-A11",
-    "file": "internal/demolaunch/state_linux.go",
-    "find": "\t}\n\tif _, e := time.Parse(time.RFC3339Nano, a.Time); e != nil {\n\t\treturn attempt{}, ErrInvalid\n",
-    "replace": "\t}\n\tif _, e := time.Parse(time.RFC3339Nano, \"2026-01-01T00:00:00Z\"); e != nil {\n\t\treturn attempt{}, ErrInvalid\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestParseableStateFields$"
-    },
-    "row": "parseable state field S1-A27 S2-A11",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "state field accepted:"
   },
   {
     "id": "S1-A28",
@@ -982,19 +771,8 @@
       "run": "^TestParseableStateFields$"
     },
     "row": "parseable state field S1-A28 S2-A12",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-A12",
-    "file": "internal/demolaunch/state_linux.go",
-    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
-    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || false || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestParseableStateFields$"
-    },
-    "row": "parseable state field S1-A28 S2-A12",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "state field accepted:"
   },
   {
     "id": "S1-A29",
@@ -1006,19 +784,8 @@
       "run": "^TestParseableStateFields$"
     },
     "row": "parseable state field S1-A29 S2-A13",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-A13",
-    "file": "internal/demolaunch/state_linux.go",
-    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
-    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || false || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestParseableStateFields$"
-    },
-    "row": "parseable state field S1-A29 S2-A13",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "state field accepted:"
   },
   {
     "id": "S1-A30",
@@ -1030,19 +797,8 @@
       "run": "^TestParseableStateFields$"
     },
     "row": "parseable state field S1-A30 S2-A14",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-A14",
-    "file": "internal/demolaunch/state_linux.go",
-    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
-    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || false {\n\t\treturn stopIntent{}, ErrInvalid\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestParseableStateFields$"
-    },
-    "row": "parseable state field S1-A30 S2-A14",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "state field accepted:"
   },
   {
     "id": "S1-A31",
@@ -1054,19 +810,8 @@
       "run": "^TestParseableStateFields$"
     },
     "row": "parseable state field S1-A31 S2-A17",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-A17",
-    "file": "internal/demolaunch/state_linux.go",
-    "find": "\t}\n\tif _, e := time.Parse(time.RFC3339Nano, s.Time); e != nil {\n\t\treturn stopIntent{}, ErrInvalid\n",
-    "replace": "\t}\n\tif _, e := time.Parse(time.RFC3339Nano, \"2026-01-01T00:00:00Z\"); e != nil {\n\t\treturn stopIntent{}, ErrInvalid\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestParseableStateFields$"
-    },
-    "row": "parseable state field S1-A31 S2-A17",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "state field accepted:"
   },
   {
     "id": "S1-A32",
@@ -1078,19 +823,8 @@
       "run": "^TestParseableStateFields$"
     },
     "row": "parseable state field S1-A32 S2-A22",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-A22",
-    "file": "internal/demolaunch/state_linux.go",
-    "find": "\t\t\tsi, x := parseIntent(b)\n\t\t\tif x != nil || (at.ExecutionID != \"\" && si.ExecutionID != at.ExecutionID) {\n\t\t\t\treturn ErrInvalid\n",
-    "replace": "\t\t\tsi, x := parseIntent(b)\n\t\t\tif x != nil || false {\n\t\t\t\treturn ErrInvalid\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestParseableStateFields$"
-    },
-    "row": "parseable state field S1-A32 S2-A22",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "state field accepted:"
   },
   {
     "id": "S1-A33",
@@ -1102,19 +836,8 @@
       "run": "^TestParseableStateFields$"
     },
     "row": "parseable state field S1-A33 S2-A38",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-A38",
-    "file": "internal/demolaunch/state_linux.go",
-    "find": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
-    "replace": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || false || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestParseableStateFields$"
-    },
-    "row": "parseable state field S1-A33 S2-A38",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "state field accepted:"
   },
   {
     "id": "S1-A34b",
@@ -1126,19 +849,8 @@
       "run": "^TestParseableStateFields$"
     },
     "row": "parseable state field S1-A34b S2-A41",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-A41",
-    "file": "internal/demolaunch/state_linux.go",
-    "find": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
-    "replace": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || false {\n\t\t\t\treturn ErrInvalid\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestParseableStateFields$"
-    },
-    "row": "parseable state field S1-A34b S2-A41",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "state field accepted:"
   },
   {
     "id": "S2-P39",
@@ -1150,7 +862,8 @@
       "run": "^TestFormatBoundaries$"
     },
     "row": "generation lower bound",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "format boundary assertion"
   },
   {
     "id": "S2-P38",
@@ -1162,7 +875,8 @@
       "run": "^TestFormatBoundaries$"
     },
     "row": "account upper bound",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "format boundary assertion"
   },
   {
     "id": "S2-P15",
@@ -1174,7 +888,8 @@
       "run": "^TestFormatBoundaries$"
     },
     "row": "managed caller forbidden",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "format boundary assertion"
   },
   {
     "id": "S2-P13",
@@ -1186,7 +901,8 @@
       "run": "^TestConfigRosterBounds$"
     },
     "row": "managed service forbidden",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "configuration bounds assertion"
   },
   {
     "id": "S2-P17",
@@ -1198,7 +914,8 @@
       "run": "^TestPrincipalNumberBounds$"
     },
     "row": "principal inode precision",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "principal boundary assertion"
   },
   {
     "id": "S2-P21",
@@ -1210,7 +927,8 @@
       "run": "^TestFormatBoundaries$"
     },
     "row": "endpoint inode precision",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "format boundary assertion"
   },
   {
     "id": "S2-P44F",
@@ -1222,7 +940,8 @@
       "run": "^TestFormatBoundaries$"
     },
     "row": "ID format boundaries",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "format boundary assertion"
   },
   {
     "id": "S2-P29",
@@ -1234,7 +953,8 @@
       "run": "^TestFormatBoundaries$"
     },
     "row": "launch required plan",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "format boundary assertion"
   },
   {
     "id": "S2-P30",
@@ -1246,7 +966,8 @@
       "run": "^TestFormatBoundaries$"
     },
     "row": "stop forbids plan",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "format boundary assertion"
   },
   {
     "id": "S2-P31",
@@ -1258,7 +979,8 @@
       "run": "^TestFormatBoundaries$"
     },
     "row": "status exact members",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "format boundary assertion"
   },
   {
     "id": "S2-V19",
@@ -1267,10 +989,11 @@
     "replace": "\t}\n\tif err = runtime(c.commonConfig, c.Caller.UID, false); false && err != nil {\n\t\treturn \"\", err\n",
     "kills": {
       "package": "./internal/demolaunch",
-      "run": "^TestClientComposedGate$"
+      "run": "^TestClientComposedGate$/runtime-error$"
     },
     "row": "client runtime error",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "client composed refusal:"
   },
   {
     "id": "S2-V20",
@@ -1279,10 +1002,11 @@
     "replace": "\t}\n\tp:=c.Caller\n p.Ino--\n pin, err := principalPin(p)\n\tif err != nil {\n",
     "kills": {
       "package": "./internal/demolaunch",
-      "run": "^TestClientComposedGate$"
+      "run": "^TestClientComposedGate$/pin$"
     },
     "row": "client principal identity",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "client composed refusal:"
   },
   {
     "id": "S2-V24",
@@ -1291,46 +1015,11 @@
     "replace": "\t}\n\tif false && !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
     "kills": {
       "package": "./internal/demolaunch",
-      "run": "^TestClientComposedGate$"
+      "run": "^TestClientComposedGate$/socket-mode$"
     },
     "row": "client socket metadata",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-V25",
-    "file": "internal/demolaunch/service_linux.go",
-    "find": "\t}\n\tif !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
-    "replace": "\t}\n\tif false && !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestClientComposedGate$"
-    },
-    "row": "client socket metadata",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-V26",
-    "file": "internal/demolaunch/service_linux.go",
-    "find": "\t}\n\tif !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
-    "replace": "\t}\n\tif false && !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestClientComposedGate$"
-    },
-    "row": "client socket metadata",
-    "qualification": "intended, parent runs it"
-  },
-  {
-    "id": "S2-V27F",
-    "file": "internal/demolaunch/service_linux.go",
-    "find": "\t}\n\tif !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
-    "replace": "\t}\n\tif false && !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
-    "kills": {
-      "package": "./internal/demolaunch",
-      "run": "^TestClientComposedGate$"
-    },
-    "row": "client socket metadata",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "client composed refusal:"
   },
   {
     "id": "S2-V30",
@@ -1342,7 +1031,8 @@
       "run": "^TestKernelPeerAndSocketIdentity$"
     },
     "row": "client kernel peer expected UID",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "wrong peer accepted"
   },
   {
     "id": "R4-torn-refusal",
@@ -1354,19 +1044,21 @@
       "run": "^TestTornRecovery$"
     },
     "row": "torn records preserve startup",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "torn recovery assertion:|torn recovery status assertion:|want refused/|want unresolved/"
   },
   {
     "id": "R4-intent-gates-helper",
     "file": "internal/demolaunch/engine_linux.go",
-    "find": "\t\t\t_ = e.closeAdmission(\"stop_intent_uncertain\")\n\t\t}\n",
-    "replace": "\t\t\t_ = e.closeAdmission(\"stop_intent_uncertain\")\n e.mu.Unlock(); return response{State:\"unresolved\",Code:\"stop_intent_uncertain\",Closed:true}\n\t\t}\n",
+    "find": "callLatchErr = e.closeAdmission(\"stop_intent_uncertain\")",
+    "replace": "callLatchErr = e.closeAdmission(\"stop_intent_uncertain\"); e.mu.Unlock(); return refusal(\"stop_intent_uncertain\")",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestIntentDurabilityDoesNotGateStop$"
     },
     "row": "intent durability does not gate helper",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "want unresolved/processes_remain"
   },
   {
     "id": "S2-CB-V13+V14",
@@ -1378,7 +1070,8 @@
       "run": "^TestServePeerBeforeFrameIntake$"
     },
     "row": "pin before any byte",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "peer consumed input|refusal leaked global slot|intake caused effect"
   },
   {
     "id": "S2-A02F",
@@ -1390,7 +1083,8 @@
       "run": "^TestStateProtectionAndSyncOrder$"
     },
     "row": "state directory exact mode",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "not file then directory|exclusive state name reused:"
   },
   {
     "id": "S2-A06F",
@@ -1402,7 +1096,8 @@
       "run": "^TestStateProtectionAndSyncOrder$"
     },
     "row": "state file fsync",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "not file then directory|exclusive state name reused:"
   },
   {
     "id": "S2-L11",
@@ -1414,7 +1109,8 @@
       "run": "^TestMarkerFailureNoChild$"
     },
     "row": "attempt durability before child",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "want refused/marker_uncertain"
   },
   {
     "id": "S2-L25",
@@ -1426,7 +1122,8 @@
       "run": "^TestLaunchUnknown$"
     },
     "row": "unknown launch closes admission",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "closed no such file"
   },
   {
     "id": "S2-T38",
@@ -1438,7 +1135,8 @@
       "run": "^TestStopContinuationAndDurableReplay$"
     },
     "row": "persist closed stopped fact",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "stop continuation assertion:|stop replay assertion:"
   },
   {
     "id": "R4-checker-writefile",
@@ -1450,7 +1148,8 @@
       "run": "^TestStateMutationChecker$"
     },
     "row": "checker recognizes truncating calls",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "WriteFile"
   },
   {
     "id": "S2-V21",
@@ -1462,7 +1161,8 @@
       "run": "^TestClientComposedGate$"
     },
     "row": "client pin recheck",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "client composed refusal:"
   },
   {
     "id": "S2-V28",
@@ -1474,7 +1174,8 @@
       "run": "^TestClientComposedGate$"
     },
     "row": "client endpoint recheck",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "client composed refusal:"
   },
   {
     "id": "S2-V29",
@@ -1486,7 +1187,8 @@
       "run": "^TestClientComposedGate$"
     },
     "row": "client named socket recheck",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "client composed refusal:"
   },
   {
     "id": "S2-F30",
@@ -1498,7 +1200,8 @@
       "run": "^TestRuntimeIdentity$"
     },
     "row": "client excluded from service group",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "runtime identity assertion"
   },
   {
     "id": "S2-V12",
@@ -1510,7 +1213,8 @@
       "run": "^TestServePeerBeforeFrameIntake$"
     },
     "row": "real accept credential lookup wiring",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "peer consumed input|refusal leaked global slot|intake caused effect"
   },
   {
     "id": "R5-seal-noop",
@@ -1522,7 +1226,8 @@
       "run": "^TestComposedChildInheritance$"
     },
     "row": "supervisor inherited descriptor sealing",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "sealed reply=|unsealed reply=|child="
   },
   {
     "id": "R5-daemon-seal-call",
@@ -1534,6 +1239,761 @@
       "run": "^TestDaemonDescriptorSealWiring$"
     },
     "row": "Daemon seals first and refuses enumeration errors",
-    "qualification": "intended, parent runs it"
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "daemon must seal descriptors first and refuse errors"
+  },
+  {
+    "id": "latch-valid-read",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "if err = e.store.closedPresent(); err == nil {\n\t\te.closed = true",
+    "replace": "if err = e.store.closedPresent(); err == nil {\n\t\te.closed = false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestValidLatchStartup$"
+    },
+    "expect": "valid latch reopened",
+    "row": "latch-valid-read",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "marker-durable-latch",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "code := \"marker_uncertain\"\n\t\tif e.closeAdmission(code) != nil {",
+    "replace": "code := \"marker_uncertain\"\n\t\tif false {",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLatchRecovery$"
+    },
+    "expect": "closed no such file|restart latch|healed latch",
+    "row": "marker-durable-latch",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "idle-drainer",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "if errors.Is(err, os.ErrDeadlineExceeded) {\n\t\t\tcontinue",
+    "replace": "if errors.Is(err, os.ErrDeadlineExceeded) {\n\t\t\treturn",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestIdleDrainer$"
+    },
+    "expect": "idle child lost output|idle output incomplete",
+    "row": "idle-drainer",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "seal-fd-three",
+    "file": "internal/demolaunch/descriptors_linux.go",
+    "find": "fd > 2 && fd != walkFD",
+    "replace": "fd > 3 && fd != walkFD",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestSealAllDescriptors$"
+    },
+    "expect": "unsealed inherited descriptor",
+    "row": "seal-fd-three",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "seal-batches",
+    "file": "internal/demolaunch/descriptors_linux.go",
+    "find": "if err == io.EOF {",
+    "replace": "if true {",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestSealAllDescriptors$"
+    },
+    "expect": "unsealed inherited descriptor",
+    "row": "seal-batches",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "seal-high",
+    "file": "internal/demolaunch/descriptors_linux.go",
+    "find": "fd > 2 && fd != walkFD",
+    "replace": "fd > 2 && fd < 32 && fd != walkFD",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestSealAllDescriptors$"
+    },
+    "expect": "unsealed inherited descriptor",
+    "row": "seal-high",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "seal-high-sixty-four",
+    "file": "internal/demolaunch/descriptors_linux.go",
+    "find": "fd > 2 && fd != walkFD",
+    "replace": "fd > 2 && fd < 64 && fd != walkFD",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestSealAllDescriptors$"
+    },
+    "expect": "unsealed inherited descriptor",
+    "row": "seal-high-sixty-four",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "seal-open-error",
+    "file": "internal/demolaunch/descriptors_linux.go",
+    "find": "if err != nil {\n\t\treturn err",
+    "replace": "if err != nil {\n\t\treturn nil",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestSealEnumerationFailure$"
+    },
+    "expect": "descriptor enumeration failure accepted",
+    "row": "seal-open-error",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "seal-read-error",
+    "file": "internal/demolaunch/descriptors_linux.go",
+    "find": "if err != nil && err != io.EOF {\n\t\t\treturn err",
+    "replace": "if err != nil && err != io.EOF {\n\t\t\treturn nil",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestSealEnumerationFailure$"
+    },
+    "expect": "descriptor enumeration failure accepted",
+    "row": "seal-read-error",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "receipt-session",
+    "file": "internal/demolaunch/protocol.go",
+    "find": " || r.SessionID == 0",
+    "replace": "",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestReceiptContract$"
+    },
+    "expect": "receipt field accepted|receipt field promoted",
+    "row": "receipt-session",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "receipt-start",
+    "file": "internal/demolaunch/protocol.go",
+    "find": " || r.StartTime == 0",
+    "replace": "",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestReceiptContract$"
+    },
+    "expect": "receipt field accepted|receipt field promoted",
+    "row": "receipt-start",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "receipt-boot-upper",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "`^[0-9a-f]{8}-",
+    "replace": "`^[0-9a-fA-F]{8}-",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestReceiptContract$"
+    },
+    "expect": "receipt field accepted|receipt field promoted",
+    "row": "receipt-boot-upper",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "receipt-boot-short",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "[0-9a-f]{12}$`",
+    "replace": "[0-9a-f]{11,12}$`",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestReceiptContract$"
+    },
+    "expect": "receipt field accepted|receipt field promoted",
+    "row": "receipt-boot-short",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "receipt-boot-any",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "!regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`).MatchString(r.BootID)",
+    "replace": "r.BootID == \"\"",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestReceiptContract$"
+    },
+    "expect": "receipt field accepted|receipt field promoted",
+    "row": "receipt-boot-any",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "state-read-metadata",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "if e != nil || !stateMetadata(id, s.uid) {",
+    "replace": "if e != nil || (false && !stateMetadata(id, s.uid)) {",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStartupRecordMetadata$"
+    },
+    "expect": "startup metadata guard",
+    "row": "state-read-metadata",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "state-read-limit",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "if len(b) > 4096 {",
+    "replace": "if false && len(b) > 4096 {",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStartupRecordMetadata$"
+    },
+    "expect": "startup metadata guard",
+    "row": "state-read-limit",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "state-log-limit",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "if id.size > logCap {",
+    "replace": "if false && id.size > logCap {",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStartupRecordMetadata$"
+    },
+    "expect": "startup metadata guard",
+    "row": "state-log-limit",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "helper-pipe-wait",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "for _, done := range []chan struct{}{ch.done, ch.outputDone} {",
+    "replace": "for _, done := range []chan struct{}{ch.done} {",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopWaitsForPipes$"
+    },
+    "expect": "helper pipe holder became absence",
+    "row": "helper-pipe-wait",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "helper-empty-state",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": " || !validID(state)",
+    "replace": "",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestHelperMemberSets$"
+    },
+    "expect": "helper member accepted",
+    "row": "helper-empty-state",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "client-peer-gate",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "if err = verifyPeer(f, peerExpected); err != nil {",
+    "replace": "if err = verifyPeer(f, peerExpected); false {",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientKernelPeerGate$"
+    },
+    "expect": "client kernel peer refusal|client sent bytes",
+    "row": "client-peer-gate",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "stop-shutdown",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "case <-e.ctx.Done():\n\t\t\treturn e.unresolved(\"shutdown\", s)",
+    "replace": "case <-e.ctx.Done():\n\t\t\treturn e.unresolved(\"stop_timeout\", s)",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopShutdown$"
+    },
+    "expect": "stop ignored shutdown",
+    "row": "stop-shutdown",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "connect-private-group",
+    "file": "internal/demolaunch/config.go",
+    "find": " && c.ConnectGID != c.ServiceGID",
+    "replace": "",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestConfigRosterBounds$"
+    },
+    "expect": "configuration bounds assertion",
+    "row": "connect-private-group",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "launch-delivery",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "if err != nil {\n\t\treturn e.unknown(\"launcher_io\")",
+    "replace": "if err != nil && ch == nil {\n\t\treturn e.unknown(\"launcher_io\")",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLaunchDeliveryFailure$"
+    },
+    "expect": "unread launcher stdin ignored",
+    "row": "launch-delivery",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "isolation-child-runner",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "c := run(path)",
+    "replace": "c := fixedRunner(path)",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestFixtureRunnerIsolation$"
+    },
+    "expect": "forbidden runner reference",
+    "row": "isolation-child-runner",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "isolation-fixture-runner",
+    "file": "internal/demolaunch/continuation_linux_test.go",
+    "find": "h := fixture(t, \"idle-output\")",
+    "replace": "h := fixture(t, \"idle-output\"); h.e.run = fixedRunner",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestFixtureRunnerIsolation$"
+    },
+    "expect": "forbidden runner reference",
+    "row": "isolation-fixture-runner",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "helper-delivery-residue",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "if err != nil {\n\t\treturn e.unresolved(\"helper_io\", s)",
+    "replace": "if err != nil && ch == nil {\n\t\treturn e.unresolved(\"helper_io\", s)",
+    "accepted_residue": "The bounded helper document fits within a pipe buffer; closing unread stdin cannot deterministically force EPIPE after Start without a new delivery seam.",
+    "row": "helper-delivery-residue"
+  },
+  {
+    "id": "helper-capture-error-residue",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "if err != nil || overflow {",
+    "replace": "if overflow {",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "helper-capture-error-residue"
+  },
+  {
+    "id": "helper-code-charset-residue",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": " || !validID(code)",
+    "replace": " || code == \"\"",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "helper-code-charset-residue"
+  },
+  {
+    "id": "helper-message-size-residue",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": " || len(msg) > 1024",
+    "replace": "",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "helper-message-size-residue"
+  },
+  {
+    "id": "state-enumeration-error-residue",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "if e != nil && e != io.EOF {\n\t\treturn nil, e",
+    "replace": "if e != nil && e != io.EOF {\n\t\treturn nil, nil",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "state-enumeration-error-residue"
+  },
+  {
+    "id": "state-enumeration-limit-residue",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "if len(entries) >= 256 {",
+    "replace": "if false && len(entries) >= 256 {",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "state-enumeration-limit-residue"
+  },
+  {
+    "id": "torn-latch-status-residue",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "e.torn = append(e.torn, n)\n\t\t\t\te.closed = true",
+    "replace": "e.closed = true",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "torn-latch-status-residue"
+  },
+  {
+    "id": "torn-attempt-identity-residue",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "at.ExecutionID = si.ExecutionID",
+    "replace": "at.ExecutionID = \"\"",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "torn-attempt-identity-residue"
+  },
+  {
+    "id": "restored-latch-error-residue",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "_ = e.closeAdmission(\"restored_closed_stop\")",
+    "replace": "_ = error(nil)",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "restored-latch-error-residue"
+  },
+  {
+    "id": "orphan-torn-residue",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "if !found && !torn[n] {",
+    "replace": "if !found {",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "orphan-torn-residue"
+  },
+  {
+    "id": "loss-unreadable-residue",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "loss = append(loss, stream+\":evidence_unavailable\")",
+    "replace": "loss = append(loss, stream+\":output_lost\")",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "loss-unreadable-residue"
+  },
+  {
+    "id": "loss-live-residue",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "if _, _, err := c.snapshot(); err != nil {",
+    "replace": "if _, _, err := c.snapshot(); false {",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "loss-live-residue"
+  },
+  {
+    "id": "latch-existing-metadata-residue",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "err = e.store.closedPresent()\n\t\tif err == nil {",
+    "replace": "err = nil\n\t\tif err == nil {",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "latch-existing-metadata-residue"
+  },
+  {
+    "id": "attempt-digest-residue",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "Digest: hex.EncodeToString(digest[:])",
+    "replace": "Digest: hex.EncodeToString(make([]byte, len(digest)))",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "attempt-digest-residue"
+  },
+  {
+    "id": "log-create-sync-residue",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "if err = e.store.sync(f); err == nil {",
+    "replace": "if err = error(nil); err == nil {",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "log-create-sync-residue"
+  },
+  {
+    "id": "truncate-error-residue",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "c.err = errors.Join(c.err, c.onTruncate())",
+    "replace": "_ = c.onTruncate()",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "truncate-error-residue"
+  },
+  {
+    "id": "wait-error-residue",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "ch.err = e\n\t\t\t\treturn",
+    "replace": "ch.err = nil\n\t\t\t\treturn",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "wait-error-residue"
+  },
+  {
+    "id": "log-final-sync-residue",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "c.err = errors.Join(c.err, c.file.Sync(), c.file.Close())",
+    "replace": "_ = errors.Join(c.err, c.file.Sync(), c.file.Close())",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "log-final-sync-residue"
+  },
+  {
+    "id": "loss-read-error-residue",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "c.err = err\n\t\t\t\tc.recordLoss()",
+    "replace": "c.err = err\n\t\t\t\t// loss record omitted",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "loss-read-error-residue"
+  },
+  {
+    "id": "received-close-on-exec-residue",
+    "file": "internal/demolaunch/socket_linux.go",
+    "find": "syscall.MSG_CMSG_CLOEXEC|syscall.MSG_DONTWAIT",
+    "replace": "syscall.MSG_DONTWAIT",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "received-close-on-exec-residue"
+  },
+  {
+    "id": "json-depth-residue",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "if depth > 8 {",
+    "replace": "if depth > 80 {",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "json-depth-residue"
+  },
+  {
+    "id": "path-quote-residue",
+    "file": "internal/demolaunch/protocol.go",
+    "find": " || c == '\"'",
+    "replace": "",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "path-quote-residue"
+  },
+  {
+    "id": "execution-format-residue",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "`^EX-[0-9a-f]{32}$`",
+    "replace": "`^EX-[A-Za-z0-9]{32}$`",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "execution-format-residue"
+  },
+  {
+    "id": "client-members-residue",
+    "file": "internal/demolaunch/config.go",
+    "find": "if _, e = object(m[\"caller\"], 1024, \"dev dir ino uid\", \"\"); e != nil {\n\t\treturn clientConfig{}, ErrConfig",
+    "replace": "if _, e = object(m[\"caller\"], 1024, \"dev dir ino uid\", \"\"); false {\n\t\treturn clientConfig{}, ErrConfig",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "client-members-residue"
+  },
+  {
+    "id": "roster-members-residue",
+    "file": "internal/demolaunch/config.go",
+    "find": "e != nil || typed(b, &a) != nil",
+    "replace": "false && e != nil || typed(b, &a) != nil",
+    "accepted_residue": "Roster schema reconciliation is deferred; the exact-key narrowing remains an explicit coverage residue. No roster implementation change.",
+    "row": "roster-members-residue"
+  },
+  {
+    "id": "state-owner-residue",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "return id.uid == uid && id.mode&syscall.S_IFMT",
+    "replace": "return (id.uid == uid || true) && id.mode&syscall.S_IFMT",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "state-owner-residue"
+  },
+  {
+    "id": "config-version-residue",
+    "file": "internal/demolaunch/config.go",
+    "find": "c.Version == 1 &&",
+    "replace": "(c.Version == 1 || true) &&",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "config-version-residue"
+  },
+  {
+    "id": "caller-path-residue",
+    "file": "internal/demolaunch/config.go",
+    "find": " && validPath(p.Dir, 512)",
+    "replace": "",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "caller-path-residue"
+  },
+  {
+    "id": "client-caller-residue",
+    "file": "internal/demolaunch/config.go",
+    "find": "!c.Caller.valid(c.ServiceUID) {\n\t\treturn clientConfig{}, ErrConfig",
+    "replace": "false && !c.Caller.valid(c.ServiceUID) {\n\t\treturn clientConfig{}, ErrConfig",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "client-caller-residue"
+  },
+  {
+    "id": "launch-members-residue",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "len(m) != 4 || m[\"plan\"] == nil",
+    "replace": "len(m) < 4 || m[\"plan\"] == nil",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "launch-members-residue"
+  },
+  {
+    "id": "reply-bound-residue",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "object(b, 16384, \"state closed\"",
+    "replace": "object(b, 131072, \"state closed\"",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "reply-bound-residue"
+  },
+  {
+    "id": "protected-intake-residue",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "io.ReadAll(io.LimitReader(r, int64(limit+1)))",
+    "replace": "io.ReadAll(r)",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "protected-intake-residue"
+  },
+  {
+    "id": "ancillary-truncation-residue",
+    "file": "internal/demolaunch/socket_linux.go",
+    "find": "flags & ^syscall.MSG_CMSG_CLOEXEC != 0",
+    "replace": "flags & ^(syscall.MSG_CMSG_CLOEXEC|syscall.MSG_CTRUNC) != 0",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "ancillary-truncation-residue"
+  },
+  {
+    "id": "lock-links-residue",
+    "file": "internal/demolaunch/endpoint_linux.go",
+    "find": " || s.links != 1 || !s.attrs(named)",
+    "replace": " || !s.attrs(named)",
+    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "row": "lock-links-residue"
+  },
+  {
+    "id": "state-link",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": " && id.links == 1",
+    "replace": "",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStartupRecordMetadata$"
+    },
+    "expect": "startup metadata guard",
+    "row": "state-link"
+  },
+  {
+    "id": "state-oversize-torn",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "if len(b) > 4096 {\n\t\treturn nil, ErrLimit",
+    "replace": "if len(b) > 4096 {\n\t\treturn b, nil",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStartupRecordMetadata$"
+    },
+    "expect": "startup metadata guard",
+    "row": "state-oversize-torn"
+  },
+  {
+    "id": "intent-durability-time",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "s.deadline = time.Time{}\n\t\t\tcallLatchErr = e.closeAdmission(\"stop_intent_uncertain\")",
+    "replace": "callLatchErr = e.closeAdmission(\"stop_intent_uncertain\")",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestMissingIntentContinuation$"
+    },
+    "expect": "missing intent claimed timing",
+    "row": "intent-durability-time"
+  },
+  {
+    "id": "intent-missing-restart",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "errors.Is(err, os.ErrNotExist) || (err == nil && torn[\"stop-\"+a.Generation])",
+    "replace": "err == nil && torn[\"stop-\"+a.Generation]",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestMissingIntentContinuation$"
+    },
+    "expect": "unknown intent guess not forwarded|want unresolved/request_id_conflict|restart claimed timing|unexpected file",
+    "row": "intent-missing-restart"
+  },
+  {
+    "id": "intent-guess-pinned",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "s != nil && e.tornIntents[r.Account] && s.terminal == nil && !s.active",
+    "replace": "false && s != nil && e.tornIntents[r.Account] && s.terminal == nil && !s.active",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestMissingIntentContinuation$"
+    },
+    "expect": "want absent/",
+    "row": "intent-guess-pinned"
+  },
+  {
+    "id": "startup-latch-unavailable",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "_ = e.closeAdmission(\"startup_unstopped\")",
+    "replace": "if err = e.closeAdmission(\"startup_unstopped\"); err != nil { return err }",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLatchRecovery$"
+    },
+    "expect": "startup latch failure removed stop",
+    "row": "startup-latch-unavailable"
+  },
+  {
+    "id": "request-latch-retry",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\te.mu.Lock()\n\tif e.closed && !e.latchWritten {",
+    "replace": "\te.mu.Lock()\n\tif false && e.closed && !e.latchWritten {",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLatchRecovery$"
+    },
+    "expect": "healed latch not retried",
+    "row": "request-latch-retry"
+  },
+  {
+    "id": "latch-failure-sticky",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "if err == nil {\n\t\te.latchWritten = true",
+    "replace": "if true {\n\t\te.latchWritten = true",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLatchRecovery$"
+    },
+    "expect": "status hid latch uncertainty|startup latch failure",
+    "row": "latch-failure-sticky"
+  },
+  {
+    "id": "unknown-latch-error",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "func (e *engine) unknown(code string) response {\n\te.mu.Lock()\n\tdefer e.mu.Unlock()\n\tif err := e.closeAdmission(code); err != nil {\n\t\tcode = \"latch_uncertain\"",
+    "replace": "func (e *engine) unknown(code string) response {\n\te.mu.Lock()\n\tdefer e.mu.Unlock()\n\tif err := e.closeAdmission(code); false && err != nil {\n\t\tcode = \"latch_uncertain\"",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLatchRecovery$"
+    },
+    "expect": "want unknown/latch_uncertain",
+    "row": "unknown-latch-error"
+  },
+  {
+    "id": "stopped-latch-error",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "if latchErr != nil {\n\t\tresult.Code = \"latch_uncertain\"",
+    "replace": "if false && latchErr != nil {\n\t\tresult.Code = \"latch_uncertain\"",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLatchRecovery$"
+    },
+    "expect": "intent uncertainty hidden|startup stop unavailable",
+    "row": "stopped-latch-error"
+  },
+  {
+    "id": "unknown-intent-stopped-refusal",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "if e.tornIntents[name] {\n\t\t\t\tcontinue",
+    "replace": "if e.tornIntents[name] {\n\t\t\t\treturn ErrInvalid; continue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestUnknownIntentStoppedStartup$"
+    },
+    "expect": "closed fact blocked startup",
+    "row": "closed stopped fact without intact intent"
+  },
+  {
+    "id": "startup-torn-latch-unavailable",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "_ = e.closeAdmission(\"torn_state\")",
+    "replace": "if err := e.closeAdmission(\"torn_state\"); err != nil { return err }",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLatchRecovery$/startup-torn$"
+    },
+    "expect": "startup latch failure removed stop",
+    "row": "torn state keeps stop reachable on latch failure"
+  },
+  {
+    "id": "latch-existing-sync",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "err = e.store.sync(f)\n\t\t\t\tf.Close()",
+    "replace": "err = nil\n\t\t\t\tf.Close()",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLatchRetryExistingName$"
+    },
+    "expect": "existing latch retry not synced",
+    "row": "Retry syncs a retained latch inode before claiming durability",
+    "qualification": "Requires execution on an isolated Linux host."
   }
 ]

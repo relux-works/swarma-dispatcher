@@ -16,7 +16,8 @@ contracts, not a promotion of this cut.
 | §4.5 effect IDs and journal; `spec/journal.md` | No journal; no replay or reconciliation |
 | `spec/m0-launch.md` committed-start A | Not implemented; marker is a stand-in, not a claim of A |
 | §§3.1–3.4 grants, M0 protected policy | None; the caller is a pinned peer UID, which is not authority |
-| PR70 §6 evidence loss | An intact `.lost` records loss without closing admission. A torn loss record closes admission at startup. |
+| Demo launch call contract §6, evidence loss | An intact `.lost` records loss without closing admission. A torn loss record closes admission at startup. |
+| Demo launch call contract §6 and demo acceptance AC14, crash/reboot | If every attempt has a durable stopped record and no latch exists, restart permits the next generation. The demo does not latch every crash. |
 | Capacity reservation | None; sequential by construction |
 | R-WATCH, NETBIND, R-TRANSFER | Excluded; workspace preparation belongs to the operator |
 
@@ -113,7 +114,9 @@ Connection intake/write stages have two-second deadlines under a 55-second
 session ceiling. The client allows the operation reply the remaining session
 budget; launch receipt observation is at most 10 seconds, whole stop at most 45
 seconds per call. A late or restarted stop continuation has a fresh bounded call
-wait, but retains the original effect deadline and can never report timely.
+wait, but never reports timely. `timely` requires that this process created and
+synced the intent before issuing the helper and met the original in-process
+deadline; it is decided before syncing the stopped record.
 Partial progress never resets a stage deadline.
 
 ## Child boundary and observations
@@ -221,7 +224,7 @@ with its non-timely timing. This is not a deliberate contract departure.
 | Existing attempt | `refused/attempt_exists` | Original marker; no child |
 | Closed / concurrent / previous unresolved | `refused/admission_closed`, `launch_in_flight`, `attempt_unstopped` | No new child |
 | Previous sudo or pipes still active | `refused/child_unreaped` or `output_pending` | Original observation only |
-| Marker create/sync uncertain | `refused/marker_uncertain` | Never call sudo; close admission; keep all partial files |
+| Marker create/sync uncertain | `refused/marker_uncertain`, or `refused/latch_uncertain` if the latch also fails | Never call sudo; close admission in memory; keep all partial files |
 | Log setup / delivery failure | `unknown/log_unavailable` or `launcher_io` | Attempt and closed latch |
 | Receipt timeout / mismatch / exit without receipt | `unknown/receipt_timeout`, `receipt_mismatch`, `launcher_exit` | Attempt and closed latch; no signal |
 | Torn attempt without recoverable execution ID | `refused/attempt_identity_unknown` | Generation remains spent; do not invent helper arguments |
@@ -229,7 +232,7 @@ with its non-timely timing. This is not a deliberate contract departure.
 | Shutdown before launch admission | `refused/shutdown` | No marker, child or new latch |
 | No attempt to stop | `refused/attempt_missing` | Never invent absence |
 | Stop argument conflict / active stop | `refused/stop_conflict` or `stop_in_flight` | Original intent and deadline |
-| Stop intent durability uncertain | Continue helper; result timing uses the original in-process deadline or `unknown` after restart | Close admission with reason `stop_intent_uncertain`; preserve memory arguments and partial files |
+| Stop intent durability uncertain | Continue helper with timing `unknown`; include `latch_uncertain` if latch persistence fails | Close admission; this process retains original arguments. After restart missing and torn intents are unknown; never persist guessed arguments |
 | Stopped-record uncertainty | `unresolved/stopped_uncertain` | Close admission; keep partial files; never claim absence |
 | Nonzero exit / malformed result / remaining processes | `unresolved/helper_exit`, `helper_result_invalid`, `processes_remain` | Closed; no stopped record |
 | Helper `ok:false` | `unresolved`, helper code | Closed; no stopped record |
@@ -237,8 +240,8 @@ with its non-timely timing. This is not a deliberate contract departure.
 | Late or restarted continuation | Helper result (`absent` or `unresolved`) with `missed` or `unknown` | Original request/arguments/deadline; closed remains closed |
 | Verified absence | `absent` | Exclusive `stopped-<generation>` binds execution; late absence leaves admission closed |
 | Latch persistence fails | `latch_uncertain` where applicable | In-memory closed; unresolved attempt or stopped record carrying `closed:true` preserves the fail-closed restart obligation |
-| Crash/reboot with unstopped attempt | Startup writes `closed` | No recovery or second launch |
-| Unknown entry, parseable corrupt/orphan state, stopped without any intent, wrong log type/mode, parseable wrong truncation/loss content | Startup refuses | No repair |
+| Crash/reboot with unstopped attempt | Startup attempts `closed`, but remains available even if persistence fails | Admission closed in memory; attempt carries the obligation; stop remains reachable |
+| Unknown entry, parseable corrupt/orphan state, invalid stopped fact without intact intent, wrong log type/mode, parseable wrong truncation/loss content | Startup refuses | No repair |
 | Torn known state record (zero length or invalid JSON) | Startup remains available with admission closed; `status.torn` lists names | No repair, no invented stopped fact; stop continues where execution identity is known |
 | Protected garbage or empty `closed` content | Startup remains closed | The protected inode is the latch; content is not parsed; stop remains available |
 | Internal launcher/helper request bound | `unknown/launcher_request_limit` or `unresolved/helper_request_limit` | Closed; attempt/intent retained; unreachable under current valid input bounds |
@@ -247,7 +250,13 @@ with its non-timely timing. This is not a deliberate contract departure.
 | Detected launch reply failure after child call | No deliverable reply; latch reason `launch_reply_lost` | Closed; attempt retained |
 | Capture error after receipt reply | Status `output_loss`, with durable `.lost` where storage permits | Keep draining; no retrospective readiness claim |
 
-`closed` is irreversible. Stop temporarily excludes forward admission before
+A durable `closed` inode is irreversible. While closed in memory without a durable
+latch, every request first retries the exclusive latch create once. Status reports
+`code:"latch_uncertain"` until persistence succeeds. A pre-name marker failure
+combined with a failed latch can leave no evidence at all: restart can reopen
+admission in that sole case. No launcher was called, so no generation effect is
+duplicated. A retained attempt or closed stopped fact otherwise carries the
+restart obligation even when the latch cannot be saved. Stop temporarily excludes forward admission before
 calling the helper; a failed/unresolved stop persists the latch. A successful
 first stop allows the next roster generation after prior child resources finish.
 This reads the sequential-admission rule literally; it does not clear a
@@ -269,28 +278,45 @@ fields still refuse startup. Protected `closed` content is always a latch,
 including garbage. Ownership/type/mode/link violations and size-limit violations
 remain startup refusals. No recovery path overwrites, removes or renames a file.
 
-Failure to persist a stop intent does not prevent the helper call. In-process
-retries use the arguments held in memory and the original monotonic deadline.
-After restart, a torn intent has no trusted original arguments: accept the retry's
-own valid arguments, report timing `unknown`, and rely on the helper's request-ID
-handling. An intact intent retains its arguments. A durable completion without
-recoverable original arguments cannot be replayed as the same request. A later
-absence still requires creation and fsync of `stopped-`; an occupied torn name
-therefore reports `stopped_uncertain` rather than being repaired. A torn attempt
-with no intact intent has no execution ID: status and other accounts' stop remain
-available, while its stop returns `attempt_identity_unknown`.
+Failure to persist a stop intent does not prevent the helper call. This process
+retains its original arguments, but timing is `unknown` unless the intent was
+created and synced before the helper call and the original deadline was met.
+An intent-create latch error is reported as `latch_uncertain`, including on absence.
+
+Every attempt loaded at startup without an intact intent, missing or torn, has
+unknown original arguments and time. Never create a new intent for it and never
+start a fresh effect deadline. Forward each valid guess to the helper, which owns
+request-ID handling; only the per-call wait budget is fresh. Failed/refused or
+unresolved guesses do not pin arguments after the tracked child and both pipes
+finish. At most one helper remains in flight in this process. An `absent` guess
+is replayed for the same arguments in-process, and changed arguments then get
+`stop_conflict`. An intact intent instead retains its arguments across restart,
+with timing `unknown` until a recorded terminal result is replayed.
+
+A parseable stopped record with missing or torn intent is accepted only with
+`closed:true` and non-`timely` timing. It is a closed fact, not a replayable request.
+Admission stays closed and later stops still call the helper; the occupied stopped
+name produces `stopped_uncertain`. Every absence requires a newly durable stopped
+record; no occupied or torn record is repaired. A torn attempt with no intact
+intent has no execution ID, so its stop returns `attempt_identity_unknown` while
+status and other accounts' stops remain available.
 
 Restart does not wait out an earlier helper. The helper **must safely handle a
 same-effect `exec.stop` while an earlier invocation remains alive**, including
-identical request IDs. Its request-ID scope is the caller; IDs do not authorize
+identical request IDs. Request-ID scope across generations is deferred to the roster follow-up; IDs do not authorize
 new effects or changed arguments. A helper descendant must close inherited
 stdout/stderr: retaining a pipe produces `stop_timeout`, followed in-process by
 `stop_in_flight` until the pipe closes. These are requirements for the separate
 helper owner, not behavior qualified by the fake child.
 
 Cancellation before the launch marker is a refusal without effects. Cancellation
-observed during receipt observation returns `unknown/shutdown`, including the
+after the marker can still issue one launcher; its reply is `unknown/shutdown`
+and admission is latched. Cancellation observed during receipt observation returns `unknown/shutdown`, including the
 durable latch reason; it is not evidence that a live child exited.
+
+The helper fields `stopped_at`, `signalled` and `killed` are validated but not
+passed through to replies or stopped records. A lost stop reply does not add a
+latch: the durable result and exact-argument replay preserve safety.
 
 ## Test evidence boundary
 

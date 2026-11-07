@@ -21,27 +21,25 @@ import (
 	"time"
 )
 
-// The AST control forbids production constructors anywhere in fixture code
-// except the named inspection test, which never invokes its runner.
+// Identifier inspection covers all package declarations, including fixtures.
+// It prevents direct fixed-runner references outside the three inspected sites;
+// it is a source guard, not a sandbox against arbitrary hostile code.
 func TestFixtureRunnerIsolation(t *testing.T) {
-	files, err := filepath.Glob("*_test.go")
+	files, err := filepath.Glob("*.go")
 	must(t, err)
 	for _, name := range files {
 		f, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
 		must(t, err)
 		for _, decl := range f.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok {
-				continue
-			}
-			ast.Inspect(fn, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
+			fn, _ := decl.(*ast.FuncDecl)
+			allowed := fn != nil && ((name == "runner_linux.go" && fn.Name.Name == "fixedRunner") || (name == "engine_linux.go" && fn.Name.Name == "newEngine") || (name == "safe_engine_linux_test.go" && fn.Name.Name == "TestProductionDefaults"))
+			ast.Inspect(decl, func(n ast.Node) bool {
+				id, ok := n.(*ast.Ident)
+				if ok && id.Name == "fixedRunner" && !allowed {
+					t.Errorf("forbidden runner reference in %s", name)
 				}
-				id, ok := call.Fun.(*ast.Ident)
-				if ok && id.Name == "newEngine" && (name != "safe_engine_linux_test.go" || fn.Name.Name != "TestProductionDefaults") {
-					t.Errorf("production constructor in %s:%s", name, fn.Name.Name)
+				if ok && id.Name == "newEngine" && strings.HasSuffix(name, "_test.go") && !allowed {
+					t.Errorf("production constructor in %s", name)
 				}
 				return true
 			})
@@ -116,7 +114,7 @@ func TestShutdownLaunchClassification(t *testing.T) {
 			case "before":
 				assertState(t, r, "refused", "shutdown")
 				if h.calls.Load() != 0 || r.Closed {
-					t.Fatal(r)
+					t.Fatalf("shutdown classification assertion: %+v", r)
 				}
 				absentFile(t, h, "attempt-"+gen)
 				absentFile(t, h, "closed")
@@ -163,7 +161,7 @@ func TestTornRecovery(t *testing.T) {
 				must(t, h.e.store.create(name, []byte(payload)))
 				e := rebuild(t, h)
 				if !e.closed || e.stopped["demo"] || !reflect.DeepEqual(e.status("demo").Torn, []string{name}) {
-					t.Fatal(e.status("demo"))
+					t.Fatalf("torn recovery status assertion: %+v", e.status("demo"))
 				}
 				assertState(t, e.handle(launchBytes("demo")), "refused", "attempt_exists")
 				if suffix == "attempt-" {
@@ -176,7 +174,7 @@ func TestTornRecovery(t *testing.T) {
 						assertState(t, r, "absent", "")
 					}
 					if suffix == "stop-" && r.Timing != "unknown" {
-						t.Fatal(r)
+						t.Fatalf("torn recovery assertion: %+v", r)
 					}
 				}
 				if string(fileBytes(t, h, name)) != payload {
@@ -196,7 +194,7 @@ func TestTornRecovery(t *testing.T) {
 }
 
 // An exclusive torn intent cannot block the helper. Same-process retries retain
-// arguments and clock; a restart accepts its valid retry with unknown timing.
+// arguments with unknown timing; a restart accepts a valid guessed retry.
 func TestIntentDurabilityDoesNotGateStop(t *testing.T) {
 	h := fixture(t, "good")
 	assertState(t, h.e.handle(launchBytes("demo")), "receipt-seen", "")
@@ -332,7 +330,7 @@ func TestAncestorInitialBits(t *testing.T) {
 				d.close()
 			}
 			if !errors.Is(err, ErrIdentity) {
-				t.Fatal(mode, err)
+				t.Fatalf("ancestor writable mode accepted: %v %v", mode, err)
 			}
 		}
 	}

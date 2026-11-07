@@ -53,12 +53,12 @@ func TestParseableStateFields(t *testing.T) {
 			}
 			if tc.record == "attempt" {
 				if _, err := parseAttempt([]byte(docs["attempt"])); !errors.Is(err, ErrInvalid) {
-					t.Fatal("attempt parser", tc.name, err)
+					t.Fatalf("state field accepted: attempt %s %v", tc.name, err)
 				}
 			}
 			if tc.record == "stop" && tc.name != "binding" {
 				if _, err := parseIntent([]byte(docs["stop"])); !errors.Is(err, ErrInvalid) {
-					t.Fatal("intent parser", tc.name, err)
+					t.Fatalf("state field accepted: intent %s %v", tc.name, err)
 				}
 			}
 			before := directoryBytes(t, filepath.Join(h.root, "state"))
@@ -66,7 +66,7 @@ func TestParseableStateFields(t *testing.T) {
 			if tc.name == "valid" {
 				must(t, err)
 			} else if !errors.Is(err, ErrInvalid) {
-				t.Fatal(tc.name, err)
+				t.Fatalf("state field accepted: %s %v", tc.name, err)
 			}
 			for n, b := range before {
 				if string(fileBytes(t, h, n)) != b {
@@ -82,6 +82,11 @@ func TestParseableStateFields(t *testing.T) {
 func TestDemoFrameBoundsAndBudgets(t *testing.T) {
 	for _, size := range []uint32{0, 1, 131072, 131073} {
 		t.Run(jsonNumber(int(size)), func(t *testing.T) {
+			defer func() {
+				if p := recover(); p != nil {
+					t.Fatalf("frame bound panicked instead of refusing: %v", p)
+				}
+			}()
 			a, b := socketPair(t)
 			w := testWire(t, b)
 			sent := make(chan error, 1)
@@ -98,16 +103,16 @@ func TestDemoFrameBoundsAndBudgets(t *testing.T) {
 			switch size {
 			case 0:
 				if !errors.Is(err, frame.ErrEmptyFrame) {
-					t.Fatal(err)
+					t.Fatalf("frame bound refusal: %v", err)
 				}
 			case 131073:
 				if !errors.Is(err, frame.ErrFrameTooLarge) {
-					t.Fatal(err)
+					t.Fatalf("frame bound refusal: %v", err)
 				}
 			default:
 				must(t, err)
 				if len(got) != int(size) {
-					t.Fatal(len(got))
+					t.Fatalf("frame payload size: %d", len(got))
 				}
 			}
 			must(t, <-sent)
@@ -172,7 +177,9 @@ func TestClientReplyValidation(t *testing.T) {
 			}()
 			reply, err := clientExchange(a, time.Now(), []byte(`{"op":"demo.status","account":"demo"}`))
 			if kind == "valid" || kind == "slow" {
-				must(t, err)
+				if err != nil {
+					t.Fatalf("client valid reply failed: %v", err)
+				}
 				if reply != `{"state":"facts","closed":false}` {
 					t.Fatal(reply)
 				}
@@ -295,7 +302,7 @@ func TestClientComposedGate(t *testing.T) {
 					want = ErrConfig
 				}
 				if !errors.Is(err, want) || reply != "" {
-					t.Fatal(reply, err)
+					t.Fatalf("client composed refusal: variant=%s reply=%q err=%v", variant, reply, err)
 				}
 			}
 		})

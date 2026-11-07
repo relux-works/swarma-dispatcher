@@ -36,9 +36,11 @@ func TestReceiptFileGuards(t *testing.T) {
 				must(t, syscall.Mkfifo(name, 0644))
 			case "symlink":
 				must(t, os.WriteFile(filepath.Join(dir, "target"), body, 0644))
+				must(t, os.Chmod(filepath.Join(dir, "target"), 0644))
 				must(t, os.Symlink("target", name))
 			default:
 				must(t, os.WriteFile(name, body, 0644))
+				must(t, os.Chmod(name, 0644))
 			}
 			switch variant {
 			case "owner":
@@ -51,6 +53,7 @@ func TestReceiptFileGuards(t *testing.T) {
 				must(t, os.Link(name, filepath.Join(dir, "alias")))
 			case "oversize":
 				must(t, os.WriteFile(name, bytes.Repeat([]byte{'x'}, 4097), 0644))
+				must(t, os.Chmod(name, 0644))
 			}
 			b, err := h.e.receiptBytes(h.e.accounts["demo"], id)
 			if variant == "valid" {
@@ -194,7 +197,7 @@ func TestStopContinuationAndDurableReplay(t *testing.T) {
 			r := e.handle(stopBytes(13))
 			assertState(t, r, "absent", "")
 			if r.Timing != variant || h.calls.Load() != before+1 || r.Closed != (variant != "timely") {
-				t.Fatal(r, h.calls.Load())
+				t.Fatalf("stop continuation assertion: %+v calls=%d", r, h.calls.Load())
 			}
 			if originalInput != nil {
 				again, err := os.ReadFile(filepath.Join(h.root, "exec.stop.input"))
@@ -211,7 +214,7 @@ func TestStopContinuationAndDurableReplay(t *testing.T) {
 			replay := restarted.handle(stopBytes(13))
 			assertState(t, replay, "absent", "")
 			if !reflect.DeepEqual(replay, r) || !bytes.Equal(record, fileBytes(t, h, "stopped-"+gen)) || !bytes.Equal(intent, fileBytes(t, h, "stop-"+gen)) {
-				t.Fatal(replay)
+				t.Fatalf("stop replay assertion: %+v", replay)
 			}
 			assertState(t, restarted.handle(stopBytes(14)), "refused", "stop_conflict")
 			if variant == "timely" {
@@ -276,13 +279,13 @@ func TestPostReceiptOutputLoss(t *testing.T) {
 			r := h.e.status("demo")
 			if fail {
 				if !reflect.DeepEqual(r.OutputLoss, []string{"stdout:output_lost"}) {
-					t.Fatal(r)
+					t.Fatalf("output loss assertion: %+v", r)
 				}
 				if string(fileBytes(t, h, "output-"+gen+"-stdout.lost")) != `"output_lost"` {
 					t.Fatal("loss not durable")
 				}
 			} else if len(r.OutputLoss) != 0 {
-				t.Fatal(r)
+				t.Fatalf("output loss assertion: %+v", r)
 			}
 			restarted, err := testEngine(t, h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
 			must(t, err)
@@ -435,9 +438,9 @@ func TestHelperMemberSets(t *testing.T) {
 	if stopResult([]byte(good), "s", id) != "" || stopResult([]byte(bad), "s", id) != "denied" {
 		t.Fatal("controls")
 	}
-	for _, b := range []string{strings.Replace(bad, `"code":"denied"`, `"code":""`, 1), strings.Replace(good, `"ok":true,`, `"ok":true,"error":{"code":"denied","message":"no"},`, 1), strings.Replace(good, `"state":"active",`, "", 1), strings.Replace(good, `"result":`, `"extra":1,"result":`, 1), strings.Replace(good, `"execution_id":`, `"extra":1,"execution_id":`, 1), strings.Replace(good, `"signalled":1,`, "", 1), strings.Replace(good, `"killed":0`, `"killed":-1`, 1), strings.Replace(good, `"stopped_at":"2026-01-01T00:00:00Z"`, `"stopped_at":"bad"`, 1), strings.Replace(bad, `"error":`, `"state":"active","error":`, 1), strings.Replace(bad, `"message":"no"`, `"message":"no","extra":1`, 1)} {
+	for _, b := range []string{strings.Replace(good, `"state":"active"`, `"state":""`, 1), strings.Replace(bad, `"code":"denied"`, `"code":""`, 1), strings.Replace(good, `"ok":true,`, `"ok":true,"error":{"code":"denied","message":"no"},`, 1), strings.Replace(good, `"state":"active",`, "", 1), strings.Replace(good, `"result":`, `"extra":1,"result":`, 1), strings.Replace(good, `"execution_id":`, `"extra":1,"execution_id":`, 1), strings.Replace(good, `"signalled":1,`, "", 1), strings.Replace(good, `"killed":0`, `"killed":-1`, 1), strings.Replace(good, `"stopped_at":"2026-01-01T00:00:00Z"`, `"stopped_at":"bad"`, 1), strings.Replace(bad, `"error":`, `"state":"active","error":`, 1), strings.Replace(bad, `"message":"no"`, `"message":"no","extra":1`, 1)} {
 		if got := stopResult([]byte(b), "s", id); got != "helper_result_invalid" {
-			t.Fatal(b, got)
+			t.Fatalf("helper member accepted: %s got=%s", b, got)
 		}
 	}
 }
@@ -500,6 +503,7 @@ func TestReceiptPostReadChecks(t *testing.T) {
 				case "replace":
 					must(t, os.Rename(name, name+".old"))
 					must(t, os.WriteFile(name, b, 0644))
+					must(t, os.Chmod(name, 0644))
 				case "size":
 					f, err := os.OpenFile(name, os.O_APPEND|os.O_WRONLY, 0)
 					must(t, err)

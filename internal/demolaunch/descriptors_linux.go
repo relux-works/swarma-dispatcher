@@ -12,7 +12,11 @@ import (
 // Seal supervisor-inherited descriptors before daemon initialization. This only
 // changes exec inheritance; it never closes a runtime or supervisor descriptor.
 func sealInheritedDescriptors() error {
-	d, err := os.Open("/proc/self/fd")
+	return sealDescriptorsIn("/proc/self/fd")
+}
+
+func sealDescriptorsIn(directory string) error {
+	d, err := os.Open(directory)
 	if err != nil {
 		return err
 	}

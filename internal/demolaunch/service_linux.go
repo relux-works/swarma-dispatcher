@@ -388,9 +388,10 @@ func Client(configPath, operation string, input []byte) (string, error) {
 	return clientWith(configPath, operation, input, loadClientInput, runtimeConfig, endpointPin)
 }
 
-// Only protected input ownership, runtime roles and endpoint location are seams.
+// Only protected input ownership, runtime roles, endpoint location and the
+// expected peer UID are seams. Production supplies no observation hooks.
 // Principal, socket identity, kernel peer and exchange checks remain composed.
-func clientWith(configPath, operation string, input []byte, load func(string) (clientConfig, error), runtime func(commonConfig, uint32, bool) error, endpoint func(commonConfig) (*directory, error), connected ...func(*directory)) (string, error) {
+func clientWith(configPath, operation string, input []byte, load func(string) (clientConfig, error), runtime func(commonConfig, uint32, bool) error, endpoint func(commonConfig) (*directory, error), connected ...any) (string, error) {
 	r, err := parseRequest(input)
 	if err != nil || r.Op != "demo."+operation {
 		return "", ErrInvalid
@@ -428,8 +429,14 @@ func clientWith(configPath, operation string, input []byte, load func(string) (c
 		return "", err
 	}
 	defer wakeClose(f)
-	for _, observe := range connected {
-		observe(d)
+	peerExpected := c.ServiceUID
+	for _, hook := range connected {
+		switch observe := hook.(type) {
+		case func(*directory):
+			observe(d)
+		case func(uint32) uint32:
+			peerExpected = observe(peerExpected)
+		}
 	}
 	if err = d.recheck(); err != nil {
 		return "", err
@@ -441,7 +448,7 @@ func clientWith(configPath, operation string, input []byte, load func(string) (c
 	if !before.attrs(after) {
 		return "", ErrIdentity
 	}
-	if err = verifyPeer(f, c.ServiceUID); err != nil {
+	if err = verifyPeer(f, peerExpected); err != nil {
 		return "", err
 	}
 	return clientExchange(f, start, input)

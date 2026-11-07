@@ -33,6 +33,11 @@ func TestFakeChild(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "child-"+os.Getenv("DEMO_FAKE_CALL")+".pid"), []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
 		os.Exit(42)
 	}
+	if mode == "close-input" {
+		os.Stdin.Close()
+		fakeWait(root, "release-launch")
+		os.Exit(0)
+	}
 	if mode == "never-read" {
 		fakeWait(root, "release-stop")
 		os.Exit(0)
@@ -114,6 +119,15 @@ func TestFakeChild(t *testing.T) {
 		if mode == "extra" {
 			rec = strings.TrimSuffix(rec, "}") + `,"extra":true}`
 		}
+		if mode == "idle-output" {
+			time.Sleep(time.Second)
+			if _, err = os.Stdout.WriteString("after idle stdout"); err != nil {
+				os.Exit(34)
+			}
+			if _, err = os.Stderr.WriteString("after idle stderr"); err != nil {
+				os.Exit(35)
+			}
+		}
 		if mode == "flood" {
 			block := bytes.Repeat([]byte{'x'}, 32768)
 			for range 80 {
@@ -133,6 +147,9 @@ func TestFakeChild(t *testing.T) {
 		}
 		tmp := filepath.Join(dir, execution+".tmp")
 		if err = os.WriteFile(tmp, []byte(rec), 0644); err != nil {
+			os.Exit(36)
+		}
+		if err = os.Chmod(tmp, 0644); err != nil {
 			os.Exit(36)
 		}
 		f, x := os.Open(tmp)
@@ -170,6 +187,27 @@ func TestFakeChild(t *testing.T) {
 	var id string
 	json.Unmarshal(input["request_id"], &id)
 	result := `{"request_id":"` + id + `","ok":true,"state":"active","result":{"execution_id":"` + args.ExecutionID + `","stopped_at":"2026-01-01T00:00:00Z","receipt":{"signalled":1,"killed":0,"remaining":0}}}`
+	if mode == "first-id" {
+		name := filepath.Join(root, "first-stop-id")
+		old, x := os.ReadFile(name)
+		if os.IsNotExist(x) {
+			if os.WriteFile(name, []byte(id), 0600) != nil {
+				os.Exit(46)
+			}
+			result = strings.Replace(result, `"remaining":0`, `"remaining":1`, 1)
+		} else if string(old) != id {
+			result = `{"request_id":"` + id + `","ok":false,"error":{"code":"request_id_conflict","message":"original required"}}`
+		}
+	}
+	if mode == "descendant-pipe" {
+		exe, _ := os.Executable()
+		c := exec.Command(exe, "-test.run=^TestPipeHolder$")
+		c.Env = []string{"DEMO_PIPE_HOLDER=" + root}
+		c.Stdout = os.Stdout
+		if c.Start() != nil {
+			os.Exit(45)
+		}
+	}
 	switch mode {
 	case "remaining":
 		result = strings.Replace(result, `"remaining":0`, `"remaining":1`, 1)
@@ -494,7 +532,7 @@ func TestStopResults(t *testing.T) {
 				assertState(t, r, "absent", "")
 				fileBytes(t, h, "stopped-"+gen)
 				if r.Timing != "timely" {
-					t.Fatal(r)
+					t.Fatalf("stop result timing assertion: %+v", r)
 				}
 			} else {
 				assertState(t, r, "unresolved", tc.code)
@@ -502,7 +540,7 @@ func TestStopResults(t *testing.T) {
 				absentFile(t, h, "stopped-"+gen)
 			}
 			if tc.mode == "slow" && r.Timing != "missed" {
-				t.Fatal(r)
+				t.Fatalf("stop result timing assertion: %+v", r)
 			}
 			b, err := os.ReadFile(filepath.Join(h.root, "exec.stop.input"))
 			if err != nil {
@@ -523,7 +561,7 @@ func TestStopResults(t *testing.T) {
 }
 
 // Retry keeps identical arguments and original deadline; changed grace refuses
-// without another helper, and restart cannot invent a new monotonic budget.
+// without another helper; restart replays that completed result.
 func TestStopRetryAndRestart(t *testing.T) {
 	h := fixture(t, "good")
 	assertState(t, h.e.handle(launchBytes("demo")), "receipt-seen", "")

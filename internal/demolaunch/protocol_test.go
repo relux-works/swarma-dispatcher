@@ -73,30 +73,31 @@ func TestConfigRosterBounds(t *testing.T) {
 		a, e := parseRoster(rosterFixture(uid), "demo-service")
 		if uid == 30000 || uid == 30019 {
 			if e != nil || len(a) != 1 {
-				t.Fatal(uid, e)
+				t.Fatal("configuration bounds assertion", uid, e)
 			}
 		} else if !errors.Is(e, ErrConfig) || a != nil {
-			t.Fatal(uid, e)
+			t.Fatal("configuration bounds assertion", uid, e)
 		}
 	}
 	if _, e := parseServer(marshal(cfgFixture())); e != nil {
-		t.Fatal(e)
+		t.Fatal("configuration bounds assertion", e)
 	}
 	for _, uid := range []int{0, 30000, 30019, 30020, 59999} {
 		c := cfgFixture()
 		c["service_uid"] = uid
 		if _, e := parseServer(marshal(c)); !errors.Is(e, ErrConfig) {
-			t.Fatal("service", uid, e)
+			t.Fatal("configuration bounds assertion", "service", uid, e)
 		}
 	}
 	for _, uid := range []int{29999, 60000} {
 		c := cfgFixture()
 		c["service_uid"] = uid
 		if _, e := parseServer(marshal(c)); e != nil {
-			t.Fatal(uid, e)
+			t.Fatal("configuration bounds assertion", uid, e)
 		}
 	}
 	for _, mutate := range []func(map[string]any){
+		func(c map[string]any) { c["connect_gid"] = c["service_gid"] },
 		func(c map[string]any) { c["executor"] = "/bin/sh" }, func(c map[string]any) { c["state_dir"] = "relative" }, func(c map[string]any) { c["receipt_root"] = "/a/../b" },
 		func(c map[string]any) { c["service_account"] = "../x" }, func(c map[string]any) { c["runner"] = "anything" }, func(c map[string]any) { delete(c, "executor") },
 		func(c map[string]any) { c["caller"].(map[string]any)["UID"] = 1000 }, func(c map[string]any) { c["caller"].(map[string]any)["uid"] = 900 },
@@ -104,7 +105,7 @@ func TestConfigRosterBounds(t *testing.T) {
 		c := cfgFixture()
 		mutate(c)
 		if _, e := parseServer(marshal(c)); !errors.Is(e, ErrConfig) {
-			t.Fatal(c, e)
+			t.Fatal("configuration bounds assertion", c, e)
 		}
 	}
 	for _, b := range []string{
@@ -116,12 +117,12 @@ func TestConfigRosterBounds(t *testing.T) {
 		string(rosterFixture(30000)) + `{}`,
 	} {
 		if _, e := parseRoster([]byte(b), "demo-service"); !errors.Is(e, ErrConfig) {
-			t.Fatal(b, e)
+			t.Fatal("configuration bounds assertion", b, e)
 		}
 	}
 	for _, b := range [][]byte{append(marshal(cfgFixture()), []byte(`{}`)...), []byte(strings.Replace(string(marshal(cfgFixture())), `"v":1`, `"v":1,"v":1`, 1))} {
 		if _, e := parseServer(b); !errors.Is(e, ErrConfig) {
-			t.Fatal(e)
+			t.Fatal("configuration bounds assertion", e)
 		}
 	}
 }
@@ -206,14 +207,14 @@ func TestFormatBoundaries(t *testing.T) {
 		b := strings.Replace(string(rosterFixture(30000)), "0123456789abcdef0123456789abcdef", strings.Repeat("a", n), 1)
 		_, err := parseRoster([]byte(b), "demo-service")
 		if n == 32 && err != nil || n != 32 && !errors.Is(err, ErrConfig) {
-			t.Fatal("generation", n, err)
+			t.Fatal("format boundary assertion", "generation", n, err)
 		}
 	}
 	for _, n := range []int{0, 1, 32, 33} {
 		b := marshal(map[string]string{"op": "demo.status", "account": strings.Repeat("a", n)})
 		_, err := parseRequest(b)
 		if (n == 1 || n == 32) && err != nil || (n == 0 || n == 33) && !errors.Is(err, ErrInvalid) {
-			t.Fatal("name", n, err)
+			t.Fatal("format boundary assertion", "name", n, err)
 		}
 	}
 	for _, uid := range []int{29999, 30000, 59999, 60000} {
@@ -221,14 +222,14 @@ func TestFormatBoundaries(t *testing.T) {
 		c["caller"].(map[string]any)["uid"] = uid
 		_, err := parseServer(marshal(c))
 		if (uid == 29999 || uid == 60000) && err != nil || (uid == 30000 || uid == 59999) && !errors.Is(err, ErrConfig) {
-			t.Fatal("caller", uid, err)
+			t.Fatal("format boundary assertion", "caller", uid, err)
 		}
 	}
 	for _, n := range []int{0, 1, 64, 65} {
 		b := marshal(map[string]string{"op": "demo.stop", "request_id": strings.Repeat("x", n), "account": "demo"})
 		_, err := parseRequest(b)
 		if (n == 1 || n == 64) && err != nil || (n == 0 || n == 65) && !errors.Is(err, ErrInvalid) {
-			t.Fatal("id", n, err)
+			t.Fatal("format boundary assertion", "id", n, err)
 		}
 	}
 	for _, key := range []string{"service_gid", "connect_gid", "endpoint_dev", "endpoint_ino"} {
@@ -236,13 +237,13 @@ func TestFormatBoundaries(t *testing.T) {
 			c := cfgFixture()
 			c[key] = v
 			if _, err := parseServer(marshal(c)); !errors.Is(err, ErrConfig) {
-				t.Fatal(key, v, err)
+				t.Fatal("format boundary assertion", key, v, err)
 			}
 		}
 	}
 	for _, b := range []string{`{"op":"demo.launch","account":"demo","request_id":"r"}`, `{"op":"demo.stop","account":"demo","request_id":"r","plan":""}`, `{"op":"demo.status","account":"demo","request_id":"r"}`} {
 		if _, err := parseRequest([]byte(b)); !errors.Is(err, ErrInvalid) {
-			t.Fatal(b, err)
+			t.Fatal("format boundary assertion", b, err)
 		}
 	}
 }
@@ -256,7 +257,7 @@ func TestPrincipalNumberBounds(t *testing.T) {
 			_, err := parseServer(marshal(c))
 			valid := n == 1 || n == 9007199254740991
 			if valid && err != nil || !valid && !errors.Is(err, ErrConfig) {
-				t.Fatal(key, n, err)
+				t.Fatal("principal boundary assertion", key, n, err)
 			}
 		}
 	}

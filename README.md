@@ -299,13 +299,15 @@ Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 `.scripts/demo-launch-mutants.py` applies exact, public-clean plants only in a
 copied checkout. It requires a disposable Linux host because a regression may
 reach unknown paths. No mutation kill is established by source inspection:
-manifest expectations are **intended, parent runs it**. All named unmutated
+manifest expectations require hosted execution. All named unmutated
 controls run before any plant. Match/build errors and unexpected timeouts are
-invalid, never kills. Use a non-root user and non-group-writable ancestors:
+invalid, never kills. A kill additionally requires the named test failure and its
+`expect` assertion regex; panic and runtime fatal errors are invalid. Accepted
+coverage residues are listed explicitly and excluded from execution. Use a non-root user and non-group-writable ancestors:
 
 ```sh
-python3 .scripts/demo-launch-mutants.py --disposable --scratch-root "$HOME" --logs "$HOME/demo-mutant-logs"
-python3 .scripts/demo-launch-mutants.py --disposable --only S1-E04 --scratch-root "$HOME" --logs "$HOME/demo-one-mutant"
+python3 .scripts/demo-launch-mutants.py --disposable --fake-sudo "$DEMO_FAKE_SUDO" --fake-log "$DEMO_FAKE_SUDO_LOG" --scratch-root "$HOME" --logs "$HOME/demo-mutant-logs"
+python3 .scripts/demo-launch-mutants.py --disposable --fake-sudo "$DEMO_FAKE_SUDO" --fake-log "$DEMO_FAKE_SUDO_LOG" --only S1-E04 --scratch-root "$HOME" --logs "$HOME/demo-one-mutant"
 python3 -m unittest discover -s .scripts -p test_demo_launch_mutants.py
 go test -race -p 1 -count=5 -timeout=20m ./...
 ```
@@ -314,8 +316,7 @@ The Python unit tests use no Go toolchain. The mutation runner writes per-plant
 build/test logs under `--logs`; it never edits the checkout. An optional positive
 integer `timeout_seconds` in an entry overrides `--timeout` for that entry’s test
 process (including its unmutated control when run). S1-E28 uses 180 seconds so
-both unchanged elapsed-budget assertions can report. A timeout remains `invalid`
-unless the entry explicitly sets `timeout_kills` with a reason. Its manifest is
+both unchanged elapsed-budget assertions can report. A timeout is always `invalid`: a kill requires the test’s own matching assertion. Its manifest is
 `.scripts/demo-launch-mutants.json`.
 
 `TestDiskFullStopRecovery` runs only when `DEMOLAUNCH_ENOSPC_DIR` names an empty,
@@ -328,3 +329,43 @@ cover the recovery rule without this environment; they do not qualify ENOSPC.
 ```sh
 DEMOLAUNCH_ENOSPC_DIR=/absolute/disposable-small-filesystem go test -v -p 1 -count=1 -run '^TestDiskFullStopRecovery$' ./internal/demolaunch
 ```
+
+Before the mutation runner, the disposable-host owner must create a private mount
+namespace, bind-mount the committed executable `.scripts/demo-fake-sudo` over
+every existing sudo path (including resolved alternatives), and drop to the
+unprivileged test user inside that namespace. Set `DEMO_FAKE_SUDO` to that same
+inode and `DEMO_FAKE_SUDO_LOG` to an absolute writable JSONL path. The runner
+checks bytes and device/inode for `/usr/bin/sudo`, `/usr/bin/sudo-rs`,
+`/usr/bin/sudo.ws`, `/bin/sudo`, `/usr/local/bin/sudo` and PATH's sudo, then requires
+one recorded self-test exiting 77. It never sets up mounts or escalates privileges.
+For example, in a root shell **on the disposable host only**, set absolute
+checkout/log paths and the test user's numeric UID/GID, then enter the namespace:
+
+```sh
+export DEMO_FAKE_SUDO=/absolute/checkout/.scripts/demo-fake-sudo
+export DEMO_FAKE_SUDO_LOG=/absolute/test-home/demo-sudo.jsonl
+export DEMO_TEST_UID=1000 DEMO_TEST_GID=1000
+unshare --mount --propagation private /bin/sh
+# The following commands run inside the new namespace.
+for candidate in /usr/bin/sudo /usr/bin/sudo-rs /usr/bin/sudo.ws /bin/sudo /usr/local/bin/sudo "$(command -v sudo)"; do
+    [ -e "$candidate" ] || continue
+    mount --bind "$DEMO_FAKE_SUDO" "$(readlink -f "$candidate")" || exit 1
+done
+exec setpriv --reuid="$DEMO_TEST_UID" --regid="$DEMO_TEST_GID" --init-groups /bin/sh
+# Now run the mutation command above as the unprivileged user.
+```
+
+The log location must be writable by that user; no setuid executable remains
+reachable at any checked sudo alias inside the namespace.
+
+Each control/plant and the summary report `sudo_calls`; the fake never executes
+its arguments. Because the product clears child Env, the fake falls back to
+reading only `DEMO_FAKE_SUDO_LOG` from its same-UID test parent’s `/proc`
+environment; other variables are never recorded. `/proc` access must permit
+this on the disposable host. Do not run this on a shared host merely by passing
+`--disposable`.
+
+Fixture ancestors must not be group/other writable. Fixtures explicitly set
+checked file modes after creation, including receipts; umasks 022 and 0077 are
+supported test preconditions. Real launcher/helper processes must set their own
+umask because the daemon supplies 0177.

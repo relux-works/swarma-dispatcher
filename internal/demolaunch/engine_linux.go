@@ -21,6 +21,7 @@ type stopRecord struct {
 	active   bool
 	child    *child
 	terminal *response
+	latchErr error
 }
 type engine struct {
 	torn                            []string
@@ -61,6 +62,11 @@ func newEngineWithRunner(ctx context.Context, store *stateStore, accounts []acco
 	return e, nil
 }
 func (e *engine) handle(b []byte) (reply response) {
+	e.mu.Lock()
+	if e.closed && !e.latchWritten {
+		_ = e.closeAdmission("latch_retry")
+	}
+	e.mu.Unlock()
 	defer func() { e.mu.Lock(); reply.Closed = e.closed; e.mu.Unlock() }()
 	r, err := parseRequest(b)
 	if err != nil {
@@ -82,6 +88,9 @@ func (e *engine) status(name string) response {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	r := response{State: "facts", Closed: e.closed, Stopped: e.stopped[name], OutputLoss: e.outputLoss(name), Torn: append([]string(nil), e.torn...)}
+	if e.closed && !e.latchWritten {
+		r.Code = "latch_uncertain"
+	}
 	if a, ok := e.attempts[name]; ok {
 		copy := a
 		r.Attempt = &copy
@@ -140,9 +149,12 @@ func (e *engine) launch(r request, raw []byte) response {
 	}
 	if err := e.store.create("attempt-"+a.Generation, marshal(at)); err != nil {
 		e.closed = true
-		_ = e.closeAdmission("marker_uncertain")
+		code := "marker_uncertain"
+		if e.closeAdmission(code) != nil {
+			code = "latch_uncertain"
+		}
 		e.mu.Unlock()
-		return refusal("marker_uncertain")
+		return refusal(code)
 	}
 	e.attempts[r.Account] = at
 	e.launching = true
@@ -305,6 +317,25 @@ func (e *engine) stop(r request) response {
 		return refusal("launch_in_flight")
 	}
 	s := e.stops[r.Account]
+	// An unknown-intent guess reserves only its live call, not future guesses.
+	if s != nil && e.tornIntents[r.Account] && s.terminal == nil && !s.active {
+		if s.child != nil {
+			select {
+			case <-s.child.done:
+			default:
+				e.mu.Unlock()
+				return refusal("stop_in_flight")
+			}
+			select {
+			case <-s.child.outputDone:
+			default:
+				e.mu.Unlock()
+				return refusal("stop_in_flight")
+			}
+		}
+		delete(e.stops, r.Account)
+		s = nil
+	}
 	if s != nil && (s.intent.RequestID != r.RequestID || s.intent.Grace != r.Grace) {
 		e.mu.Unlock()
 		return refusal("stop_conflict")
@@ -319,6 +350,7 @@ func (e *engine) stop(r request) response {
 		return ret
 	}
 	a := e.accounts[r.Account]
+	var callLatchErr error
 	if s == nil {
 		// One caller-scoped stop ID must not target a different account.
 		for _, other := range e.stops {
@@ -330,11 +362,12 @@ func (e *engine) stop(r request) response {
 		now := time.Now()
 		s = &stopRecord{intent: stopIntent{r.RequestID, at.ExecutionID, r.Grace, now.UTC().Format(time.RFC3339Nano)}, deadline: callDeadline}
 		if e.tornIntents[r.Account] {
+			// No intact original intent survived startup. Never persist a guess.
 			s.deadline = time.Time{}
-		}
-		// Keep original arguments in memory even when the exclusive file is torn.
-		if err := e.store.create("stop-"+a.Generation, marshal(s.intent)); err != nil {
-			_ = e.closeAdmission("stop_intent_uncertain")
+		} else if err := e.store.create("stop-"+a.Generation, marshal(s.intent)); err != nil {
+			// This process retains its original arguments, but cannot claim time.
+			s.deadline = time.Time{}
+			callLatchErr = e.closeAdmission("stop_intent_uncertain")
 		}
 		e.stops[r.Account] = s
 	}
@@ -358,10 +391,10 @@ func (e *engine) stop(r request) response {
 	if !s.deadline.IsZero() && time.Now().Before(s.deadline) && s.deadline.Before(callDeadline) {
 		callDeadline = s.deadline
 	}
-	var callLatchErr error
 	if timing(s.deadline) != "timely" {
-		callLatchErr = e.closeAdmission("stop_time_uncertain")
+		callLatchErr = errors.Join(callLatchErr, e.closeAdmission("stop_time_uncertain"))
 	}
+	s.latchErr = callLatchErr
 	s.active = true
 	e.mu.Unlock()
 	defer func() { e.mu.Lock(); s.active = false; e.mu.Unlock() }()
@@ -453,7 +486,7 @@ func timing(deadline time.Time) string {
 func (e *engine) unresolved(code string, s *stopRecord) response {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if err := e.closeAdmission(code); err != nil {
+	if err := e.closeAdmission(code); err != nil || s.latchErr != nil {
 		code = "latch_uncertain"
 	}
 	return response{State: "unresolved", Code: code, Timing: timing(s.deadline), Closed: true}

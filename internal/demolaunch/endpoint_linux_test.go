@@ -218,7 +218,7 @@ func TestPublicationIdentity(t *testing.T) {
 				must(t, e.close())
 			} else {
 				if !errors.Is(err, ErrOwnership) || e != nil {
-					t.Fatal(err)
+					t.Fatalf("publication identity accepted replacement: %v", err)
 				}
 				b, err := os.ReadFile(path)
 				must(t, err)

@@ -9,7 +9,10 @@ It works with a privileged account manager and launcher, and an unprivileged cre
 
 The one-shot executor is `curator-run` from `curator-agent-launcher`, in a versioned narrow exec mode under the agent account: it verifies and executes a caller-composed plan, never composes or resolves profiles, and has no network access except to the broker. It is the first broker consumer; the board runner and session host ask the dispatcher rather than embedding broker clients. Its intake and the Decision 0021 amendment must be published and qualified before activation. SH2+ long sessions instead use the agent-side `swarma-session-runner`, sharing the launch library; the host service owns session metadata and fences, while the runner owns PTY or app-server transport and lease renewal.
 
-**Status: launch design in progress; byte-frame/admission libraries and Linux capacity-refusal transport source are implemented. Native transport deployment remains unqualified.**
+**Status: production launch design in progress; byte-frame/admission libraries, Linux capacity-refusal transport and a separate demo-only launch path have source implementations. Native deployment remains unqualified.**
+The [demo cut](spec/demo-launch.md) is **not production and not a conforming dispatcher**.
+Its fake-child tests exercise dispatcher behavior only; real-account execution
+requires separate qualification. The production binaries remain capacity-only.
 [`internal/frame`](internal/frame/) reads and writes a four-byte unsigned
 big-endian length followed by 1–131072 payload bytes, per
 [§8.3](spec/dispatcher.md#83-socket-dispatch1) and the closed
@@ -24,7 +27,7 @@ independent allocation/execution quotas, cancellation and epoch/version-fenced
 completion. Unknown outcomes retain their claims. A trusted adapter must supply
 authenticated principals, current gates and independently verified evidence;
 the reducer supplies neither durable storage nor process-absence verification.
-No running launch service is supplied. The specification (the `swarma-dispatcher`
+No qualified production launch service is supplied. The specification (the `swarma-dispatcher`
 Unix-socket service on `dispatch/1` from slice 0; later queueing, events, long waits
 and integrations behind capability gates on the same core and transport) is
 [`spec/dispatcher.md`](spec/dispatcher.md); diagrams are in [`diagrams/`](diagrams/).
@@ -104,7 +107,7 @@ caller UID non-reuse and fixed `/opt/swarma/run/dispatcher/dispatcher.sock` path
 are normative in the contract. This repository does not provision them. The
 transport never uses the admission reducer to advertise readiness or availability;
 every valid capacity request returns `capacity:hold`. No launch, journal,
-accounting, signed authority or recovery-control operation is implemented here.
+accounting, signed authority or recovery-control operation is implemented in this transport.
 
 On an admitted isolated Linux runner, build and test with the pinned CI toolchain:
 
@@ -157,6 +160,34 @@ CLI deployment. The root-owned fixed endpoint and separate UID/group enrollment
 need an admitted isolated deployment fixture; no such qualification is supplied
 here and no production bypass flag exists. Config/pin filesystems must be local
 and trusted; userspace deadlines cannot bound a hung kernel/filesystem operation.
+
+## Demo tools (not production)
+
+The separate [demo contract](spec/demo-launch.md) defines protected configuration,
+roster, irreversible attempt markers, receipt observations and bounded helper
+stops. No production flag enables it. Both commands refuse non-Linux platforms.
+These are build/entrypoint references for a separately authorized isolated demo,
+not an installation or real-account execution instruction:
+
+```sh
+go build -o .temp/swarma-demo-dispatcher ./cmd/swarma-demo-dispatcher
+go build -o .temp/swarma-demo-client ./cmd/swarma-demo-client
+.temp/swarma-demo-dispatcher --config /absolute/demo-server.json
+.temp/swarma-demo-client --config /absolute/demo-client.json launch < launch-request.json
+.temp/swarma-demo-client --config /absolute/demo-client.json stop < stop-request.json
+.temp/swarma-demo-client --config /absolute/demo-client.json status < status-request.json
+```
+
+The client prints one JSON result with no automatic retry. `receipt-seen` proves
+only receipt observation; `unknown` and `unresolved` retain uncertainty. A client
+exit of zero means a reply was received, not absence or readiness. Daemon errors
+go to stderr. Attempt/stop/closed records and capped output logs remain in the
+protected configured state directory; nothing deletes, renames or truncates them.
+Fixture child processes and sockets use checkout-local `.temp/` allocations;
+Linux CI emits test results to its hosted job log. Fixtures require non-group-writable ancestors (including the checkout path);
+they do not repair those permissions. Tests require neither root,
+sudo nor provisioned `/run`, `/etc` or `/var` paths. They do not qualify the real
+launcher, helper, process identity, sudo policy or account-wide absence.
 
 ## Tools and CI
 
@@ -262,3 +293,86 @@ validity, cross-field/currentness/replay semantics or any native deployment gate
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+### Demo mutation qualification
+
+`.scripts/demo-launch-mutants.py` applies exact, public-clean plants only in a
+copied checkout. It requires a disposable Linux host because a regression may
+reach unknown paths. No mutation kill is established by source inspection:
+manifest expectations require hosted execution. All named unmutated
+controls run before any plant. Match/build errors and unexpected timeouts are
+invalid, never kills. A kill additionally requires the named test failure and its
+`expect` assertion regex inside that selected failing test’s RUN-to-FAIL output block; panic and runtime fatal errors are invalid. Accepted
+coverage residues are listed explicitly and excluded from execution. Use a non-root user and non-group-writable ancestors:
+
+```sh
+python3 .scripts/demo-launch-mutants.py --disposable --fake-sudo "$DEMO_FAKE_SUDO" --fake-log "$DEMO_FAKE_SUDO_LOG" --scratch-root "$HOME" --logs "$HOME/demo-mutant-logs"
+python3 .scripts/demo-launch-mutants.py --disposable --fake-sudo "$DEMO_FAKE_SUDO" --fake-log "$DEMO_FAKE_SUDO_LOG" --only S1-E04 --scratch-root "$HOME" --logs "$HOME/demo-one-mutant"
+python3 -m unittest discover -s .scripts -p test_demo_launch_mutants.py
+go test -race -p 1 -count=5 -timeout=20m ./...
+```
+
+The Python unit tests use no Go toolchain. The mutation runner writes per-plant
+build/test logs under `--logs`; it never edits the checkout. An optional positive
+integer `timeout_seconds` in an entry overrides `--timeout` for that entry’s test
+process (including its unmutated control when run). S1-E28 uses 180 seconds so
+both unchanged elapsed-budget assertions can report. A timeout is always `invalid`: a kill requires the test’s own matching assertion. Its manifest is
+`.scripts/demo-launch-mutants.json`.
+
+`TestDiskFullStopRecovery` runs only when `DEMOLAUNCH_ENOSPC_DIR` names an empty,
+writable, disposable filesystem no larger than 16 MiB (for example a prepared
+2 MiB tmpfs). The test fills it with real writes; it must not name a useful
+filesystem. Otherwise it skips with the exact missing prerequisite. The mount
+must have trusted, non-group-writable ancestors. Always-running torn-file tests
+cover the recovery rule without this environment; they do not qualify ENOSPC.
+
+```sh
+DEMOLAUNCH_ENOSPC_DIR=/absolute/disposable-small-filesystem go test -v -p 1 -count=1 -run '^TestDiskFullStopRecovery$' ./internal/demolaunch
+```
+
+Before the mutation runner, the disposable-host owner must create a private mount
+namespace, bind-mount the committed executable `.scripts/demo-fake-sudo` over
+every existing sudo path (including resolved alternatives), and drop to the
+unprivileged test user inside that namespace. Set `DEMO_FAKE_SUDO` to that same
+inode and `DEMO_FAKE_SUDO_LOG` to an absolute writable JSONL path. The runner
+checks bytes and device/inode for `/usr/bin/sudo`, `/usr/bin/sudo-rs`,
+`/usr/bin/sudo.ws`, `/bin/sudo`, `/usr/local/bin/sudo`, `/usr/sbin/sudo` and PATH's sudo, then requires
+one recorded self-test exiting 77. Before any subprocess it requires
+`NoNewPrivs: 1` from `/proc/self/status`. It never sets up mounts or escalates privileges.
+For example, in a root shell **on the disposable host only**, set absolute
+checkout/log paths and the test user's numeric UID/GID, then enter the namespace:
+
+```sh
+export DEMO_FAKE_SUDO=/absolute/checkout/.scripts/demo-fake-sudo
+export DEMO_FAKE_SUDO_LOG=/absolute/test-home/demo-sudo.jsonl
+export DEMO_TEST_UID=1000 DEMO_TEST_GID=1000
+unshare --mount --propagation private /bin/sh
+# The following commands run inside the new namespace.
+for candidate in /usr/bin/sudo /usr/bin/sudo-rs /usr/bin/sudo.ws /bin/sudo /usr/local/bin/sudo /usr/sbin/sudo "$(command -v sudo)"; do
+    [ -e "$candidate" ] || continue
+    mount --bind "$DEMO_FAKE_SUDO" "$(readlink -f "$candidate")" || exit 1
+done
+exec setpriv --no-new-privs --reuid="$DEMO_TEST_UID" --regid="$DEMO_TEST_GID" --init-groups /bin/sh
+# Now run the mutation command above as the unprivileged user.
+```
+
+The log location must be writable by that user; no setuid executable remains
+reachable at any checked sudo alias inside the namespace.
+
+Each control/plant and the summary report `sudo_calls`; the fake never executes
+its arguments. The runner exclusively creates a per-UID rendezvous directory
+`/tmp/demo-launch-fake-<uid>` (0700) with a `log-path` pointer (0600, single link,
+caller-owned) and a precreated `healthy` sentinel. The fake checks the pointer
+even with an empty environment; it never depends on its parent surviving.
+A recording failure removes the sentinel and exits 78. The runner checks it
+after each control/plant and at exit, and fails rather than reporting a zero
+call count. Removing the sentinel requires no log-file allocation on a full disk.
+The directory is removed when the run exits; a stale directory refuses a new
+run and needs owner inspection in the disposable namespace. Only one runner per
+UID may use that namespace at a time. Do not run this on a shared host merely by passing
+`--disposable`.
+
+Fixture ancestors must not be group/other writable. Fixtures explicitly set
+checked file modes after creation, including receipts; umasks 022 and 0077 are
+supported test preconditions. Real launcher/helper processes must set their own
+umask because the daemon supplies 0177.

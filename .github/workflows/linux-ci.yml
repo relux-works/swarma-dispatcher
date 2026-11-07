@@ -76,3 +76,5 @@ jobs:
           go test -v -p 1 -count=1 -timeout=20m ./...
       - name: Qualify CI behavior with isolated fixtures
         run: python3 .scripts/test_linux_ci.py -v
+      - name: Test demo mutation runner controls
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .scripts -p test_demo_launch_mutants.py -v

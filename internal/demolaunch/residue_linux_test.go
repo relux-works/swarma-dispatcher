@@ -86,15 +86,34 @@ func TestProtocolResidueGuards(t *testing.T) {
 			t.Fatalf("launch member guard accepted: %v", err)
 		}
 	}
+	// Both durable-record parsers own the format guard; receipts instead bind
+	// their execution ID to the ID supplied by the caller.
 	for _, execution := range []string{"EX-0123456789abcdef0123456789abcdef", "EX-0123456789ABCDEF0123456789abcdef", "EX-0123456789abcdeg0123456789abcdef"} {
-		b := []byte(`{"execution_id":"` + execution + `","epoch":1,"pid":1,"start_time":1,"boot_id":"12345678-1234-1234-1234-123456789abc","session_id":1}`)
-		_, err := parseReceipt(b, execution)
-		if execution == "EX-0123456789abcdef0123456789abcdef" {
+		for _, parser := range []string{"attempt", "intent"} {
+			var err error
+			if parser == "attempt" {
+				_, err = parseAttempt([]byte(`{"request_id":"launch-1","request_digest":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","execution_id":"` + execution + `","time":"2026-01-01T00:00:00Z"}`))
+			} else {
+				_, err = parseIntent([]byte(`{"request_id":"stop-1","execution_id":"` + execution + `","grace_seconds":10,"time":"2026-01-01T00:00:00Z"}`))
+			}
+			if execution == "EX-0123456789abcdef0123456789abcdef" {
+				if err != nil {
+					t.Fatalf("valid execution refused: parser=%s err=%v", parser, err)
+				}
+			} else if !errors.Is(err, ErrInvalid) {
+				t.Errorf("execution format accepted: parser=%s execution=%s err=%v", parser, execution, err)
+			}
+		}
+	}
+	const receiptBytes = `{"execution_id":"EX-0123456789abcdef0123456789abcdef","epoch":1,"pid":1,"start_time":1,"boot_id":"12345678-1234-1234-1234-123456789abc","session_id":1}`
+	for _, expected := range []string{"EX-0123456789abcdef0123456789abcdef", "EX-1123456789abcdef0123456789abcdef"} {
+		_, err := parseReceipt([]byte(receiptBytes), expected)
+		if expected == "EX-0123456789abcdef0123456789abcdef" {
 			if err != nil {
-				t.Fatalf("valid execution refused: %v", err)
+				t.Fatalf("matching receipt refused: %v", err)
 			}
 		} else if !errors.Is(err, ErrInvalid) {
-			t.Fatalf("execution format accepted: %v", err)
+			t.Fatalf("receipt execution mismatch accepted: %v", err)
 		}
 	}
 }

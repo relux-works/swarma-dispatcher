@@ -80,8 +80,15 @@ func TestFakeChild(t *testing.T) {
 			}
 			flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_GETFD, 0)
 			if errno == 0 && flags&syscall.FD_CLOEXEC == 0 {
-				inherited = append(inherited, entry.Name())
+				target, err := os.Readlink("/proc/self/fd/" + entry.Name())
+				if err != nil {
+					os.Exit(43)
+				}
+				inherited = append(inherited, entry.Name()+"="+target)
 			}
+		}
+		if err := os.WriteFile(filepath.Join(root, "inherited-"+call+".txt"), []byte(strings.Join(inherited, "\n")), 0600); err != nil {
+			os.Exit(44)
 		}
 		if len(inherited) > 0 || os.Getenv("DEMO_PARENT_SECRET") != "" {
 			os.Exit(41)

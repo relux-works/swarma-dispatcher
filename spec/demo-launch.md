@@ -22,6 +22,14 @@ contracts, not a promotion of this cut.
 
 ## Protected deployment inputs
 
+Before opening configuration, state or sockets, the daemon walks `/proc/self/fd`
+and applies `FD_CLOEXEC` to every descriptor above 2, except its already
+close-on-exec directory handle. This seals descriptors inherited from its
+supervisor without closing them; stdio and runtime descriptors remain usable.
+An open/read failure on `/proc/self/fd` refuses startup. New daemon descriptors
+are also opened close-on-exec. The client does not perform this process-wide
+sealing.
+
 The only daemon arguments are `--config /absolute/server.json`. There are no
 path, command, environment or identity overrides. The separately provisioned
 server file is root-owned, single-link, regular, `0440`, effective service GID.
@@ -208,6 +216,7 @@ with its non-timely timing. This is not a deliberate contract departure.
 
 | Event | Response / code | Preserved effects |
 |---|---|---|
+| Cannot open/read `/proc/self/fd` at startup | Daemon returns the enumeration error and exits; no wire reply | No configuration, state or endpoint opened |
 | Bad request / unknown account / unknown operation | `refused`: `request_invalid` / `account_unknown` / `operation_unknown` | No marker or child |
 | Existing attempt | `refused/attempt_exists` | Original marker; no child |
 | Closed / concurrent / previous unresolved | `refused/admission_closed`, `launch_in_flight`, `attempt_unstopped` | No new child |

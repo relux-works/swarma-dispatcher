@@ -51,6 +51,33 @@ class RunnerTests(unittest.TestCase):
         for text in ['PASS', '--- SKIP: TestGuard', '--- PASS: TestOther']:
             self.assertEqual(runner.classify(0, text, False, plant), 'invalid')
 
+    def test_entry_timeout(self):
+        plant = dict(kills=dict(package='./internal/demolaunch', run='^TestGuard$'))
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp) / 'tree'
+            tree.mkdir()
+            log = Path(tmp) / 'log'
+            for override, expected in [(None, 90), (180, 180)]:
+                if override is not None:
+                    plant['timeout_seconds'] = override
+                with patch.object(runner, 'execute', side_effect=[
+                    (0, '', False), (1, '--- FAIL: TestGuard (100s)', False)
+                ]) as execute:
+                    self.assertEqual(runner.run_test(tree, plant, log, 90), 'killed')
+                    args = execute.call_args_list[1].args
+                    self.assertIn('-test.timeout=' + str(expected) + 's', args[0])
+                    self.assertEqual(args[2], expected + 5)
+            with patch.object(runner, 'execute', side_effect=[
+                (0, '', False), (1, 'panic: test timed out after 3m', False)
+            ]):
+                self.assertEqual(runner.run_test(tree, plant, log, 90), 'invalid')
+            for value in [0, -1, True, '180', 1.5]:
+                plant['timeout_seconds'] = value
+                with patch.object(runner, 'execute') as execute:
+                    with self.assertRaises(ValueError):
+                        runner.run_test(tree, plant, log, 90)
+                    execute.assert_not_called()
+
     def test_disposable_required(self):
         with self.assertRaises(SystemExit) as caught:
             runner.main(['--logs', '/unused'])

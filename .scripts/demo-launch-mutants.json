@@ -129,7 +129,8 @@
       "run": "^TestStopElapsedBudgets$"
     },
     "row": "45 second stop wait",
-    "qualification": "intended, parent runs it"
+    "qualification": "intended, parent runs it",
+    "timeout_seconds": 180
   },
   {
     "id": "S1-X01",
@@ -1509,6 +1510,30 @@
       "run": "^TestServePeerBeforeFrameIntake$"
     },
     "row": "real accept credential lookup wiring",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "R5-seal-noop",
+    "file": "internal/demolaunch/descriptors_linux.go",
+    "find": "func sealInheritedDescriptors() error {",
+    "replace": "func sealInheritedDescriptors() error {\n if true {return nil}",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestComposedChildInheritance$"
+    },
+    "row": "supervisor inherited descriptor sealing",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "R5-daemon-seal-call",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\tif err := sealInheritedDescriptors(); err != nil {\n\t\treturn err\n\t}\n",
+    "replace": "",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestDaemonDescriptorSealWiring$"
+    },
+    "row": "Daemon seals first and refuses enumeration errors",
     "qualification": "intended, parent runs it"
   }
 ]

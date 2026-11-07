@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -497,26 +498,65 @@ func TestStopElapsedBudgets(t *testing.T) {
 	}
 }
 
-// Actual descriptor inheritance is observed inside the fake child. Its own Go
-// runtime may open CLOEXEC descriptors; any inherited descriptor above stderr
-// is forbidden. The composed runner must not append the parent environment.
+// This test changes process-wide descriptor flags, without parallel tests. It
+// plants a real inheritable pipe: A refuses and names it; B opens all fixture
+// resources after sealing and succeeds. Other tests require no inheritable fd.
+// Runtime-created CLOEXEC descriptors are excluded from the child observation.
 func TestComposedChildInheritance(t *testing.T) {
 	t.Setenv("DEMO_PARENT_SECRET", "must-not-reach-child")
+	r, w, err := os.Pipe()
+	must(t, err)
+	defer r.Close()
+	defer w.Close()
+	// Keep the sentinel away from fd 3, the ExtraFiles plant destination.
+	fd := w.Fd()
+	if fd <= 3 {
+		t.Fatal("fixture requires stdio open and pipe writer above fd 3")
+	}
+	flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, fd, syscall.F_GETFD, 0)
+	if errno != 0 {
+		t.Fatal(errno)
+	}
+	_, _, errno = syscall.Syscall(syscall.SYS_FCNTL, fd, syscall.F_SETFD, flags&^syscall.FD_CLOEXEC)
+	if errno != 0 {
+		t.Fatal(errno)
+	}
+	target, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(int(fd)))
+	must(t, err)
+	offender := strconv.Itoa(int(fd)) + "=" + target
+	evidence := func(h *harness, call string) string {
+		b, err := os.ReadFile(filepath.Join(h.root, "inherited-"+call+".txt"))
+		if err != nil {
+			return "observation unavailable: " + err.Error()
+		}
+		return string(b)
+	}
+	a := fixture(t, "observe")
+	reply := a.e.handle(launchBytes("demo"))
+	got := evidence(a, "1")
+	if reply.State != "unknown" || reply.Code != "launcher_exit" || !strings.Contains("\n"+got+"\n", "\n"+offender+"\n") {
+		t.Fatalf("unsealed reply=%+v want offender=%s inherited:\n%s", reply, offender, got)
+	}
+	must(t, sealInheritedDescriptors())
+	// Do not move any B opens above the seal: CLOEXEC plants must leak newly
+	// opened state/log files, listener, accepted socket or explicit ExtraFiles.
 	h := fixture(t, "observe")
 	ep, _, _ := serveFixture(t, h, "valid")
 	f, err := connectSocket(ep.dir, time.Now())
 	must(t, err)
 	defer wakeClose(f)
-	reply, err := clientExchange(f, time.Now(), launchBytes("demo"))
-	must(t, err)
-	if !strings.Contains(reply, `"state":"receipt-seen"`) {
-		t.Fatal(reply)
+	wire, err := clientExchange(f, time.Now(), launchBytes("demo"))
+	if err != nil || !strings.Contains(wire, `"state":"receipt-seen"`) {
+		t.Fatalf("sealed reply=%s err=%v inherited:\n%s", wire, err, evidence(h, "1"))
 	}
 	waitChild(t, h.e.launchChildren["demo"], time.Now().Add(30*time.Second))
 	if h.e.launchChildren["demo"].err != nil {
-		t.Fatal(h.e.launchChildren["demo"].err)
+		t.Fatalf("child=%v inherited:\n%s", h.e.launchChildren["demo"].err, evidence(h, "1"))
 	}
-	assertState(t, h.e.handle(stopBytes(10)), "absent", "")
+	stopped := h.e.handle(stopBytes(10))
+	if stopped.State != "absent" || stopped.Code != "" {
+		t.Fatalf("stop=%+v inherited:\n%s", stopped, evidence(h, "2"))
+	}
 }
 
 // The default ten-second receipt budget is measured on a real child with no

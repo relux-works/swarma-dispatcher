@@ -311,7 +311,11 @@ go test -race -p 1 -count=5 -timeout=20m ./...
 ```
 
 The Python unit tests use no Go toolchain. The mutation runner writes per-plant
-build/test logs under `--logs`; it never edits the checkout. Its manifest is
+build/test logs under `--logs`; it never edits the checkout. An optional positive
+integer `timeout_seconds` in an entry overrides `--timeout` for that entry’s test
+process (including its unmutated control when run). S1-E28 uses 180 seconds so
+both unchanged elapsed-budget assertions can report. A timeout remains `invalid`
+unless the entry explicitly sets `timeout_kills` with a reason. Its manifest is
 `.scripts/demo-launch-mutants.json`.
 
 `TestDiskFullStopRecovery` runs only when `DEMOLAUNCH_ENOSPC_DIR` names an empty,

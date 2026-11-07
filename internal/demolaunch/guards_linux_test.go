@@ -153,10 +153,6 @@ func TestClientReplyValidation(t *testing.T) {
 					done <- err
 					return
 				}
-				if kind == "hello" {
-					done <- nil
-					return
-				}
 				if _, err = w.readFrame(); err != nil {
 					done <- err
 					return
@@ -180,10 +176,16 @@ func TestClientReplyValidation(t *testing.T) {
 				if reply != `{"state":"facts","closed":false}` {
 					t.Fatal(reply)
 				}
-			} else if err == nil {
-				t.Fatal("bad reply accepted", reply)
+			} else if !errors.Is(err, ErrInvalid) || reply != "" {
+				t.Fatalf("kind=%s want request_invalid, reply=%q err=%v", kind, reply, err)
 			}
-			<-done
+			// Correct hello refusal leaves the server waiting for an operation.
+			// Close only after the client verdict, not as its rejection cause.
+			wakeClose(a)
+			serverErr := <-done
+			if kind != "hello" {
+				must(t, serverErr)
+			}
 		})
 	}
 }

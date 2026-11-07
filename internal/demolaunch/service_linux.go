@@ -303,6 +303,9 @@ func serveWith(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown,
 // Daemon runs the separate demo, not production, launch protocol.
 // It must run as a standalone process on a qualified local filesystem deployment.
 func Daemon(configPath string) (result error) {
+	if err := sealInheritedDescriptors(); err != nil {
+		return err
+	}
 	// Set once before product concurrency/file creation. New socket inode starts 0600.
 	syscall.Umask(0177)
 	ctx, cancel := context.WithCancel(context.Background())

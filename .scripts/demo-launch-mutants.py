@@ -63,6 +63,9 @@ def copy_tree(source, target):
 
 
 def run_test(tree, plant, log, timeout):
+    timeout = plant.get("timeout_seconds", timeout)
+    if type(timeout) is not int or timeout < 1:
+        raise ValueError("timeout_seconds must be a positive integer")
     package = plant["kills"]["package"]
     if not package.startswith('./') or '..' in Path(package).parts:
         raise ValueError("package must be checkout-local")

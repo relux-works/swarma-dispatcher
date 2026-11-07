@@ -293,3 +293,34 @@ validity, cross-field/currentness/replay semantics or any native deployment gate
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+### Demo mutation qualification
+
+`.scripts/demo-launch-mutants.py` applies exact, public-clean plants only in a
+copied checkout. It requires a disposable Linux host because a regression may
+reach unknown paths. No mutation kill is established by source inspection:
+manifest expectations are **intended, parent runs it**. All named unmutated
+controls run before any plant. Match/build errors and unexpected timeouts are
+invalid, never kills. Use a non-root user and non-group-writable ancestors:
+
+```sh
+python3 .scripts/demo-launch-mutants.py --disposable --scratch-root "$HOME" --logs "$HOME/demo-mutant-logs"
+python3 .scripts/demo-launch-mutants.py --disposable --only S1-E04 --scratch-root "$HOME" --logs "$HOME/demo-one-mutant"
+python3 -m unittest discover -s .scripts -p test_demo_launch_mutants.py
+go test -race -p 1 -count=5 -timeout=20m ./...
+```
+
+The Python unit tests use no Go toolchain. The mutation runner writes per-plant
+build/test logs under `--logs`; it never edits the checkout. Its manifest is
+`.scripts/demo-launch-mutants.json`.
+
+`TestDiskFullStopRecovery` runs only when `DEMOLAUNCH_ENOSPC_DIR` names an empty,
+writable, disposable filesystem no larger than 16 MiB (for example a prepared
+2 MiB tmpfs). The test fills it with real writes; it must not name a useful
+filesystem. Otherwise it skips with the exact missing prerequisite. The mount
+must have trusted, non-group-writable ancestors. Always-running torn-file tests
+cover the recovery rule without this environment; they do not qualify ENOSPC.
+
+```sh
+DEMOLAUNCH_ENOSPC_DIR=/absolute/disposable-small-filesystem go test -v -p 1 -count=1 -run '^TestDiskFullStopRecovery$' ./internal/demolaunch
+```

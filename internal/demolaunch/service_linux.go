@@ -41,11 +41,13 @@ func (s *shutdown) snapshot() (time.Time, error) {
 }
 
 type slots struct {
+	peer         func(*os.File) (uint32, error) // Unexported credential observation seam; nil uses SO_PEERCRED.
 	mu           sync.Mutex
 	total        int
 	byUID        map[uint32]int
 	active       map[*os.File]struct{}
 	stopped      bool
+	pinChecked   func() // Optional observer after initial pin, before recheck.
 	readObserved func() // Optional non-reading test observer; nil in production.
 }
 
@@ -178,8 +180,16 @@ func acceptOne(listener *os.File) (*os.File, time.Time, error) {
 func transientAccept(err error) bool {
 	return errors.Is(err, syscall.EINTR) || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EPROTO)
 }
-func serve(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, engine *engine) error {
-	return serveWith(ctx, e, c, stop, engine, peerUID, newSlots())
+func serve(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, engine *engine, supplied ...*slots) error {
+	resources := newSlots()
+	if len(supplied) > 0 {
+		resources = supplied[0]
+	}
+	peer := peerUID
+	if resources.peer != nil {
+		peer = resources.peer
+	}
+	return serveWith(ctx, e, c, stop, engine, peer, resources)
 }
 
 // Tests inject a peer result without weakening enrollment or the real entrypoint.
@@ -234,6 +244,9 @@ func serveWith(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown,
 			wakeClose(f)
 			resources.release(nil)
 			continue
+		}
+		if resources.pinChecked != nil {
+			resources.pinChecked()
 		}
 		if err = pin.recheck(); err != nil {
 			pin.close()
@@ -369,19 +382,21 @@ func Daemon(configPath string) (result error) {
 
 // Client performs one demo exchange without automatic retry.
 func Client(configPath, operation string, input []byte) (string, error) {
+	return clientWith(configPath, operation, input, loadClientInput, runtimeConfig, endpointPin)
+}
+
+// Only protected input ownership, runtime roles and endpoint location are seams.
+// Principal, socket identity, kernel peer and exchange checks remain composed.
+func clientWith(configPath, operation string, input []byte, load func(string) (clientConfig, error), runtime func(commonConfig, uint32, bool) error, endpoint func(commonConfig) (*directory, error), connected ...func(*directory)) (string, error) {
 	r, err := parseRequest(input)
 	if err != nil || r.Op != "demo."+operation {
 		return "", ErrInvalid
 	}
-	b, err := sourceSnapshot(configPath, false)
+	c, err := load(configPath)
 	if err != nil {
 		return "", err
 	}
-	c, err := parseClient(b)
-	if err != nil {
-		return "", err
-	}
-	if err = runtimeConfig(c.commonConfig, c.Caller.UID, false); err != nil {
+	if err = runtime(c.commonConfig, c.Caller.UID, false); err != nil {
 		return "", err
 	}
 	pin, err := principalPin(c.Caller)
@@ -389,7 +404,7 @@ func Client(configPath, operation string, input []byte) (string, error) {
 		return "", err
 	}
 	defer pin.close()
-	d, err := endpointPin(c.commonConfig)
+	d, err := endpoint(c.commonConfig)
 	if err != nil {
 		return "", err
 	}
@@ -410,6 +425,9 @@ func Client(configPath, operation string, input []byte) (string, error) {
 		return "", err
 	}
 	defer wakeClose(f)
+	for _, observe := range connected {
+		observe(d)
+	}
 	if err = d.recheck(); err != nil {
 		return "", err
 	}
@@ -450,7 +468,7 @@ func clientExchange(f *os.File, start time.Time, input []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	m, err := object(b, 16384, "state closed", "code timing receipt attempt stopped output_loss")
+	m, err := object(b, 16384, "state closed", "code timing receipt attempt stopped output_loss torn")
 	if err != nil {
 		return "", ErrInvalid
 	}
@@ -474,14 +492,6 @@ func clientExchange(f *os.File, start time.Time, input []byte) (string, error) {
 	return string(b), nil
 }
 
-// authenticate performs no stream I/O, including on a failed pin.
-func authenticate(f *os.File, uid uint32, pin func() error) error {
-	if err := verifyPeer(f, uid); err != nil {
-		return err
-	}
-	return pin()
-}
-
 // Both protected inputs are read before endpoint publication or state access.
 // Tests substitute expected ownership, never the compiled roster path or modes.
 func loadServerInputs(configPath string, read func(string, uint32, uint32, int) ([]byte, error)) (serverConfig, []account, error) {
@@ -499,4 +509,12 @@ func loadServerInputs(configPath string, read func(string, uint32, uint32, int) 
 	}
 	roster, err := parseRoster(b, c.ServiceAccount)
 	return c, roster, err
+}
+
+func loadClientInput(path string) (clientConfig, error) {
+	b, err := sourceSnapshot(path, false)
+	if err != nil {
+		return clientConfig{}, err
+	}
+	return parseClient(b)
 }

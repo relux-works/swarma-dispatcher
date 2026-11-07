@@ -102,7 +102,8 @@ func TestCLIStdin(t *testing.T) {
 }
 
 // Byte-bound positive neighbors catch an intake implementation that rejects all
-// pipes/files. A held writer reaches the poller deadline without a leaked reader.
+// pipes/files. The pipe writer closes to deliver EOF; the CLI stalled case
+// separately exercises the deadline with its writer held open.
 func TestIntakeBounds(t *testing.T) {
 	for _, size := range []int{0, 131072, 131073} {
 		name := filepath.Join(t.TempDir(), "input")

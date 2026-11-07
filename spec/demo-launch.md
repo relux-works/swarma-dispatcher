@@ -16,6 +16,7 @@ contracts, not a promotion of this cut.
 | §4.5 effect IDs and journal; `spec/journal.md` | No journal; no replay or reconciliation |
 | `spec/m0-launch.md` committed-start A | Not implemented; marker is a stand-in, not a claim of A |
 | §§3.1–3.4 grants, M0 protected policy | None; the caller is a pinned peer UID, which is not authority |
+| PR70 §6 evidence loss | An intact `.lost` records loss without closing admission. A torn loss record closes admission at startup. |
 | Capacity reservation | None; sequential by construction |
 | R-WATCH, NETBIND, R-TRANSFER | Excluded; workspace preparation belongs to the operator |
 
@@ -58,7 +59,7 @@ configured device/inode. Its socket is `dispatcher.sock`, service-owned,
 connection GID, `0660`. A lifetime flock, refusal of existing endpoints and
 identity-scoped socket cleanup follow the copied transport mechanism. The lock
 is outside the state directory. Stale sockets require manual reconciliation;
-there is no automatic takeover. State and receipt storage must be local and
+there is no automatic takeover. After SIGKILL, the stale socket must be removed by the operator before restart; this program does not remove it on startup. State and receipt storage must be local and
 trusted; userspace deadlines cannot bound a hung kernel/filesystem operation.
 
 ## Wire and commands
@@ -128,15 +129,18 @@ Launch stdout/stderr each go to a separately created `0600` log,
 `output-<generation>-stdout.log` / `-stderr.log`, capped at 1 MiB. Reading continues
 past the cap. First excess creates the corresponding `.truncated` record with
 `true`. Capture errors, including errors after `receipt-seen`, create the
-corresponding `.lost` record with exactly `output_lost`, fsync file and directory,
+corresponding `.lost` record with the JSON string `"output_lost"`, fsync file and directory,
 and continue draining/discarding. `demo.status.output_loss` reports
 `stdout:output_lost` or `stderr:output_lost`, including after restart. If the
 evidence itself cannot be saved/read, live status reports `loss_unpersisted` or
 `evidence_unavailable` for that stream; persistence cannot be promised on failed
 storage. Logs never reopen for writing. Pipes use bounded polling waits; child
 exit is reaped using nonblocking wait. There is at most one drainer pair per
-occupied child slot, bounded by the 20-account roster. A new generation also
-waits for the prior sudo handle and pipes to finish. No code signals a child or
+occupied child slot, bounded by the 20-account roster. Within one daemon process, a new generation also
+waits for the prior sudo handle and pipes to finish. Restart loses custody of
+those handles and pipes: a valid stopped fact can permit a later generation
+without waiting for the old launcher process. An unstopped attempt still closes
+admission at startup. No code signals a child or
 account process. Shutdown closes pipes and releases live handles; executor
 survival is not promised, and orphan reaping belongs to the service supervisor.
 
@@ -173,7 +177,7 @@ is an invalid result. Exit zero without a document is never absence.
 
 Creates use `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW|O_CLOEXEC`, `0600`, then file and
 directory fsync. No state file is deleted, renamed or truncated. An attempt
-contains `request_digest` (SHA-256 of the operation bytes), `execution_id`, and
+contains the launch `request_id`, `request_digest` (SHA-256 of the operation bytes), `execution_id`, and
 UTC `time`, persisted before any child. All evidence times are UTC; live
 operation durations use monotonic clocks.
 
@@ -186,18 +190,18 @@ call it returns `launch_in_flight`, so it cannot overtake a not-yet-issued child
 ID, grace and UTC time. This minimal additional record prevents changed-argument
 retries after a daemon restart; it is not a journal or a recovery engine. In one
 process, retries retain the first monotonic deadline. A different ID or grace
-returns `stop_conflict`. At most one helper per generation may be outstanding.
+returns `stop_conflict`. At most one helper per generation may be outstanding **within one daemon process**.
 Successful terminal responses persist in `stopped-<generation>` with exactly
 `execution_id,timing,closed,code` (`code` is empty or `latch_uncertain`); the same request replays that observation without
-another helper or a new latch, including after restart. The original intent
-must exist and match. This format has no migration from earlier experimental
+another helper or a new latch, including after restart. An intact original intent
+must exist and match to replay a terminal response. This format has no migration from earlier experimental
 records; incompatible records refuse startup without repair.
 
 If the original deadline has passed, retry still invokes the helper with the
 original request ID and arguments and reports `missed`. After restart that
 monotonic deadline is unavailable: retry still invokes the helper, reports
 `unknown`, and keeps admission closed. Each continuation is bounded by 45 seconds,
-never overlaps a still-live helper or its pipes, and never replenishes the
+never overlaps a still-live helper or its pipes tracked by that process, and never replenishes the
 original deadline. Safe narrowing therefore continues despite late or unknown
 time. A late valid zero-remaining result persists `stopped` and reports `absent`
 with its non-timely timing. This is not a deliberate contract departure.
@@ -211,9 +215,13 @@ with its non-timely timing. This is not a deliberate contract departure.
 | Marker create/sync uncertain | `refused/marker_uncertain` | Never call sudo; close admission; keep all partial files |
 | Log setup / delivery failure | `unknown/log_unavailable` or `launcher_io` | Attempt and closed latch |
 | Receipt timeout / mismatch / exit without receipt | `unknown/receipt_timeout`, `receipt_mismatch`, `launcher_exit` | Attempt and closed latch; no signal |
+| Torn attempt without recoverable execution ID | `refused/attempt_identity_unknown` | Generation remains spent; do not invent helper arguments |
+| Stop ID equals this generation’s launch ID | `refused/request_id_conflict` | No intent, no helper, no state change |
+| Shutdown before launch admission | `refused/shutdown` | No marker, child or new latch |
 | No attempt to stop | `refused/attempt_missing` | Never invent absence |
 | Stop argument conflict / active stop | `refused/stop_conflict` or `stop_in_flight` | Original intent and deadline |
-| Stop intent or stopped-record uncertainty | `unresolved/stop_intent_uncertain` or `stopped_uncertain` | Close admission; keep partial files |
+| Stop intent durability uncertain | Continue helper; result timing uses the original in-process deadline or `unknown` after restart | Close admission with reason `stop_intent_uncertain`; preserve memory arguments and partial files |
+| Stopped-record uncertainty | `unresolved/stopped_uncertain` | Close admission; keep partial files; never claim absence |
 | Nonzero exit / malformed result / remaining processes | `unresolved/helper_exit`, `helper_result_invalid`, `processes_remain` | Closed; no stopped record |
 | Helper `ok:false` | `unresolved`, helper code | Closed; no stopped record |
 | Stop call timeout | `unresolved/stop_timeout` | Closed; original intent; no stopped record; later safe narrowing allowed |
@@ -221,9 +229,9 @@ with its non-timely timing. This is not a deliberate contract departure.
 | Verified absence | `absent` | Exclusive `stopped-<generation>` binds execution; late absence leaves admission closed |
 | Latch persistence fails | `latch_uncertain` where applicable | In-memory closed; unresolved attempt or stopped record carrying `closed:true` preserves the fail-closed restart obligation |
 | Crash/reboot with unstopped attempt | Startup writes `closed` | No recovery or second launch |
-| Unknown/corrupt/orphan state entry, stopped without intent, wrong log type/mode, malformed truncation/loss record | Startup refuses | No repair |
+| Unknown entry, parseable corrupt/orphan state, stopped without any intent, wrong log type/mode, parseable wrong truncation/loss content | Startup refuses | No repair |
+| Torn known state record (zero length or invalid JSON) | Startup remains available with admission closed; `status.torn` lists names | No repair, no invented stopped fact; stop continues where execution identity is known |
 | Protected garbage or empty `closed` content | Startup remains closed | The protected inode is the latch; content is not parsed; stop remains available |
-| Random source failure | `refused/random_unavailable` | No attempt or child |
 | Internal launcher/helper request bound | `unknown/launcher_request_limit` or `unresolved/helper_request_limit` | Closed; attempt/intent retained; unreachable under current valid input bounds |
 | Helper delivery/start failure | `unresolved/helper_io` | Closed; original intent; no stopped record |
 | Shutdown during a wait | `unknown/shutdown` or `unresolved/shutdown` | Closed; no claim of absence; no signal |
@@ -235,12 +243,45 @@ calling the helper; a failed/unresolved stop persists the latch. A successful
 first stop allows the next roster generation after prior child resources finish.
 This reads the sequential-admission rule literally; it does not clear a
 previously written latch. `demo.status` returns `state:"facts"`, `closed`, and
-preserved `attempt`/`stopped` and `output_loss` where present, never current process
+preserved `attempt`/`stopped`, `torn` and `output_loss` where present, never current process
 liveness. A launch request ID may repeat across accounts; a stop ID is scoped to
-one account. After `receipt_timeout`, a helper can report `remaining:0` while the
+one account. A stop ID must differ from that generation’s launch ID. After `receipt_timeout`, a helper can report `remaining:0` while the
 launcher's sudo child is still alive. Stop then records `absent`, but admission
 stays closed. The helper owner must qualify its latest-receipt and process
 ownership rules; this dispatcher never signals that sudo child to stop the agent.
+
+### Torn records and restart continuation
+
+A zero-length or invalid-JSON `attempt-`, `stop-`, `stopped-`, `.truncated` or
+`.lost` record is torn. Startup preserves the file, closes admission and lists
+its name in `demo.status.torn`. A torn stopped record is never evidence of
+absence; a torn attempt still spends its generation. Parseable wrong members or
+fields still refuse startup. Protected `closed` content is always a latch,
+including garbage. Ownership/type/mode/link violations and size-limit violations
+remain startup refusals. No recovery path overwrites, removes or renames a file.
+
+Failure to persist a stop intent does not prevent the helper call. In-process
+retries use the arguments held in memory and the original monotonic deadline.
+After restart, a torn intent has no trusted original arguments: accept the retry's
+own valid arguments, report timing `unknown`, and rely on the helper's request-ID
+handling. An intact intent retains its arguments. A durable completion without
+recoverable original arguments cannot be replayed as the same request. A later
+absence still requires creation and fsync of `stopped-`; an occupied torn name
+therefore reports `stopped_uncertain` rather than being repaired. A torn attempt
+with no intact intent has no execution ID: status and other accounts' stop remain
+available, while its stop returns `attempt_identity_unknown`.
+
+Restart does not wait out an earlier helper. The helper **must safely handle a
+same-effect `exec.stop` while an earlier invocation remains alive**, including
+identical request IDs. Its request-ID scope is the caller; IDs do not authorize
+new effects or changed arguments. A helper descendant must close inherited
+stdout/stderr: retaining a pipe produces `stop_timeout`, followed in-process by
+`stop_in_flight` until the pipe closes. These are requirements for the separate
+helper owner, not behavior qualified by the fake child.
+
+Cancellation before the launch marker is a refusal without effects. Cancellation
+observed during receipt observation returns `unknown/shutdown`, including the
+durable latch reason; it is not evidence that a live child exited.
 
 ## Test evidence boundary
 

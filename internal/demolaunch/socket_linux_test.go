@@ -38,69 +38,6 @@ func testWire(t *testing.T, f *os.File) *socketIO {
 	return w
 }
 
-// Kernel peer and pin verification precedes the first read. MSG_PEEK observes
-// the exact queued bytes after rejection; a valid peer consumes the same probe.
-func TestPeerGateBeforeRead(t *testing.T) {
-	h := fixture(t, "good")
-	for _, wrong := range []bool{false, true} {
-		a, b := socketPair(t)
-		w := testWire(t, a)
-		if err := w.writeFrame(`{"protocol":"swarma-demo-dispatcher/1"}`); err != nil {
-			t.Fatal(err)
-		}
-		uid := uint32(os.Geteuid())
-		if wrong {
-			uid++
-		}
-		called := false
-		err := authenticate(b, uid, func() error { called = true; return nil })
-		if wrong {
-			if !errors.Is(err, ErrIdentity) || called {
-				t.Fatal("wrong peer passed", err, called)
-			}
-			var probe [4]byte
-			err = control(b, func(fd int) error {
-				n, _, e := syscall.Recvfrom(fd, probe[:], syscall.MSG_PEEK|syscall.MSG_DONTWAIT)
-				if n != 4 {
-					t.Errorf("prefix consumed: %d", n)
-				}
-				return e
-			})
-			if err != nil || probe != [4]byte{0, 0, 0, 39} {
-				t.Fatal("peer bytes changed", probe, err)
-			}
-		} else {
-			if err != nil || !called {
-				t.Fatal(err)
-			}
-			done := make(chan error, 1)
-			go func() { done <- serveOperation(b, time.Now(), func() error { return nil }, h.e) }()
-			if _, err = w.readFrame(); err != nil {
-				t.Fatal(err)
-			}
-			if err = w.writeFrame(`{"op":"demo.status","account":"demo"}`); err != nil {
-				t.Fatal(err)
-			}
-			reply, err := w.readFrame()
-			if err != nil || !bytes.Contains(reply, []byte(`"state":"facts"`)) {
-				t.Fatal(string(reply), err)
-			}
-			select {
-			case err = <-done:
-				if err != nil {
-					t.Fatal(err)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("server blocked")
-			}
-		}
-	}
-	a, _ := socketPair(t)
-	if err := authenticate(a, uint32(os.Geteuid()), func() error { return ErrIdentity }); !errors.Is(err, ErrIdentity) {
-		t.Fatal(err)
-	}
-}
-
 // The actual accept path permits only the pinned current-UID fixture and
 // refuses the ninth connection. It does not qualify distinct deployed UIDs.
 func TestAcceptSlotsAndDemoIdentity(t *testing.T) {
@@ -336,6 +273,16 @@ func serveFixture(t *testing.T, h *harness, variant string, supplied ...*slots) 
 	stop := &shutdown{cancel: cancel}
 	done := make(chan error, 1)
 	peer := peerUID
+	if variant == "root-peer" {
+		peer = func(*os.File) (uint32, error) { return 0, nil }
+	}
+	if variant == "service-peer" {
+		c.ServiceUID = c.Caller.UID + 2
+		peer = func(*os.File) (uint32, error) { return c.ServiceUID, nil }
+	}
+	if variant == "peer-error" {
+		peer = func(*os.File) (uint32, error) { return 0, syscall.EIO }
+	}
 	if variant == "peer" {
 		peer = func(f *os.File) (uint32, error) { uid, err := peerUID(f); return uid + 1, err }
 	}
@@ -343,13 +290,17 @@ func serveFixture(t *testing.T, h *harness, variant string, supplied ...*slots) 
 	if len(supplied) > 0 {
 		resources = supplied[0]
 	}
+	if variant == "accept-recheck" {
+		resources.pinChecked = func() { must(t, os.Chmod(pinPath, 0750)) }
+	}
 	if variant == "global-full" {
 		resources.total = 64
 	}
 	if variant == "global-room" {
 		resources.total = 63
 	}
-	go func() { done <- serveWith(ctx, endpoint, c, stop, h.e, peer, resources) }()
+	resources.peer = peer
+	go func() { done <- serve(ctx, endpoint, c, stop, h.e, resources) }()
 	finish := func() {
 		stop.request(nil)
 		select {
@@ -364,7 +315,7 @@ func serveFixture(t *testing.T, h *harness, variant string, supplied ...*slots) 
 	return endpoint, func() { must(t, os.Chmod(pinPath, 0750)) }, pinPath
 }
 
-// Real accept controls kill bypasses of peer enrollment, principal mode,
+// Real accept controls exercise bypasses of peer enrollment, principal mode,
 // device/inode, replacement, operation recheck and global admission. A positive
 // exchange accompanies every refusal family; no distinct deployed UID is claimed.
 func TestServeEnrollmentGuards(t *testing.T) {
@@ -428,7 +379,7 @@ func TestServeEnrollmentGuards(t *testing.T) {
 
 // Detected write failure after a real launcher call closes admission. The
 // receipt reader handshake closes the peer before the result write, with no
-// timing race or client retry. Kills omission of the lost-reply latch.
+// timing race or client retry. Intended witness for omission of the lost-reply latch.
 func TestLostLaunchReplyCloses(t *testing.T) {
 	for _, lost := range []bool{false, true} {
 		t.Run(jsonNumber(boolInt(lost)), func(t *testing.T) {
@@ -482,14 +433,14 @@ func TestLostLaunchReplyCloses(t *testing.T) {
 }
 
 // Mutate only after accept has registered its pinned worker, or after a real
-// launch. Kills removing either session pin recheck; releasing each UID/global
+// launch. Intended witness for removing either session pin recheck; releasing each UID/global
 // slot is observed before the next valid control rather than assumed by timing.
 func TestServePinRechecksAndSlotRelease(t *testing.T) {
 	for _, stage := range []string{"valid", "before-hello", "before-result"} {
 		t.Run(stage, func(t *testing.T) {
 			h := fixture(t, "good")
 			slots := newSlots()
-			ep, change, _ := serveFixture(t, h, "valid", slots)
+			change := func() { must(t, os.Chmod(filepath.Join(h.root, "caller"), 0750)) }
 			if stage == "before-result" {
 				real := h.e.readReceipt
 				h.e.readReceipt = func(a account, id string) ([]byte, error) {
@@ -500,6 +451,7 @@ func TestServePinRechecksAndSlotRelease(t *testing.T) {
 					return b, e
 				}
 			}
+			ep, _, _ := serveFixture(t, h, "valid", slots)
 			f, err := connectSocket(ep.dir, time.Now())
 			must(t, err)
 			defer wakeClose(f)
@@ -570,7 +522,7 @@ func TestServePinRechecksAndSlotRelease(t *testing.T) {
 // queued hello. The admitted control enters exactly hello + operation intake.
 // The observer counts reads but supplies no bytes and changes no verdict.
 func TestServePeerBeforeFrameIntake(t *testing.T) {
-	for _, variant := range []string{"valid", "peer"} {
+	for _, variant := range []string{"valid", "peer", "root-peer", "service-peer", "mode", "replaced", "device", "inode", "peer-error", "accept-recheck"} {
 		t.Run(variant, func(t *testing.T) {
 			h := fixture(t, "good")
 			resources := newSlots()
@@ -590,6 +542,19 @@ func TestServePeerBeforeFrameIntake(t *testing.T) {
 				if err == nil || reads.Load() != 0 {
 					t.Fatal("peer consumed input", reads.Load(), reply, err)
 				}
+			}
+			until := time.Now().Add(10 * time.Second)
+			for {
+				resources.mu.Lock()
+				total := resources.total
+				resources.mu.Unlock()
+				if total == 0 {
+					break
+				}
+				if time.Now().After(until) {
+					t.Fatal("refusal leaked global slot", total)
+				}
+				time.Sleep(time.Millisecond)
 			}
 			if h.calls.Load() != 0 {
 				t.Fatal("intake caused effect")

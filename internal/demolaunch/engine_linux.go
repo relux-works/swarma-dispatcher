@@ -23,6 +23,8 @@ type stopRecord struct {
 	terminal *response
 }
 type engine struct {
+	torn                            []string
+	tornIntents                     map[string]bool
 	mu                              sync.Mutex
 	ctx                             context.Context
 	store                           *stateStore
@@ -45,7 +47,10 @@ type engine struct {
 }
 
 func newEngine(ctx context.Context, store *stateStore, accounts []account, cfg serverConfig) (*engine, error) {
-	e := &engine{ctx: ctx, store: store, accounts: map[string]account{}, attempts: map[string]attempt{}, stopped: map[string]bool{}, stops: map[string]*stopRecord{}, launchChildren: map[string]*child{}, run: fixedRunner, readFile: readSnapshot, now: time.Now, executor: cfg.Executor, receiptRoot: cfg.ReceiptRoot, receiptWait: 10 * time.Second, stopWait: 45 * time.Second}
+	return newEngineWithRunner(ctx, store, accounts, cfg, fixedRunner)
+}
+func newEngineWithRunner(ctx context.Context, store *stateStore, accounts []account, cfg serverConfig, run runner) (*engine, error) {
+	e := &engine{tornIntents: map[string]bool{}, ctx: ctx, store: store, accounts: map[string]account{}, attempts: map[string]attempt{}, stopped: map[string]bool{}, stops: map[string]*stopRecord{}, launchChildren: map[string]*child{}, run: run, readFile: readSnapshot, now: time.Now, executor: cfg.Executor, receiptRoot: cfg.ReceiptRoot, receiptWait: 10 * time.Second, stopWait: 45 * time.Second}
 	for _, a := range accounts {
 		e.accounts[a.Name] = a
 	}
@@ -76,7 +81,7 @@ func (e *engine) handle(b []byte) (reply response) {
 func (e *engine) status(name string) response {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	r := response{State: "facts", Closed: e.closed, Stopped: e.stopped[name], OutputLoss: e.outputLoss(name)}
+	r := response{State: "facts", Closed: e.closed, Stopped: e.stopped[name], OutputLoss: e.outputLoss(name), Torn: append([]string(nil), e.torn...)}
 	if a, ok := e.attempts[name]; ok {
 		copy := a
 		r.Attempt = &copy
@@ -125,13 +130,14 @@ func (e *engine) launch(r request, raw []byte) response {
 		}
 	}
 	var nonce [16]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		e.mu.Unlock()
-		return refusal("random_unavailable")
-	}
+	rand.Read(nonce[:])
 	digest := sha256.Sum256(raw)
-	at := attempt{Digest: hex.EncodeToString(digest[:]), ExecutionID: "EX-" + hex.EncodeToString(nonce[:]), Time: time.Now().UTC().Format(time.RFC3339Nano)}
+	at := attempt{RequestID: r.RequestID, Digest: hex.EncodeToString(digest[:]), ExecutionID: "EX-" + hex.EncodeToString(nonce[:]), Time: time.Now().UTC().Format(time.RFC3339Nano)}
 	a := e.accounts[r.Account]
+	if e.ctx.Err() != nil {
+		e.mu.Unlock()
+		return refusal("shutdown")
+	}
 	if err := e.store.create("attempt-"+a.Generation, marshal(at)); err != nil {
 		e.closed = true
 		_ = e.closeAdmission("marker_uncertain")
@@ -184,6 +190,9 @@ func (e *engine) launch(r request, raw []byte) response {
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
+		if e.ctx.Err() != nil {
+			return e.unknown("shutdown")
+		}
 		exited := false
 		select {
 		case <-ch.done:
@@ -200,6 +209,9 @@ func (e *engine) launch(r request, raw []byte) response {
 			return e.unknown("log_unavailable")
 		}
 		b, err := e.readReceipt(a, at.ExecutionID)
+		if e.ctx.Err() != nil {
+			return e.unknown("shutdown")
+		}
 		if err == nil {
 			rec, err := parseReceipt(b, at.ExecutionID)
 			if err != nil {
@@ -214,6 +226,9 @@ func (e *engine) launch(r request, raw []byte) response {
 			return e.unknown("receipt_mismatch")
 		}
 		if exited {
+			if e.ctx.Err() != nil {
+				return e.unknown("shutdown")
+			}
 			return e.unknown("launcher_exit")
 		}
 		select {
@@ -275,6 +290,14 @@ func (e *engine) stop(r request) response {
 		e.mu.Unlock()
 		return refusal("attempt_missing")
 	}
+	if at.ExecutionID == "" {
+		e.mu.Unlock()
+		return refusal("attempt_identity_unknown")
+	}
+	if r.RequestID == at.RequestID {
+		e.mu.Unlock()
+		return refusal("request_id_conflict")
+	}
 	// Do not race a not-yet-issued launcher with a stop. Once launch returns
 	// unknown or receipt-seen, stop is available regardless of admission latch.
 	if e.launching {
@@ -306,10 +329,12 @@ func (e *engine) stop(r request) response {
 		}
 		now := time.Now()
 		s = &stopRecord{intent: stopIntent{r.RequestID, at.ExecutionID, r.Grace, now.UTC().Format(time.RFC3339Nano)}, deadline: callDeadline}
+		if e.tornIntents[r.Account] {
+			s.deadline = time.Time{}
+		}
+		// Keep original arguments in memory even when the exclusive file is torn.
 		if err := e.store.create("stop-"+a.Generation, marshal(s.intent)); err != nil {
 			_ = e.closeAdmission("stop_intent_uncertain")
-			e.mu.Unlock()
-			return response{State: "unresolved", Code: "stop_intent_uncertain", Timing: "unknown", Closed: true}
 		}
 		e.stops[r.Account] = s
 	}

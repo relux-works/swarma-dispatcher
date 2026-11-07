@@ -236,7 +236,7 @@ func (e *engine) logCapture(generation, stream string) (*capture, error) {
 		f.Close()
 		return nil, err
 	}
-	return &capture{file: f, limit: logCap, onTruncate: func() error { return e.store.create(name+".truncated", []byte("true")) }, onLoss: func() error { return e.store.create(name+".lost", []byte("output_lost")) }}, nil
+	return &capture{file: f, limit: logCap, onTruncate: func() error { return e.store.create(name+".truncated", []byte("true")) }, onLoss: func() error { return e.store.create(name+".lost", []byte(`"output_lost"`)) }}, nil
 }
 
 // capture.mu is held; persist at most once, continue draining on every failure.

@@ -142,6 +142,7 @@ func TestReceiptContract(t *testing.T) {
 var forbiddenCalls = map[string]bool{
 	"Remove": true, "RemoveAll": true, "Rename": true, "Renameat": true, "Renameat2": true,
 	"Rmdir": true, "Unlink": true, "Unlinkat": true, "Truncate": true, "Ftruncate": true,
+	"WriteFile": true, "Create": true, "Creat": true, "Chmod": true, "Fchmod": true, "Link": true, "Symlink": true, "Mknod": true, "CommandContext": true, "Pdeathsig": true, "Syscall": true,
 	"O_TRUNC": true, "Kill": true, "Signal": true, "Tkill": true, "Tgkill": true, "PidfdSendSignal": true,
 }
 
@@ -221,7 +222,7 @@ func TestStateMutationChecker(t *testing.T) {
 func TestFixedRunnerCommand(t *testing.T) {
 	for _, path := range []string{launcherPath, managerPath} {
 		c := fixedRunner(path)
-		if c.Path != "/usr/bin/sudo" || len(c.Args) != 3 || c.Args[0] != "/usr/bin/sudo" || c.Args[1] != "-n" || c.Args[2] != path || c.Env == nil || len(c.Env) != 0 || c.Dir != "/" {
+		if c.Path != "/usr/bin/sudo" || len(c.Args) != 3 || c.Args[0] != "/usr/bin/sudo" || c.Args[1] != "-n" || c.Args[2] != path || c.Env == nil || len(c.Env) != 0 || c.Dir != "/" || (c.SysProcAttr != nil && c.SysProcAttr.Pdeathsig != 0) {
 			t.Fatal("command changed", c.Path, c.Args, c.Env, c.Dir)
 		}
 	}
@@ -274,15 +275,17 @@ func boundaryReferences(src []byte, function string, required []string) (bool, e
 }
 
 // Non-root composed tests cannot execute distinct-UID deployment. This narrow
-// source guard additionally kills deletion of entrypoint boundary wiring; each
+// source guard additionally detects deletion of entrypoint boundary wiring; each
 // required reference has a known omission control. It does not prove execution
 // order or replace root-owned-config, sudo and distinct-user qualification.
 func TestEntrypointBoundaryWiring(t *testing.T) {
 	b, err := os.ReadFile("service_linux.go")
 	must(t, err)
 	for fn, required := range map[string][]string{
-		"Daemon": {"loadServerInputs", "protectedSnapshot", "runtimeConfig", "principalPin", "endpointPin", "createEndpointCalls", "openState", "newEngine", "serve"},
-		"Client": {"parseRequest", "sourceSnapshot", "parseClient", "runtimeConfig", "principalPin", "endpointPin", "socketIdentity", "verifyPeer", "clientExchange"},
+		"Daemon":          {"loadServerInputs", "protectedSnapshot", "runtimeConfig", "principalPin", "endpointPin", "createEndpointCalls", "openState", "newEngine", "serve"},
+		"Client":          {"clientWith", "loadClientInput", "runtimeConfig", "endpointPin"},
+		"loadClientInput": {"sourceSnapshot", "parseClient"},
+		"clientWith":      {"parseRequest", "principalPin", "socketIdentity", "verifyPeer", "clientExchange"},
 	} {
 		ok, err := boundaryReferences(b, fn, required)
 		if err != nil || !ok {

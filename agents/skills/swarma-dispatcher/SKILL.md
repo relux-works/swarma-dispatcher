@@ -1,6 +1,6 @@
 ---
 name: swarma-dispatcher
-description: Use Swarma Dispatcher's capacity-refusal CLI and internal Go components; distinguish implemented transport from proposed launch contracts.
+description: Use Swarma Dispatcher's capacity-refusal CLI and the separate demo launch cut; distinguish both from a conforming production dispatcher.
 ---
 
 # Swarma Dispatcher

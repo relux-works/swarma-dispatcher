@@ -30,6 +30,13 @@ func TestFakeChild(t *testing.T) {
 		return
 	}
 	mode, root := os.Getenv("DEMO_FAKE_MODE"), os.Getenv("DEMO_FAKE_ROOT")
+	if err := os.WriteFile(filepath.Join(root, "child-"+os.Getenv("DEMO_FAKE_CALL")+".pid"), []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+		os.Exit(42)
+	}
+	if mode == "never-read" {
+		fakeWait(root, "release-stop")
+		os.Exit(0)
+	}
 	b, err := io.ReadAll(io.LimitReader(os.Stdin, 81921))
 	if err != nil || len(b) > 81920 {
 		os.Exit(31)
@@ -53,6 +60,32 @@ func TestFakeChild(t *testing.T) {
 	}
 	if (op == "launch.start" && record.Path != "/usr/local/libexec/swarma/swarma-user-launcher") || (op == "exec.stop" && record.Path != "/usr/local/libexec/swarma/swarma-user-manager") {
 		os.Exit(37)
+	}
+	if mode == "closed-pipes" && op == "exec.stop" {
+		os.Stdout.Close()
+		os.Stderr.Close()
+		fakeWait(root, "release-stop")
+		os.Exit(0)
+	}
+	if mode == "observe" {
+		entries, e := os.ReadDir("/proc/self/fd")
+		if e != nil {
+			os.Exit(40)
+		}
+		var inherited []string
+		for _, entry := range entries {
+			fd, e := strconv.Atoi(entry.Name())
+			if e != nil || fd < 3 {
+				continue
+			}
+			flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_GETFD, 0)
+			if errno == 0 && flags&syscall.FD_CLOEXEC == 0 {
+				inherited = append(inherited, entry.Name())
+			}
+		}
+		if len(inherited) > 0 || os.Getenv("DEMO_PARENT_SECRET") != "" {
+			os.Exit(41)
+		}
 	}
 	if mode == "hold-stop" && op == "exec.stop" {
 		fakeWait(root, "release-stop")
@@ -111,8 +144,15 @@ func TestFakeChild(t *testing.T) {
 			fakeWait(root, "release-launch")
 		}
 		if mode == "after-output" {
-			os.Stdout.Write(bytes.Repeat([]byte{'z'}, 2<<20))
-			os.Stderr.Write(bytes.Repeat([]byte{'z'}, 2<<20))
+			if n, e := os.Stdout.Write(bytes.Repeat([]byte{'z'}, 2<<20)); e != nil || n != 2<<20 {
+				os.Exit(34)
+			}
+			if n, e := os.Stderr.Write(bytes.Repeat([]byte{'z'}, 2<<20)); e != nil || n != 2<<20 {
+				os.Exit(35)
+			}
+			if e := os.WriteFile(filepath.Join(root, "output-complete"), nil, 0600); e != nil {
+				os.Exit(36)
+			}
 		}
 		os.Exit(0)
 	}
@@ -138,7 +178,11 @@ func TestFakeChild(t *testing.T) {
 	case "slow":
 		fakeWait(root, "release-stop")
 	case "overflow":
-		result = strings.Repeat("x", 16385)
+		result += strings.Repeat(" ", 16385)
+	case "signal":
+		os.Stdout.WriteString(result)
+		syscall.Kill(os.Getpid(), syscall.SIGKILL)
+		select {}
 	}
 	os.Stdout.WriteString(result)
 	if mode == "false-nonzero" {
@@ -188,7 +232,7 @@ func fixture(t *testing.T, mode string) *harness {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	accounts := []account{{"demo", 30000, 30000, gen, "demo-service"}, {"second", 30019, 30019, gen2, "demo-service"}}
-	e, err := newEngine(ctx, store, accounts, serverConfig{Executor: "demo-executor"})
+	e, err := testEngine(t, ctx, store, accounts, serverConfig{Executor: "demo-executor"})
 	if err != nil {
 		cancel()
 		t.Fatal(err)
@@ -222,6 +266,41 @@ func fixture(t *testing.T, mode string) *harness {
 		for _, s := range e.stops {
 			if s.child != nil {
 				waitChild(t, s.child, until)
+			}
+		}
+
+		// Cancellation releases product handles without reaping a still-live
+		// fake. Keep its release files present until our own PID is reaped.
+		pids, err := filepath.Glob(filepath.Join(root, "child-*.pid"))
+		if err != nil {
+			t.Error(err)
+		}
+		for _, name := range pids {
+			b, err := os.ReadFile(name)
+			if err != nil {
+				t.Error(err)
+				continue
+			}
+			pid, err := strconv.Atoi(string(b))
+			if err != nil {
+				t.Error(err)
+				continue
+			}
+			for {
+				var status syscall.WaitStatus
+				got, err := syscall.Wait4(pid, &status, syscall.WNOHANG, nil)
+				if got == pid || errors.Is(err, syscall.ECHILD) {
+					break
+				}
+				if err != nil && err != syscall.EINTR {
+					t.Error(err)
+					break
+				}
+				if time.Now().After(until) {
+					t.Error("fixture child did not exit after release", pid)
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
 			}
 		}
 		cancel()
@@ -279,7 +358,7 @@ func TestLaunchMarkerRestart(t *testing.T) {
 	marker := fileBytes(t, h, "attempt-"+gen)
 	assertState(t, h.e.handle(launchBytes("demo")), "refused", "attempt_exists")
 	assertState(t, h.e.handle(launchBytes("second")), "refused", "attempt_unstopped")
-	restarted, err := newEngine(h.e.ctx, h.e.store, []account{h.e.accounts["demo"], h.e.accounts["second"]}, serverConfig{})
+	restarted, err := testEngine(t, h.e.ctx, h.e.store, []account{h.e.accounts["demo"], h.e.accounts["second"]}, serverConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +468,7 @@ func TestLogsKeepDraining(t *testing.T) {
 // Only matching ok:true/remaining:0 establishes absence. Exit zero alone,
 // malformed bytes, helper refusal, remaining processes and deadline expiry do not.
 func TestStopResults(t *testing.T) {
-	for _, tc := range []struct{ mode, code string }{{"good", ""}, {"remaining", "processes_remain"}, {"false", "target_not_owned"}, {"false-nonzero", "target_not_owned"}, {"overflow", "helper_result_invalid"}, {"malformed", "helper_result_invalid"}, {"empty", "helper_result_invalid"}, {"nonzero", "helper_exit"}, {"slow", "stop_timeout"}} {
+	for _, tc := range []struct{ mode, code string }{{"good", ""}, {"remaining", "processes_remain"}, {"false", "target_not_owned"}, {"false-nonzero", "target_not_owned"}, {"overflow", "helper_result_invalid"}, {"malformed", "helper_result_invalid"}, {"empty", "helper_result_invalid"}, {"nonzero", "helper_exit"}, {"signal", "helper_exit"}, {"slow", "stop_timeout"}} {
 		t.Run(tc.mode, func(t *testing.T) {
 			h := fixture(t, "good")
 			assertState(t, h.e.handle(launchBytes("demo")), "receipt-seen", "")
@@ -398,6 +477,12 @@ func TestStopResults(t *testing.T) {
 				h.e.stopWait = 5 * time.Second
 			}
 			r := h.e.handle(stopBytes(10))
+			if tc.mode == "overflow" {
+				data, over, _ := h.e.stops["demo"].child.stdout.snapshot()
+				if len(data) != 16384 || !over {
+					t.Fatal("helper capture bound", len(data), over)
+				}
+			}
 			if tc.code == "" {
 				assertState(t, r, "absent", "")
 				fileBytes(t, h, "stopped-"+gen)
@@ -454,7 +539,7 @@ func TestStopRetryAndRestart(t *testing.T) {
 	if h.calls.Load() != count {
 		t.Fatal("terminal replay called helper")
 	}
-	restarted, err := newEngine(h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
+	restarted, err := testEngine(t, h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +618,7 @@ func TestClosedStopAndStoppedRestart(t *testing.T) {
 	control := fixture(t, "good")
 	assertState(t, control.e.handle(launchBytes("demo")), "receipt-seen", "")
 	assertState(t, control.e.handle(stopBytes(10)), "absent", "")
-	restarted, err := newEngine(control.e.ctx, control.e.store, []account{control.e.accounts["demo"], control.e.accounts["second"]}, serverConfig{})
+	restarted, err := testEngine(t, control.e.ctx, control.e.store, []account{control.e.accounts["demo"], control.e.accounts["second"]}, serverConfig{})
 	if err != nil || restarted.closed || !restarted.stopped["demo"] {
 		t.Fatal("stopped restart", err)
 	}
@@ -581,7 +666,7 @@ func TestRefusalPreservesClosedFact(t *testing.T) {
 
 // File handshakes synchronize the fake without assuming a scheduling latency.
 func fakeWait(root, name string) {
-	end := time.Now().Add(30 * time.Second)
+	end := time.Now().Add(90 * time.Second)
 	for time.Now().Before(end) {
 		if _, err := os.Stat(filepath.Join(root, name)); err == nil {
 			return

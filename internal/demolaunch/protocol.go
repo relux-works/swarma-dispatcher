@@ -218,6 +218,7 @@ func parseReceipt(b []byte, execution string) (*receipt, error) {
 }
 
 type response struct {
+	Torn       []string `json:"torn,omitempty"`
 	OutputLoss []string `json:"output_loss,omitempty"`
 	State      string   `json:"state"`
 	Code       string   `json:"code,omitempty"`
@@ -232,6 +233,7 @@ func refusal(code string) response { return response{State: "refused", Code: cod
 func marshal(v any) []byte         { b, _ := json.Marshal(v); return b }
 
 type attempt struct {
+	RequestID   string `json:"request_id"`
 	Digest      string `json:"request_digest"`
 	ExecutionID string `json:"execution_id"`
 	Time        string `json:"time"`

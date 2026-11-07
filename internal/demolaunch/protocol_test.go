@@ -126,7 +126,7 @@ func TestConfigRosterBounds(t *testing.T) {
 	}
 }
 
-// Canonical neighboring encodings kill accepting nonzero pad bits, embedded
+// Canonical neighboring encodings reject nonzero pad bits, embedded
 // whitespace or omitted padding even when a permissive decoder accepts them.
 func TestCanonicalPlan(t *testing.T) {
 	for _, plan := range []string{"AA==", "AAA=", "AAAA", ""} {
@@ -196,5 +196,68 @@ func TestClientConfig(t *testing.T) {
 	cfg["executor"] = "forbidden"
 	if _, err := parseClient(marshal(cfg)); !errors.Is(err, ErrConfig) {
 		t.Fatal(err)
+	}
+}
+
+// Lower and upper format neighbors exercise parsers, not only regex helpers.
+// Managed caller IDs remain forbidden; these are no account-enrollment tests.
+func TestFormatBoundaries(t *testing.T) {
+	for _, n := range []int{31, 32, 33} {
+		b := strings.Replace(string(rosterFixture(30000)), "0123456789abcdef0123456789abcdef", strings.Repeat("a", n), 1)
+		_, err := parseRoster([]byte(b), "demo-service")
+		if n == 32 && err != nil || n != 32 && !errors.Is(err, ErrConfig) {
+			t.Fatal("generation", n, err)
+		}
+	}
+	for _, n := range []int{0, 1, 32, 33} {
+		b := marshal(map[string]string{"op": "demo.status", "account": strings.Repeat("a", n)})
+		_, err := parseRequest(b)
+		if (n == 1 || n == 32) && err != nil || (n == 0 || n == 33) && !errors.Is(err, ErrInvalid) {
+			t.Fatal("name", n, err)
+		}
+	}
+	for _, uid := range []int{29999, 30000, 59999, 60000} {
+		c := cfgFixture()
+		c["caller"].(map[string]any)["uid"] = uid
+		_, err := parseServer(marshal(c))
+		if (uid == 29999 || uid == 60000) && err != nil || (uid == 30000 || uid == 59999) && !errors.Is(err, ErrConfig) {
+			t.Fatal("caller", uid, err)
+		}
+	}
+	for _, n := range []int{0, 1, 64, 65} {
+		b := marshal(map[string]string{"op": "demo.stop", "request_id": strings.Repeat("x", n), "account": "demo"})
+		_, err := parseRequest(b)
+		if (n == 1 || n == 64) && err != nil || (n == 0 || n == 65) && !errors.Is(err, ErrInvalid) {
+			t.Fatal("id", n, err)
+		}
+	}
+	for _, key := range []string{"service_gid", "connect_gid", "endpoint_dev", "endpoint_ino"} {
+		for _, v := range []uint64{0, 9007199254740992} {
+			c := cfgFixture()
+			c[key] = v
+			if _, err := parseServer(marshal(c)); !errors.Is(err, ErrConfig) {
+				t.Fatal(key, v, err)
+			}
+		}
+	}
+	for _, b := range []string{`{"op":"demo.launch","account":"demo","request_id":"r"}`, `{"op":"demo.stop","account":"demo","request_id":"r","plan":""}`, `{"op":"demo.status","account":"demo","request_id":"r"}`} {
+		if _, err := parseRequest([]byte(b)); !errors.Is(err, ErrInvalid) {
+			t.Fatal(b, err)
+		}
+	}
+}
+
+// Principal precision and zero neighbors use the protected config parser.
+func TestPrincipalNumberBounds(t *testing.T) {
+	for _, key := range []string{"dev", "ino"} {
+		for _, n := range []uint64{0, 1, 9007199254740991, 9007199254740992} {
+			c := cfgFixture()
+			c["caller"].(map[string]any)[key] = n
+			_, err := parseServer(marshal(c))
+			valid := n == 1 || n == 9007199254740991
+			if valid && err != nil || !valid && !errors.Is(err, ErrConfig) {
+				t.Fatal(key, n, err)
+			}
+		}
 	}
 }

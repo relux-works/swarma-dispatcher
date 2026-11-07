@@ -14,13 +14,13 @@ import (
 )
 
 // Every corrupt auxiliary record has a valid neighboring startup control.
-// Kills accepting orphan stopped facts, unchecked logs/flags and lost startup
+// Intended witness for accepting orphan stopped facts, unchecked logs/flags and lost startup
 // latch persistence errors. No startup repairs or removes fixture evidence.
 func TestStartupStateRows(t *testing.T) {
 	for _, variant := range []string{"valid", "unstopped", "garbage-closed", "stopped-without-intent", "orphan", "unknown", "attempt-corrupt", "intent-corrupt", "intent-binding", "stopped-corrupt", "stopped-binding", "log-mode", "log-directory", "log-fifo", "log-link", "truncated-content", "lost-content", "startup-latch-sync"} {
 		t.Run(variant, func(t *testing.T) {
 			h := fixture(t, "good")
-			at := []byte(`{"request_digest":"` + strings.Repeat("a", 64) + `","execution_id":"EX-0123456789abcdef0123456789abcdef","time":"2026-01-01T00:00:00Z"}`)
+			at := []byte(`{"request_id":"r","request_digest":"` + strings.Repeat("a", 64) + `","execution_id":"EX-0123456789abcdef0123456789abcdef","time":"2026-01-01T00:00:00Z"}`)
 			intent := []byte(`{"request_id":"stop-1","execution_id":"EX-0123456789abcdef0123456789abcdef","grace_seconds":10,"time":"2026-01-01T00:00:00Z"}`)
 			stopped := []byte(`{"execution_id":"EX-0123456789abcdef0123456789abcdef","timing":"timely","closed":false,"code":""}`)
 			if variant == "attempt-corrupt" {
@@ -69,9 +69,9 @@ func TestStartupStateRows(t *testing.T) {
 				flag = []byte("false")
 			}
 			must(t, h.e.store.create("output-"+gen+"-stdout.truncated", flag))
-			loss := []byte("output_lost")
+			loss := []byte(`"output_lost"`)
 			if variant == "lost-content" {
-				loss = []byte("wrong")
+				loss = []byte(`"wrong"`)
 			}
 			must(t, h.e.store.create("output-"+gen+"-stderr.lost", loss))
 			if variant == "startup-latch-sync" {
@@ -79,7 +79,7 @@ func TestStartupStateRows(t *testing.T) {
 			}
 			before, err := os.ReadDir(filepath.Join(h.root, "state"))
 			must(t, err)
-			e, err := newEngine(h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
+			e, err := testEngine(t, h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
 			switch variant {
 			case "valid", "unstopped", "garbage-closed":
 				must(t, err)
@@ -206,7 +206,7 @@ func TestProtectedReadsAndEntrypoints(t *testing.T) {
 
 // Composed server loading reaches both actual protected file reads. The fixed
 // roster path/modes/caps are asserted before mapping it to a current-UID fixture.
-// Kills removal of roster protection and frozen-path substitution.
+// Intended witness for removal of roster protection and frozen-path substitution.
 func TestServerProtectedInputWiring(t *testing.T) {
 	for _, variant := range []string{"valid", "config-mode", "roster-mode", "roster-symlink"} {
 		t.Run(variant, func(t *testing.T) {
@@ -273,7 +273,7 @@ func TestClosedMetadata(t *testing.T) {
 					must(t, os.Chmod(name, 0644))
 				}
 			}
-			e, err := newEngine(h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
+			e, err := testEngine(t, h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
 			if variant == "valid" {
 				must(t, err)
 				if !e.closed {
@@ -300,7 +300,7 @@ func TestClosedMetadata(t *testing.T) {
 }
 
 // Snapshot rechecks bind both the opened file and its name/ancestors after the
-// read. Controls kill removing post-read identity or directory revalidation.
+// read. Controls exercise post-read identity or directory revalidation.
 func TestSnapshotPostReadChecks(t *testing.T) {
 	for _, variant := range []string{"valid", "mode", "replace", "size", "ancestor"} {
 		t.Run(variant, func(t *testing.T) {

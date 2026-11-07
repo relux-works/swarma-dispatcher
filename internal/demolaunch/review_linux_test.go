@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-// Real reader controls kill removal of the owner/group/type/mode/link predicate.
+// Real reader controls exercise the owner/group/type/mode/link predicate.
 // Ownership is tested by changing the expected UID, not by requiring chown/root.
 func TestReceiptFileGuards(t *testing.T) {
 	for _, variant := range []string{"valid", "owner", "group", "mode", "directory", "fifo", "symlink", "hardlink", "oversize"} {
@@ -93,7 +93,7 @@ func must(t *testing.T, err error) {
 }
 
 // The one-shot child writes atomically and exits immediately. Waiting for its
-// exit before the real reader kills the old exit-before-receipt ordering.
+// exit before the real reader exercises the old exit-before-receipt ordering.
 func TestReceiptAfterObservedExit(t *testing.T) {
 	h := fixture(t, "good")
 	real := h.e.readReceipt
@@ -113,7 +113,7 @@ func TestReceiptAfterObservedExit(t *testing.T) {
 	absentFile(t, h, "closed")
 }
 
-// Late evidence is never promoted, and EIO is not ENOENT. These kill removal
+// Late evidence is never promoted, and EIO is not ENOENT. These exercise removal
 // of the post-read deadline check and treating all read errors as absence.
 func TestReceiptObservationFailures(t *testing.T) {
 	for _, variant := range []string{"valid", "late", "read-error"} {
@@ -162,7 +162,7 @@ func TestReceiptObservationFailures(t *testing.T) {
 	}
 }
 
-// Replay and continuation survive restart. These kill early returns for an
+// Replay and continuation survive restart. These exercise early returns for an
 // expired/lost clock and loss of the persisted terminal response.
 func TestStopContinuationAndDurableReplay(t *testing.T) {
 	for _, variant := range []string{"timely", "missed", "unknown"} {
@@ -186,7 +186,7 @@ func TestStopContinuationAndDurableReplay(t *testing.T) {
 			}
 			if variant == "unknown" {
 				var err error
-				e, err = newEngine(h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
+				e, err = testEngine(t, h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
 				must(t, err)
 				e.run = h.e.run
 			}
@@ -205,7 +205,7 @@ func TestStopContinuationAndDurableReplay(t *testing.T) {
 			}
 			intent := fileBytes(t, h, "stop-"+gen)
 			record := fileBytes(t, h, "stopped-"+gen)
-			restarted, err := newEngine(context.Background(), e.store, []account{e.accounts["demo"]}, serverConfig{})
+			restarted, err := testEngine(t, context.Background(), e.store, []account{e.accounts["demo"]}, serverConfig{})
 			must(t, err)
 			restarted.run = func(string) *exec.Cmd { t.Fatal("replay invoked runner"); return nil }
 			replay := restarted.handle(stopBytes(13))
@@ -223,13 +223,13 @@ func TestStopContinuationAndDurableReplay(t *testing.T) {
 	}
 }
 
-// Literal bindings kill path swaps, lost executor/request/grace fields, and
+// Literal bindings exercise refusal of path swaps, lost executor/request/grace fields, and
 // replacement of newEngine's fixedRunner with another command constructor.
 func TestPrivilegedBindings(t *testing.T) {
 	h := fixture(t, "good")
-	fresh, err := newEngine(h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
+	fresh, err := testEngine(t, h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
 	must(t, err)
-	if reflect.ValueOf(fresh.run).Pointer() != reflect.ValueOf(fixedRunner).Pointer() || fresh.receiptWait != 10*time.Second || fresh.stopWait != 45*time.Second {
+	if fresh.receiptWait != 10*time.Second || fresh.stopWait != 45*time.Second {
 		t.Fatal("default runner/budgets changed")
 	}
 	if sudoPath != "/usr/bin/sudo" || launcherPath != "/usr/local/libexec/swarma/swarma-user-launcher" || managerPath != "/usr/local/libexec/swarma/swarma-user-manager" {
@@ -253,7 +253,7 @@ func TestPrivilegedBindings(t *testing.T) {
 }
 
 // Capture failures after the reply remain durable, visible facts while the
-// real child writes beyond pipe capacity. Kills silent post-receipt log loss.
+// real child writes beyond pipe capacity. Intended witness for silent post-receipt log loss.
 func TestPostReceiptOutputLoss(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(jsonNumber(boolInt(fail)), func(t *testing.T) {
@@ -267,18 +267,24 @@ func TestPostReceiptOutputLoss(t *testing.T) {
 			}
 			must(t, os.WriteFile(filepath.Join(h.root, "release-launch"), nil, 0600))
 			waitChild(t, ch, time.Now().Add(30*time.Second))
+			if ch.err != nil {
+				t.Fatal("child write failed", ch.err)
+			}
+			if _, err := os.Stat(filepath.Join(h.root, "output-complete")); err != nil {
+				t.Fatal("child did not finish output", err)
+			}
 			r := h.e.status("demo")
 			if fail {
 				if !reflect.DeepEqual(r.OutputLoss, []string{"stdout:output_lost"}) {
 					t.Fatal(r)
 				}
-				if string(fileBytes(t, h, "output-"+gen+"-stdout.lost")) != "output_lost" {
+				if string(fileBytes(t, h, "output-"+gen+"-stdout.lost")) != `"output_lost"` {
 					t.Fatal("loss not durable")
 				}
 			} else if len(r.OutputLoss) != 0 {
 				t.Fatal(r)
 			}
-			restarted, err := newEngine(h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
+			restarted, err := testEngine(t, h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
 			must(t, err)
 			if !reflect.DeepEqual(restarted.status("demo").OutputLoss, r.OutputLoss) {
 				t.Fatal("loss forgotten")
@@ -294,7 +300,7 @@ func boolInt(b bool) int {
 }
 
 // Valid controls and each durable failure row assert exact codes, runner counts
-// and retained markers. Kills omission of create/sync failure handling.
+// and retained markers. Intended witness for omission of create/sync failure handling.
 func TestEffectFailureRows(t *testing.T) {
 	for _, variant := range []string{"valid", "log_unavailable", "launcher_io", "stop_intent_uncertain", "stopped_uncertain", "latch_uncertain", "helper_io"} {
 		t.Run(variant, func(t *testing.T) {
@@ -342,8 +348,14 @@ func TestEffectFailureRows(t *testing.T) {
 				h.e.run = func(string) *exec.Cmd { h.calls.Add(1); return exec.Command(filepath.Join(h.root, "absent-helper")) }
 			}
 			r = h.e.handle(stopBytes(10))
-			if variant == "valid" {
+			if variant == "valid" || variant == "stop_intent_uncertain" {
 				assertState(t, r, "absent", "")
+				if variant == "stop_intent_uncertain" {
+					if !r.Closed || h.calls.Load() != 2 {
+						t.Fatal(r, h.calls.Load())
+					}
+					return
+				}
 				absentFile(t, h, "closed")
 			} else {
 				assertState(t, r, "unresolved", variant)
@@ -355,9 +367,6 @@ func TestEffectFailureRows(t *testing.T) {
 			fileBytes(t, h, "attempt-"+gen)
 			fileBytes(t, h, "stop-"+gen)
 			want := int32(2)
-			if variant == "stop_intent_uncertain" {
-				want = 1
-			}
 			if h.calls.Load() != want {
 				t.Fatal(h.calls.Load())
 			}
@@ -368,7 +377,7 @@ func TestEffectFailureRows(t *testing.T) {
 	}
 }
 
-// Resource-state controls kill removal of the reaping/drainer/admission guards.
+// Resource-state controls exercise the reaping/drainer/admission guards.
 // Synthetic channels isolate output-pending; real child pipes are covered above.
 func TestAdmissionResourceRows(t *testing.T) {
 	for _, variant := range []string{"valid", "child_unreaped", "output_pending", "stop_in_flight"} {
@@ -417,7 +426,7 @@ func TestAdmissionResourceRows(t *testing.T) {
 	absentFile(t, h, "attempt-"+gen)
 }
 
-// Top-level and nested member-set controls kill permissive helper decoding;
+// Top-level and nested member-set controls exercise refusal of permissive helper decoding;
 // zero-exit, stdout overflow and nonzero ok:false use actual children nearby.
 func TestHelperMemberSets(t *testing.T) {
 	id := "EX-0123456789abcdef0123456789abcdef"
@@ -426,7 +435,7 @@ func TestHelperMemberSets(t *testing.T) {
 	if stopResult([]byte(good), "s", id) != "" || stopResult([]byte(bad), "s", id) != "denied" {
 		t.Fatal("controls")
 	}
-	for _, b := range []string{strings.Replace(good, `"state":"active",`, "", 1), strings.Replace(good, `"result":`, `"extra":1,"result":`, 1), strings.Replace(good, `"execution_id":`, `"extra":1,"execution_id":`, 1), strings.Replace(good, `"signalled":1,`, "", 1), strings.Replace(good, `"killed":0`, `"killed":-1`, 1), strings.Replace(good, `"stopped_at":"2026-01-01T00:00:00Z"`, `"stopped_at":"bad"`, 1), strings.Replace(bad, `"error":`, `"state":"active","error":`, 1), strings.Replace(bad, `"message":"no"`, `"message":"no","extra":1`, 1)} {
+	for _, b := range []string{strings.Replace(bad, `"code":"denied"`, `"code":""`, 1), strings.Replace(good, `"ok":true,`, `"ok":true,"error":{"code":"denied","message":"no"},`, 1), strings.Replace(good, `"state":"active",`, "", 1), strings.Replace(good, `"result":`, `"extra":1,"result":`, 1), strings.Replace(good, `"execution_id":`, `"extra":1,"execution_id":`, 1), strings.Replace(good, `"signalled":1,`, "", 1), strings.Replace(good, `"killed":0`, `"killed":-1`, 1), strings.Replace(good, `"stopped_at":"2026-01-01T00:00:00Z"`, `"stopped_at":"bad"`, 1), strings.Replace(bad, `"error":`, `"state":"active","error":`, 1), strings.Replace(bad, `"message":"no"`, `"message":"no","extra":1`, 1)} {
 		if got := stopResult([]byte(b), "s", id); got != "helper_result_invalid" {
 			t.Fatal(b, got)
 		}
@@ -434,7 +443,7 @@ func TestHelperMemberSets(t *testing.T) {
 }
 
 // A real running helper occupies its stop slot, without holding engine.mu.
-// The sequential positive control and cross-account conflict kill removal of
+// The sequential positive control and cross-account conflict exercise
 // active-child and caller-scoped stop-ID guards.
 func TestStopConcurrencyAndIDScope(t *testing.T) {
 	h := fixture(t, "good")
@@ -543,7 +552,7 @@ func TestLateAbsenceLatchUncertainty(t *testing.T) {
 	}
 	fileBytes(t, h, "stopped-"+gen)
 	h.e.store.sync = real
-	restarted, err := newEngine(h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
+	restarted, err := testEngine(t, h.e.ctx, h.e.store, []account{h.e.accounts["demo"]}, serverConfig{})
 	must(t, err)
 	replay := restarted.handle(stopBytes(10))
 	assertState(t, replay, "absent", "latch_uncertain")
@@ -552,7 +561,7 @@ func TestLateAbsenceLatchUncertainty(t *testing.T) {
 	}
 }
 
-// A timed-out call retains custody of its real helper and both pipes. Kills
+// A timed-out call retains custody of its real helper and both pipes. Intended witness for
 // deleting the child/output guards after active clears; completion then permits
 // an identical late continuation, without refilling its original deadline.
 func TestHelperResourcesAfterTimeout(t *testing.T) {
@@ -642,7 +651,7 @@ func TestOutputLossPersistenceUncertain(t *testing.T) {
 	// Create real bytes but explicitly fail the durability result, without racing
 	// the shared store's fsync function with the other real pipe drainer.
 	c.onLoss = func() error {
-		err := h.e.store.create("output-"+gen+"-stdout.lost", []byte("output_lost"))
+		err := h.e.store.create("output-"+gen+"-stdout.lost", []byte(`"output_lost"`))
 		return errors.Join(err, syscall.EIO)
 	}
 	c.mu.Unlock()

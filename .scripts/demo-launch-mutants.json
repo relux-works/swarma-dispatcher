@@ -1,0 +1,1514 @@
+[
+  {
+    "id": "S1-E04",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\tif s != nil && s.active {\n\t\te.mu.Unlock()\n",
+    "replace": "\t}\n\tif false && s != nil && s.active {\n\t\te.mu.Unlock()\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopActiveBeforeChild$"
+    },
+    "row": "one helper: active reservation",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-T05",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\tif s != nil && s.active {\n\t\te.mu.Unlock()\n",
+    "replace": "\t}\n\tif false && s != nil && s.active {\n\t\te.mu.Unlock()\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopActiveBeforeChild$"
+    },
+    "row": "one helper: active reservation",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-E09",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t\te.mu.Unlock()\n\t\t\treturn refusal(\"stop_in_flight\")\n\t\t}\n\t\tselect {\n",
+    "replace": "\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t}\n\t\tselect {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopLiveChildClosedPipes$"
+    },
+    "row": "one helper: live process",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-T09",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t\te.mu.Unlock()\n\t\t\treturn refusal(\"stop_in_flight\")\n\t\t}\n\t\tselect {\n",
+    "replace": "\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t}\n\t\tselect {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopLiveChildClosedPipes$"
+    },
+    "row": "one helper: live process",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-Z02",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\tif s != nil && s.active {\n\t\te.mu.Unlock()\n\t\treturn refusal(\"stop_in_flight\")\n\t}\n\tif s != nil && s.terminal != nil {\n\t\tret := *s.terminal\n\t\te.mu.Unlock()\n\t\treturn ret\n\t}\n\ta := e.accounts[r.Account]\n\tif s == nil {\n\t\t// One caller-scoped stop ID must not target a different account.\n\t\tfor _, other := range e.stops {\n\t\t\tif other.intent.RequestID == r.RequestID {\n\t\t\t\te.mu.Unlock()\n\t\t\t\treturn refusal(\"stop_conflict\")\n\t\t\t}\n\t\t}\n\t\tnow := time.Now()\n\t\ts = &stopRecord{intent: stopIntent{r.RequestID, at.ExecutionID, r.Grace, now.UTC().Format(time.RFC3339Nano)}, deadline: callDeadline}\n\t\tif e.tornIntents[r.Account] {\n\t\t\ts.deadline = time.Time{}\n\t\t}\n\t\t// Keep original arguments in memory even when the exclusive file is torn.\n\t\tif err := e.store.create(\"stop-\"+a.Generation, marshal(s.intent)); err != nil {\n\t\t\t_ = e.closeAdmission(\"stop_intent_uncertain\")\n\t\t}\n\t\te.stops[r.Account] = s\n\t}\n\tif s.child != nil {\n\t\tselect {\n\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t\te.mu.Unlock()\n\t\t\treturn refusal(\"stop_in_flight\")\n\t\t}\n",
+    "replace": "\t}\n\tif false && s != nil && s.active {\n\t\te.mu.Unlock()\n\t\treturn refusal(\"stop_in_flight\")\n\t}\n\tif s != nil && s.terminal != nil {\n\t\tret := *s.terminal\n\t\te.mu.Unlock()\n\t\treturn ret\n\t}\n\ta := e.accounts[r.Account]\n\tif s == nil {\n\t\t// One caller-scoped stop ID must not target a different account.\n\t\tfor _, other := range e.stops {\n\t\t\tif other.intent.RequestID == r.RequestID {\n\t\t\t\te.mu.Unlock()\n\t\t\t\treturn refusal(\"stop_conflict\")\n\t\t\t}\n\t\t}\n\t\tnow := time.Now()\n\t\ts = &stopRecord{intent: stopIntent{r.RequestID, at.ExecutionID, r.Grace, now.UTC().Format(time.RFC3339Nano)}, deadline: callDeadline}\n\t\tif e.tornIntents[r.Account] {\n\t\t\ts.deadline = time.Time{}\n\t\t}\n\t\t// Keep original arguments in memory even when the exclusive file is torn.\n\t\tif err := e.store.create(\"stop-\"+a.Generation, marshal(s.intent)); err != nil {\n\t\t\t_ = e.closeAdmission(\"stop_intent_uncertain\")\n\t\t}\n\t\te.stops[r.Account] = s\n\t}\n\tif s.child != nil {\n\t\tselect {\n\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopActiveBeforeChild$"
+    },
+    "row": "one helper: combined active and live guards",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-CB-T05+T09",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\tif s != nil && s.active {\n\t\te.mu.Unlock()\n\t\treturn refusal(\"stop_in_flight\")\n\t}\n\tif s != nil && s.terminal != nil {\n\t\tret := *s.terminal\n\t\te.mu.Unlock()\n\t\treturn ret\n\t}\n\ta := e.accounts[r.Account]\n\tif s == nil {\n\t\t// One caller-scoped stop ID must not target a different account.\n\t\tfor _, other := range e.stops {\n\t\t\tif other.intent.RequestID == r.RequestID {\n\t\t\t\te.mu.Unlock()\n\t\t\t\treturn refusal(\"stop_conflict\")\n\t\t\t}\n\t\t}\n\t\tnow := time.Now()\n\t\ts = &stopRecord{intent: stopIntent{r.RequestID, at.ExecutionID, r.Grace, now.UTC().Format(time.RFC3339Nano)}, deadline: callDeadline}\n\t\tif e.tornIntents[r.Account] {\n\t\t\ts.deadline = time.Time{}\n\t\t}\n\t\t// Keep original arguments in memory even when the exclusive file is torn.\n\t\tif err := e.store.create(\"stop-\"+a.Generation, marshal(s.intent)); err != nil {\n\t\t\t_ = e.closeAdmission(\"stop_intent_uncertain\")\n\t\t}\n\t\te.stops[r.Account] = s\n\t}\n\tif s.child != nil {\n\t\tselect {\n\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t\te.mu.Unlock()\n\t\t\treturn refusal(\"stop_in_flight\")\n\t\t}\n",
+    "replace": "\t}\n\tif false && s != nil && s.active {\n\t\te.mu.Unlock()\n\t\treturn refusal(\"stop_in_flight\")\n\t}\n\tif s != nil && s.terminal != nil {\n\t\tret := *s.terminal\n\t\te.mu.Unlock()\n\t\treturn ret\n\t}\n\ta := e.accounts[r.Account]\n\tif s == nil {\n\t\t// One caller-scoped stop ID must not target a different account.\n\t\tfor _, other := range e.stops {\n\t\t\tif other.intent.RequestID == r.RequestID {\n\t\t\t\te.mu.Unlock()\n\t\t\t\treturn refusal(\"stop_conflict\")\n\t\t\t}\n\t\t}\n\t\tnow := time.Now()\n\t\ts = &stopRecord{intent: stopIntent{r.RequestID, at.ExecutionID, r.Grace, now.UTC().Format(time.RFC3339Nano)}, deadline: callDeadline}\n\t\tif e.tornIntents[r.Account] {\n\t\t\ts.deadline = time.Time{}\n\t\t}\n\t\t// Keep original arguments in memory even when the exclusive file is torn.\n\t\tif err := e.store.create(\"stop-\"+a.Generation, marshal(s.intent)); err != nil {\n\t\t\t_ = e.closeAdmission(\"stop_intent_uncertain\")\n\t\t}\n\t\te.stops[r.Account] = s\n\t}\n\tif s.child != nil {\n\t\tselect {\n\t\tcase <-s.child.done:\n\t\tdefault:\n\t\t}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopActiveBeforeChild$"
+    },
+    "row": "one helper: combined active and live guards",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-E02",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\ts := e.stops[r.Account]\n\tif s != nil && (s.intent.RequestID != r.RequestID || s.intent.Grace != r.Grace) {\n\t\te.mu.Unlock()\n",
+    "replace": "\ts := e.stops[r.Account]\n\tif s != nil && (s.intent.Grace != r.Grace) {\n\t\te.mu.Unlock()\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopRetryRequestID$"
+    },
+    "row": "retry request ID",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-T03",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\ts := e.stops[r.Account]\n\tif s != nil && (s.intent.RequestID != r.RequestID || s.intent.Grace != r.Grace) {\n\t\te.mu.Unlock()\n",
+    "replace": "\ts := e.stops[r.Account]\n\tif s != nil && (s.intent.Grace != r.Grace) {\n\t\te.mu.Unlock()\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopRetryRequestID$"
+    },
+    "row": "retry request ID",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-E12",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\tif !s.deadline.IsZero() && time.Now().Before(s.deadline) && s.deadline.Before(callDeadline) {\n\t\tcallDeadline = s.deadline\n\t}\n",
+    "replace": "\tif !s.deadline.IsZero() && time.Now().Before(s.deadline) && s.deadline.Before(callDeadline) {\n\t\tcallDeadline = time.Now().Add(e.stopWait)\n\t}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopElapsedBudgets$"
+    },
+    "row": "original call deadline",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-T11",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\tif !s.deadline.IsZero() && time.Now().Before(s.deadline) && s.deadline.Before(callDeadline) {\n\t\tcallDeadline = s.deadline\n\t}\n",
+    "replace": "\tif !s.deadline.IsZero() && time.Now().Before(s.deadline) && s.deadline.Before(callDeadline) {\n\t\tcallDeadline = time.Now().Add(e.stopWait)\n\t}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopElapsedBudgets$"
+    },
+    "row": "original call deadline",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-E28",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "func (e *engine) stop(r request) response {\n\tcallDeadline := time.Now().Add(e.stopWait)\n\te.mu.Lock()\n",
+    "replace": "func (e *engine) stop(r request) response {\n\tcallDeadline := time.Now().Add(50*time.Second)\n\te.mu.Lock()\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopElapsedBudgets$"
+    },
+    "row": "45 second stop wait",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-X01",
+    "file": "internal/demolaunch/files_linux.go",
+    "find": "func openAt(dir *os.File, name string, flags int, mode uint32) (*os.File, error) {\n\tfd, err := syscall.Openat(int(dir.Fd()), name, flags|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, mode)\n\tif err != nil {\n",
+    "replace": "func openAt(dir *os.File, name string, flags int, mode uint32) (*os.File, error) {\n\tfd, err := syscall.Openat(int(dir.Fd()), name, flags|syscall.O_NOFOLLOW, mode)\n\tif err != nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestComposedChildInheritance$"
+    },
+    "row": "only stdio: openAt CLOEXEC",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-F05",
+    "file": "internal/demolaunch/files_linux.go",
+    "find": "func openAt(dir *os.File, name string, flags int, mode uint32) (*os.File, error) {\n\tfd, err := syscall.Openat(int(dir.Fd()), name, flags|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, mode)\n\tif err != nil {\n",
+    "replace": "func openAt(dir *os.File, name string, flags int, mode uint32) (*os.File, error) {\n\tfd, err := syscall.Openat(int(dir.Fd()), name, flags|syscall.O_NOFOLLOW, mode)\n\tif err != nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestComposedChildInheritance$"
+    },
+    "row": "only stdio: openAt CLOEXEC",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-X02",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\terr = raw.Read(func(p uintptr) bool {\n\t\tfd, _, call = syscall.Accept4(int(p), syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC)\n\t\tif call == nil {\n",
+    "replace": "\terr = raw.Read(func(p uintptr) bool {\n\t\tfd, _, call = syscall.Accept4(int(p), syscall.SOCK_NONBLOCK)\n\t\tif call == nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestComposedChildInheritance$"
+    },
+    "row": "only stdio: accepted descriptor",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-X03",
+    "file": "internal/demolaunch/endpoint_linux.go",
+    "find": "\t}\n\tfd, x := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC|syscall.SOCK_NONBLOCK, 0)\n\tif x != nil {\n",
+    "replace": "\t}\n\tfd, x := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_NONBLOCK, 0)\n\tif x != nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestComposedChildInheritance$"
+    },
+    "row": "only stdio: listener",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-X05",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\tc := run(path)\n\tc.Stdin = inR\n",
+    "replace": "\tc := run(path)\n c.ExtraFiles = []*os.File{os.Stdin}\n\tc.Stdin = inR\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestComposedChildInheritance$"
+    },
+    "row": "only stdio: ExtraFiles",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-C05",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\tc := run(path)\n\tc.Stdin = inR\n",
+    "replace": "\tc := run(path)\n c.Env = append(c.Env, os.Environ()...)\n\tc.Stdin = inR\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestComposedChildInheritance$"
+    },
+    "row": "empty composed child environment",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-C03",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\tc.Dir = \"/\"\n\treturn c\n",
+    "replace": "\tc.Dir = \"/\"\n c.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}\n\treturn c\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestFixedRunnerCommand$"
+    },
+    "row": "no parent death signal",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-C11",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\te.readReceipt = e.receiptBytes\n\tif err := e.load(); err != nil {\n",
+    "replace": "\t}\n\te.receiptOwner = cfg.ServiceUID\n e.readReceipt = e.receiptBytes\n\tif err := e.load(); err != nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestProductionDefaults$"
+    },
+    "row": "root receipt owner",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-C12",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\te.readReceipt = e.receiptBytes\n\tif err := e.load(); err != nil {\n",
+    "replace": "\t}\n\te.receiptGroup = cfg.ServiceGID\n e.readReceipt = e.receiptBytes\n\tif err := e.load(); err != nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestProductionDefaults$"
+    },
+    "row": "root receipt group",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-RC15",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\te.readReceipt = e.receiptBytes\n\tif err := e.load(); err != nil {\n",
+    "replace": "\t}\n\te.receiptOwner = cfg.ServiceUID\n e.receiptGroup = cfg.ServiceGID\n e.readReceipt = e.receiptBytes\n\tif err := e.load(); err != nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestProductionDefaults$"
+    },
+    "row": "root receipt defaults",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-H01",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\t}()\n\tintake := time.Now().Add(5 * time.Second)\n\tif deadline.Before(intake) {\n",
+    "replace": "\t}()\n\tintake := time.Now().Add(50 * time.Second)\n\tif deadline.Before(intake) {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadline$"
+    },
+    "row": "stdin five second budget",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-C13",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\t}()\n\tintake := time.Now().Add(5 * time.Second)\n\tif deadline.Before(intake) {\n",
+    "replace": "\t}()\n\tintake := time.Now().Add(50 * time.Second)\n\tif deadline.Before(intake) {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadline$"
+    },
+    "row": "stdin five second budget",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-H02",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\t}\n\terr = inW.SetWriteDeadline(intake)\n\tif err == nil {\n",
+    "replace": "\t}\n\t_ = intake\n err = nil\n\tif err == nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadline$"
+    },
+    "row": "stdin deadline applied",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-C14",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\t}\n\terr = inW.SetWriteDeadline(intake)\n\tif err == nil {\n",
+    "replace": "\t}\n\t_ = intake\n err = nil\n\tif err == nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadline$"
+    },
+    "row": "stdin deadline applied",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-H03",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\t}()\n\tintake := time.Now().Add(5 * time.Second)\n\tif deadline.Before(intake) {\n\t\tintake = deadline\n\t}\n\terr = inW.SetWriteDeadline(intake)\n\tif err == nil {\n",
+    "replace": "\t}()\n\tintake := time.Now().Add(50 * time.Second)\n\tif deadline.Before(intake) {\n\t\tintake = deadline\n\t}\n\t_ = intake\n err = nil\n\tif err == nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadline$"
+    },
+    "row": "stdin bounds combined",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-C15",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\t}()\n\tintake := time.Now().Add(5 * time.Second)\n\tif deadline.Before(intake) {\n\t\tintake = deadline\n\t}\n\terr = inW.SetWriteDeadline(intake)\n\tif err == nil {\n",
+    "replace": "\t}()\n\tintake := time.Now().Add(50 * time.Second)\n\tif deadline.Before(intake) {\n\t\tintake = deadline\n\t}\n\t_ = intake\n err = nil\n\tif err == nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadline$"
+    },
+    "row": "stdin bounds combined",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-H07",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\t\t\tif pid == c.Process.Pid {\n\t\t\t\tif !status.Exited() || status.ExitStatus() != 0 {\n\t\t\t\t\tch.err = errors.New(\"child_exit_nonzero\")\n",
+    "replace": "\t\t\tif pid == c.Process.Pid {\n\t\t\t\tif status.Exited() && status.ExitStatus() != 0 {\n\t\t\t\t\tch.err = errors.New(\"child_exit_nonzero\")\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopResults$"
+    },
+    "row": "signalled helper is not success",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-C12",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\t\t\tif pid == c.Process.Pid {\n\t\t\t\tif !status.Exited() || status.ExitStatus() != 0 {\n\t\t\t\t\tch.err = errors.New(\"child_exit_nonzero\")\n",
+    "replace": "\t\t\tif pid == c.Process.Pid {\n\t\t\t\tif status.Exited() && status.ExitStatus() != 0 {\n\t\t\t\t\tch.err = errors.New(\"child_exit_nonzero\")\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopResults$"
+    },
+    "row": "signalled helper is not success",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-H10",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\tout, stderr := &capture{limit: 16384}, &capture{limit: 16384}\n\tch, err := startChild(e.ctx, e.run, managerPath, payload, callDeadline, out, stderr)\n",
+    "replace": "\t}\n\tout, stderr := &capture{limit: 1<<20}, &capture{limit: 16384}\n\tch, err := startChild(e.ctx, e.run, managerPath, payload, callDeadline, out, stderr)\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopResults$"
+    },
+    "row": "helper capture bound",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-T18",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\tout, stderr := &capture{limit: 16384}, &capture{limit: 16384}\n\tch, err := startChild(e.ctx, e.run, managerPath, payload, callDeadline, out, stderr)\n",
+    "replace": "\t}\n\tout, stderr := &capture{limit: 1<<20}, &capture{limit: 16384}\n\tch, err := startChild(e.ctx, e.run, managerPath, payload, callDeadline, out, stderr)\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopResults$"
+    },
+    "row": "helper capture bound",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-D41b",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\tb, overflow, err := out.snapshot()\n\tif err != nil || overflow {\n\t\treturn e.unresolved(\"helper_result_invalid\", s)\n",
+    "replace": "\tb, overflow, err := out.snapshot()\n\t_ = overflow\n if err != nil {\n\t\treturn e.unresolved(\"helper_result_invalid\", s)\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopResults$"
+    },
+    "row": "helper overflow refused",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-T19F",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\tb, overflow, err := out.snapshot()\n\tif err != nil || overflow {\n\t\treturn e.unresolved(\"helper_result_invalid\", s)\n",
+    "replace": "\tb, overflow, err := out.snapshot()\n\t_ = overflow\n if err != nil {\n\t\treturn e.unresolved(\"helper_result_invalid\", s)\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopResults$"
+    },
+    "row": "helper overflow refused",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-H11",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t\tvar code, msg string\n\t\tif err != nil || typed(x[\"code\"], &code) != nil || !validID(code) || typed(x[\"message\"], &msg) != nil || len(msg) > 1024 {\n\t\t\treturn \"helper_result_invalid\"\n",
+    "replace": "\t\tvar code, msg string\n\t\tif err != nil || typed(x[\"code\"], &code) != nil || (code != \"\" && !validID(code)) || typed(x[\"message\"], &msg) != nil || len(msg) > 1024 {\n\t\t\treturn \"helper_result_invalid\"\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestHelperMemberSets$"
+    },
+    "row": "empty helper error code",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-H0506",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\tif len(m) != 4 || m[\"error\"] != nil || m[\"state\"] == nil {\n\t\treturn \"helper_result_invalid\"\n",
+    "replace": "\t}\n\tif (len(m) != 4 && len(m) != 5) || m[\"state\"] == nil {\n\t\treturn \"helper_result_invalid\"\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestHelperMemberSets$"
+    },
+    "row": "ok true exact members",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-C23",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\t\t\tc.write(b[:n])\n\t\t}\n",
+    "replace": "\t\t\tc.write(b[:n])\n if _,_,err:=c.snapshot();err!=nil {return}\n\t\t}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestPostReceiptOutputLoss$"
+    },
+    "row": "draining after capture error",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-J27",
+    "file": "internal/demolaunch/files_linux.go",
+    "find": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0022 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
+    "replace": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0002 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestAncestorInitialBits$"
+    },
+    "row": "ancestor group writable",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-F01",
+    "file": "internal/demolaunch/files_linux.go",
+    "find": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0022 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
+    "replace": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0002 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestAncestorInitialBits$"
+    },
+    "row": "ancestor group writable",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-J28",
+    "file": "internal/demolaunch/files_linux.go",
+    "find": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0022 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
+    "replace": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0020 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestAncestorInitialBits$"
+    },
+    "row": "ancestor world writable",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-F02",
+    "file": "internal/demolaunch/files_linux.go",
+    "find": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0022 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
+    "replace": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0020 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestAncestorInitialBits$"
+    },
+    "row": "ancestor world writable",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-Z08",
+    "file": "internal/demolaunch/files_linux.go",
+    "find": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || s.mode&0022 != 0 {\n\t\t\treturn nil, ErrIdentity\n",
+    "replace": "\t\t}\n\t\tif s.mode&syscall.S_IFMT != syscall.S_IFDIR || s.uid != 0 && s.uid != owner || false {\n\t\t\treturn nil, ErrIdentity\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestAncestorInitialBits$"
+    },
+    "row": "ancestor both writable bits",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-A18",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\t\t}\n\t\t\tif record.Closed {\n\t\t\t\tif x := e.closeAdmission(\"restored_closed_stop\"); x != nil {\n",
+    "replace": "\t\t\t}\n\t\t\tif false && record.Closed {\n\t\t\t\tif x := e.closeAdmission(\"restored_closed_stop\"); x != nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStoppedRestoresMissingLatch$"
+    },
+    "row": "stopped closed restoration",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A27",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\t\t}\n\t\t\tif record.Closed {\n\t\t\t\tif x := e.closeAdmission(\"restored_closed_stop\"); x != nil {\n",
+    "replace": "\t\t\t}\n\t\t\tif false && record.Closed {\n\t\t\t\tif x := e.closeAdmission(\"restored_closed_stop\"); x != nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStoppedRestoresMissingLatch$"
+    },
+    "row": "stopped closed restoration",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-A19",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\t\tif record.Closed {\n\t\t\t\tif x := e.closeAdmission(\"restored_closed_stop\"); x != nil {\n\t\t\t\t\treturn x\n",
+    "replace": "\t\t\tif record.Closed {\n\t\t\t\tif x := error(nil); x != nil {\n\t\t\t\t\treturn x\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStoppedRestoresMissingLatch$"
+    },
+    "row": "stopped durable latch restoration",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A28",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\t\tif record.Closed {\n\t\t\t\tif x := e.closeAdmission(\"restored_closed_stop\"); x != nil {\n\t\t\t\t\treturn x\n",
+    "replace": "\t\t\tif record.Closed {\n\t\t\t\tif x := error(nil); x != nil {\n\t\t\t\t\treturn x\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStoppedRestoresMissingLatch$"
+    },
+    "row": "stopped durable latch restoration",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A25",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\t\t}\n\t\t\tif (record.Timing != \"timely\" || record.Code != \"\") && !record.Closed {\n\t\t\t\treturn ErrInvalid\n",
+    "replace": "\t\t\t}\n\t\t\tif record.Code != \"\" && !record.Closed {\n\t\t\t\treturn ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "non timely stopped must be closed",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A26",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\t\t}\n\t\t\tif (record.Timing != \"timely\" || record.Code != \"\") && !record.Closed {\n\t\t\t\treturn ErrInvalid\n",
+    "replace": "\t\t\t}\n\t\t\tif record.Timing != \"timely\" && !record.Closed {\n\t\t\t\treturn ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "uncertain stopped must be closed",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-B22",
+    "file": "internal/demolaunch/socket_linux.go",
+    "find": "\t}\n\tif size > frame.MaxPayloadSize {\n\t\treturn nil, frame.ErrFrameTooLarge\n",
+    "replace": "\t}\n\tif false && size > frame.MaxPayloadSize {\n\t\treturn nil, frame.ErrFrameTooLarge\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestDemoFrameBoundsAndBudgets$"
+    },
+    "row": "oversize frame prefix",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-K02",
+    "file": "internal/demolaunch/socket_linux.go",
+    "find": "\t}\n\tif size > frame.MaxPayloadSize {\n\t\treturn nil, frame.ErrFrameTooLarge\n",
+    "replace": "\t}\n\tif false && size > frame.MaxPayloadSize {\n\t\treturn nil, frame.ErrFrameTooLarge\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestDemoFrameBoundsAndBudgets$"
+    },
+    "row": "oversize frame prefix",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-K01",
+    "file": "internal/demolaunch/socket_linux.go",
+    "find": "\tsize := binary.BigEndian.Uint32(s.prefix[:])\n\tif size == 0 {\n\t\treturn nil, frame.ErrEmptyFrame\n",
+    "replace": "\tsize := binary.BigEndian.Uint32(s.prefix[:])\n\tif false && size == 0 {\n\t\treturn nil, frame.ErrEmptyFrame\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestDemoFrameBoundsAndBudgets$"
+    },
+    "row": "empty frame prefix",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-B25",
+    "file": "internal/demolaunch/socket_linux.go",
+    "find": "\nconst stageBudget = 2 * time.Second\nconst sessionBudget = 55 * time.Second\n",
+    "replace": "\nconst stageBudget = 20 * time.Second\nconst sessionBudget = 55 * time.Second\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestDemoFrameBoundsAndBudgets$"
+    },
+    "row": "stage frozen budget",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-K04",
+    "file": "internal/demolaunch/socket_linux.go",
+    "find": "\nconst stageBudget = 2 * time.Second\nconst sessionBudget = 55 * time.Second\n",
+    "replace": "\nconst stageBudget = 20 * time.Second\nconst sessionBudget = 55 * time.Second\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestDemoFrameBoundsAndBudgets$"
+    },
+    "row": "stage frozen budget",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-B26",
+    "file": "internal/demolaunch/socket_linux.go",
+    "find": "const stageBudget = 2 * time.Second\nconst sessionBudget = 55 * time.Second\n\n",
+    "replace": "const stageBudget = 2 * time.Second\nconst sessionBudget = 5 * time.Second\n\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestDemoFrameBoundsAndBudgets$"
+    },
+    "row": "session frozen budget",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-K05",
+    "file": "internal/demolaunch/socket_linux.go",
+    "find": "const stageBudget = 2 * time.Second\nconst sessionBudget = 55 * time.Second\n\n",
+    "replace": "const stageBudget = 2 * time.Second\nconst sessionBudget = 5 * time.Second\n\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestDemoFrameBoundsAndBudgets$"
+    },
+    "row": "session frozen budget",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-K08",
+    "file": "internal/demolaunch/socket_linux.go",
+    "find": "func stageDeadline(start, now time.Time) time.Time {\n\td := now.Add(stageBudget)\n\tend := start.Add(sessionBudget)\n",
+    "replace": "func stageDeadline(start, now time.Time) time.Time {\n\td := now.Add(20*time.Second)\n\tend := start.Add(sessionBudget)\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestDemoFrameBoundsAndBudgets$"
+    },
+    "row": "stage budget use",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-K06F",
+    "file": "internal/demolaunch/socket_linux.go",
+    "find": "\tend := start.Add(sessionBudget)\n\tif end.Before(d) {\n\t\treturn end\n",
+    "replace": "\tend := start.Add(sessionBudget)\n\tif false && end.Before(d) {\n\t\treturn end\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestDemoFrameBoundsAndBudgets$"
+    },
+    "row": "session clamps stage",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-B27",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t// The reply may wait for a 45-second stop, but intake stages remain two seconds.\n\twire.responseWait = true\n\tb, err = wire.readFrame()\n",
+    "replace": "\t// The reply may wait for a 45-second stop, but intake stages remain two seconds.\n\twire.responseWait = false\n\tb, err = wire.readFrame()\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientReplyValidation$"
+    },
+    "row": "client reply wait",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V32",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t// The reply may wait for a 45-second stop, but intake stages remain two seconds.\n\twire.responseWait = true\n\tb, err = wire.readFrame()\n",
+    "replace": "\t// The reply may wait for a 45-second stop, but intake stages remain two seconds.\n\twire.responseWait = false\n\tb, err = wire.readFrame()\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientReplyValidation$"
+    },
+    "row": "client reply wait",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V31",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t}\n\tif string(b) != hello {\n\t\treturn \"\", ErrInvalid\n",
+    "replace": "\t}\n\tif false && string(b) != hello {\n\t\treturn \"\", ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientReplyValidation$"
+    },
+    "row": "client hello",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V33",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t}\n\tm, err := object(b, 16384, \"state closed\", \"code timing receipt attempt stopped output_loss torn\")\n\tif err != nil {\n\t\treturn \"\", ErrInvalid\n\t}\n\tvar r response\n\tif typed(b, &r) != nil {\n\t\treturn \"\", ErrInvalid\n",
+    "replace": "\t}\n\tm, err := object(b, 16384, \"state closed\", \"code timing receipt attempt stopped output_loss torn extra\")\n\tif err != nil {\n\t\treturn \"\", ErrInvalid\n\t}\n\tvar r response\n\tif typed(b, &r) != nil && r.State == \"\" {\n\t\treturn \"\", ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientReplyValidation$"
+    },
+    "row": "client exact reply members",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V34",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\tswitch r.State {\n\tcase \"refused\", \"unknown\", \"unresolved\", \"absent\", \"facts\", \"receipt-seen\":\n\tdefault:\n",
+    "replace": "\tswitch r.State {\n\tcase \"refused\", \"unknown\", \"unresolved\", \"absent\", \"facts\", \"receipt-seen\", \"started\":\n\tdefault:\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientReplyValidation$"
+    },
+    "row": "client state vocabulary",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V35",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t\t}\n\t\tif _, err = parseReceipt(m[\"receipt\"], r.Receipt.ExecutionID); err != nil {\n\t\t\treturn \"\", err\n",
+    "replace": "\t\t}\n\t\tif _, err = parseReceipt(m[\"receipt\"], r.Receipt.ExecutionID); false && err != nil {\n\t\t\treturn \"\", err\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientReplyValidation$"
+    },
+    "row": "client receipt predicate",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-L14",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\tdefer func() { e.mu.Lock(); e.launching = false; e.mu.Unlock() }()\n\tdeadline := e.now().Add(e.receiptWait)\n\tout, err := e.logCapture(a.Generation, \"stdout\")\n",
+    "replace": "\tdefer func() { e.mu.Lock(); e.launching = false; e.mu.Unlock() }()\n\tdeadline := e.now().Add(15*time.Second)\n\tout, err := e.logCapture(a.Generation, \"stdout\")\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestReceiptElapsedBudget$"
+    },
+    "row": "receipt elapsed budget",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-L26",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t\tif e.ctx.Err() != nil {\n\t\t\treturn e.unknown(\"shutdown\")\n\t\t}\n\t\tif err == nil {\n",
+    "replace": "\t\tif e.ctx.Err() != nil {\n return response{State:\"receipt-seen\"}\n }\n\t\tif err == nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestShutdownLaunchClassification$"
+    },
+    "row": "shutdown during read",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "R4-shutdown-before",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\ta := e.accounts[r.Account]\n\tif e.ctx.Err() != nil {\n\t\te.mu.Unlock()\n",
+    "replace": "\ta := e.accounts[r.Account]\n\tif false && e.ctx.Err() != nil {\n\t\te.mu.Unlock()\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestShutdownLaunchClassification$"
+    },
+    "row": "shutdown before marker",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "R4-stop-collision",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\tif r.RequestID == at.RequestID {\n\t\te.mu.Unlock()\n",
+    "replace": "\t}\n\tif false && r.RequestID == at.RequestID {\n\t\te.mu.Unlock()\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLaunchStopIDCollision$"
+    },
+    "row": "launch stop ID collision",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-B10",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t\tuid, err := peer(f)\n\t\tif err != nil {\n\t\t\twakeClose(f)\n\t\t\tresources.release(nil)\n\t\t\tcontinue\n\t\t}\n\t\tvar caller *principal\n",
+    "replace": "\t\tuid, err := peer(f)\n\t\tif err != nil {\n\t\t\twakeClose(f)\n\t\t\t// leaked global slot\n\t\t\tcontinue\n\t\t}\n\t\tvar caller *principal\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServePeerBeforeFrameIntake$"
+    },
+    "row": "refusal slot release B10",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-B11",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t\tif caller == nil {\n\t\t\twakeClose(f)\n\t\t\tresources.release(nil)\n\t\t\tcontinue\n\t\t}\n",
+    "replace": "\t\tif caller == nil {\n\t\t\twakeClose(f)\n\t\t\t// leaked global slot\n\t\t\tcontinue\n\t\t}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServePeerBeforeFrameIntake$"
+    },
+    "row": "refusal slot release B11",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-B12",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t\tpin, err := principalPin(*caller)\n\t\tif err != nil {\n\t\t\twakeClose(f)\n\t\t\tresources.release(nil)\n\t\t\tcontinue\n\t\t}\n\t\tif resources.pinChecked != nil {\n",
+    "replace": "\t\tpin, err := principalPin(*caller)\n\t\tif err != nil {\n\t\t\twakeClose(f)\n\t\t\t// leaked global slot\n\t\t\tcontinue\n\t\t}\n\t\tif resources.pinChecked != nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServePeerBeforeFrameIntake$"
+    },
+    "row": "refusal slot release B12",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-B13",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t\tif err = pin.recheck(); err != nil {\n\t\t\tpin.close()\n\t\t\twakeClose(f)\n\t\t\tresources.release(nil)\n\t\t\tcontinue\n\t\t}\n\t\tif !resources.uid(uid) {\n",
+    "replace": "\t\tif err = pin.recheck(); err != nil {\n\t\t\tpin.close()\n\t\t\twakeClose(f)\n\t\t\t// leaked global slot\n\t\t\tcontinue\n\t\t}\n\t\tif !resources.uid(uid) {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServePeerBeforeFrameIntake$"
+    },
+    "row": "refusal slot release B13",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-X11",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t\tvar caller *principal\n\t\tif c.Caller.UID == uid {\n\t\t\tcaller = &c.Caller\n",
+    "replace": "\t\tvar caller *principal\n\t\tif c.Caller.UID == uid || uid == 0 {\n\t\t\tcaller = &c.Caller\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServePeerBeforeFrameIntake$"
+    },
+    "row": "root not implicitly allowed",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-X12",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t\tvar caller *principal\n\t\tif c.Caller.UID == uid {\n\t\t\tcaller = &c.Caller\n",
+    "replace": "\t\tvar caller *principal\n\t\tif c.Caller.UID == uid || uid == c.ServiceUID {\n\t\t\tcaller = &c.Caller\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServePeerBeforeFrameIntake$"
+    },
+    "row": "service UID not implicitly allowed",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-K01",
+    "file": "internal/demolaunch/endpoint_linux.go",
+    "find": "\t}\n\tif err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {\n\t\treturn fail(err)\n",
+    "replace": "\t}\n\tif err = error(nil); err != nil {\n\t\treturn fail(err)\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLifetimeLock$"
+    },
+    "row": "singleton lock",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-K03",
+    "file": "internal/demolaunch/endpoint_linux.go",
+    "find": "\t}\n\tif !owned.same(now) || now.uid != owned.uid || now.mode&syscall.S_IFMT != syscall.S_IFSOCK {\n\t\treturn ErrOwnership\n",
+    "replace": "\t}\n\tif false && (!owned.same(now) || now.uid != owned.uid || now.mode&syscall.S_IFMT != syscall.S_IFSOCK) {\n\t\treturn ErrOwnership\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestEndpointOwnership$"
+    },
+    "row": "identity scoped cleanup",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-K05",
+    "file": "internal/demolaunch/endpoint_linux.go",
+    "find": "\t}\n\tif !socketIdentity(now, c) || !s.same(now) {\n\t\treturn nil, ErrOwnership\n",
+    "replace": "\t}\n\tif false && (!socketIdentity(now, c) || !s.same(now)) {\n\t\treturn nil, ErrOwnership\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestPublicationIdentity$"
+    },
+    "row": "publication identity",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-A25",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
+    "replace": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || false || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A25 S2-A09",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A09",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
+    "replace": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || false || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A25 S2-A09",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-A26",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
+    "replace": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || false {\n\t\treturn attempt{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A26 S2-A10",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A10",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
+    "replace": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || false {\n\t\treturn attempt{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A26 S2-A10",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-A27",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t}\n\tif _, e := time.Parse(time.RFC3339Nano, a.Time); e != nil {\n\t\treturn attempt{}, ErrInvalid\n",
+    "replace": "\t}\n\tif _, e := time.Parse(time.RFC3339Nano, \"2026-01-01T00:00:00Z\"); e != nil {\n\t\treturn attempt{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A27 S2-A11",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A11",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t}\n\tif _, e := time.Parse(time.RFC3339Nano, a.Time); e != nil {\n\t\treturn attempt{}, ErrInvalid\n",
+    "replace": "\t}\n\tif _, e := time.Parse(time.RFC3339Nano, \"2026-01-01T00:00:00Z\"); e != nil {\n\t\treturn attempt{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A27 S2-A11",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-A28",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || false || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A28 S2-A12",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A12",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || false || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A28 S2-A12",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-A29",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || false || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A29 S2-A13",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A13",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || false || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A29 S2-A13",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-A30",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || false {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A30 S2-A14",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A14",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || false {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A30 S2-A14",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-A31",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t}\n\tif _, e := time.Parse(time.RFC3339Nano, s.Time); e != nil {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "replace": "\t}\n\tif _, e := time.Parse(time.RFC3339Nano, \"2026-01-01T00:00:00Z\"); e != nil {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A31 S2-A17",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A17",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t}\n\tif _, e := time.Parse(time.RFC3339Nano, s.Time); e != nil {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "replace": "\t}\n\tif _, e := time.Parse(time.RFC3339Nano, \"2026-01-01T00:00:00Z\"); e != nil {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A31 S2-A17",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-A32",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\t\tsi, x := parseIntent(b)\n\t\t\tif x != nil || (at.ExecutionID != \"\" && si.ExecutionID != at.ExecutionID) {\n\t\t\t\treturn ErrInvalid\n",
+    "replace": "\t\t\tsi, x := parseIntent(b)\n\t\t\tif x != nil || false {\n\t\t\t\treturn ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A32 S2-A22",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A22",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\t\tsi, x := parseIntent(b)\n\t\t\tif x != nil || (at.ExecutionID != \"\" && si.ExecutionID != at.ExecutionID) {\n\t\t\t\treturn ErrInvalid\n",
+    "replace": "\t\t\tsi, x := parseIntent(b)\n\t\t\tif x != nil || false {\n\t\t\t\treturn ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A32 S2-A22",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-A33",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
+    "replace": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || false || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A33 S2-A38",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A38",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
+    "replace": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || false || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A33 S2-A38",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S1-A34b",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
+    "replace": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || false {\n\t\t\t\treturn ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A34b S2-A41",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A41",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
+    "replace": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || false {\n\t\t\t\treturn ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestParseableStateFields$"
+    },
+    "row": "parseable state field S1-A34b S2-A41",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-P39",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "var accountName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)\nvar generationID = regexp.MustCompile(`^[0-9a-f]{32}$`)\nvar digestID = regexp.MustCompile(`^[0-9a-f]{64}$`)\n",
+    "replace": "var accountName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)\nvar generationID = regexp.MustCompile(`^[0-9a-f]{31,32}$`)\nvar digestID = regexp.MustCompile(`^[0-9a-f]{64}$`)\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestFormatBoundaries$"
+    },
+    "row": "generation lower bound",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-P38",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "var identifier = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)\nvar accountName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)\nvar generationID = regexp.MustCompile(`^[0-9a-f]{32}$`)\n",
+    "replace": "var identifier = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)\nvar accountName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,32}$`)\nvar generationID = regexp.MustCompile(`^[0-9a-f]{32}$`)\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestFormatBoundaries$"
+    },
+    "row": "account upper bound",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-P15",
+    "file": "internal/demolaunch/config.go",
+    "find": "func (p principal) valid(service uint32) bool {\n\treturn unmanaged(p.UID) && p.UID != service && p.Dev > 0 && p.Dev <= maxIdentity && p.Ino > 0 && p.Ino <= maxIdentity && validPath(p.Dir, 512)\n}\n",
+    "replace": "func (p principal) valid(service uint32) bool {\n\treturn validNumber(p.UID) && p.UID != service && p.Dev > 0 && p.Dev <= maxIdentity && p.Ino > 0 && p.Ino <= maxIdentity && validPath(p.Dir, 512)\n}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestFormatBoundaries$"
+    },
+    "row": "managed caller forbidden",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-P13",
+    "file": "internal/demolaunch/config.go",
+    "find": "func (c commonConfig) valid() bool {\n\treturn c.Version == 1 && unmanaged(c.ServiceUID) && validNumber(c.ServiceGID) && validNumber(c.ConnectGID) && c.ConnectGID != c.ServiceGID && c.EndpointDev > 0 && c.EndpointDev <= maxIdentity && c.EndpointIno > 0 && c.EndpointIno <= maxIdentity\n}\n",
+    "replace": "func (c commonConfig) valid() bool {\n\treturn c.Version == 1 && validNumber(c.ServiceUID) && validNumber(c.ServiceGID) && validNumber(c.ConnectGID) && c.ConnectGID != c.ServiceGID && c.EndpointDev > 0 && c.EndpointDev <= maxIdentity && c.EndpointIno > 0 && c.EndpointIno <= maxIdentity\n}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestConfigRosterBounds$"
+    },
+    "row": "managed service forbidden",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-P17",
+    "file": "internal/demolaunch/config.go",
+    "find": "func (p principal) valid(service uint32) bool {\n\treturn unmanaged(p.UID) && p.UID != service && p.Dev > 0 && p.Dev <= maxIdentity && p.Ino > 0 && p.Ino <= maxIdentity && validPath(p.Dir, 512)\n}\n",
+    "replace": "func (p principal) valid(service uint32) bool {\n\treturn unmanaged(p.UID) && p.UID != service && p.Dev > 0 && p.Dev <= maxIdentity && p.Ino > 0 && true && validPath(p.Dir, 512)\n}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestPrincipalNumberBounds$"
+    },
+    "row": "principal inode precision",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-P21",
+    "file": "internal/demolaunch/config.go",
+    "find": "func (c commonConfig) valid() bool {\n\treturn c.Version == 1 && unmanaged(c.ServiceUID) && validNumber(c.ServiceGID) && validNumber(c.ConnectGID) && c.ConnectGID != c.ServiceGID && c.EndpointDev > 0 && c.EndpointDev <= maxIdentity && c.EndpointIno > 0 && c.EndpointIno <= maxIdentity\n}\n",
+    "replace": "func (c commonConfig) valid() bool {\n\treturn c.Version == 1 && unmanaged(c.ServiceUID) && validNumber(c.ServiceGID) && validNumber(c.ConnectGID) && c.ConnectGID != c.ServiceGID && c.EndpointDev > 0 && c.EndpointDev <= maxIdentity && c.EndpointIno > 0 && true\n}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestFormatBoundaries$"
+    },
+    "row": "endpoint inode precision",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-P44F",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "\nvar identifier = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)\nvar accountName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)\n",
+    "replace": "\nvar identifier = regexp.MustCompile(`^[A-Za-z0-9._:-]{0,65}$`)\nvar accountName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestFormatBoundaries$"
+    },
+    "row": "ID format boundaries",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-P29",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "\tcase \"demo.launch\":\n\t\tif len(m) != 4 || m[\"plan\"] == nil || !validID(r.RequestID) || len(r.Plan) > 65536 {\n\t\t\treturn request{}, ErrInvalid\n",
+    "replace": "\tcase \"demo.launch\":\n\t\tif  !validID(r.RequestID) || len(r.Plan) > 65536 {\n\t\t\treturn request{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestFormatBoundaries$"
+    },
+    "row": "launch required plan",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-P30",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "\tcase \"demo.stop\":\n\t\tif m[\"plan\"] != nil || !validID(r.RequestID) {\n\t\t\treturn request{}, ErrInvalid\n",
+    "replace": "\tcase \"demo.stop\":\n\t\tif !validID(r.RequestID) {\n\t\t\treturn request{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestFormatBoundaries$"
+    },
+    "row": "stop forbids plan",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-P31",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "\tcase \"demo.status\":\n\t\tif len(m) != 2 {\n\t\t\treturn request{}, ErrInvalid\n",
+    "replace": "\tcase \"demo.status\":\n\t\tif false && len(m) != 2 {\n\t\t\treturn request{}, ErrInvalid\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestFormatBoundaries$"
+    },
+    "row": "status exact members",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V19",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t}\n\tif err = runtime(c.commonConfig, c.Caller.UID, false); err != nil {\n\t\treturn \"\", err\n",
+    "replace": "\t}\n\tif err = runtime(c.commonConfig, c.Caller.UID, false); false && err != nil {\n\t\treturn \"\", err\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientComposedGate$"
+    },
+    "row": "client runtime error",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V20",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t}\n\tpin, err := principalPin(c.Caller)\n\tif err != nil {\n",
+    "replace": "\t}\n\tp:=c.Caller\n p.Ino--\n pin, err := principalPin(p)\n\tif err != nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientComposedGate$"
+    },
+    "row": "client principal identity",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V24",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t}\n\tif !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
+    "replace": "\t}\n\tif false && !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientComposedGate$"
+    },
+    "row": "client socket metadata",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V25",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t}\n\tif !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
+    "replace": "\t}\n\tif false && !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientComposedGate$"
+    },
+    "row": "client socket metadata",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V26",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t}\n\tif !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
+    "replace": "\t}\n\tif false && !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientComposedGate$"
+    },
+    "row": "client socket metadata",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V27F",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t}\n\tif !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
+    "replace": "\t}\n\tif false && !socketIdentity(before, c.commonConfig) {\n\t\treturn \"\", ErrIdentity\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientComposedGate$"
+    },
+    "row": "client socket metadata",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V30",
+    "file": "internal/demolaunch/socket_linux.go",
+    "find": "\t}\n\tif uid != want {\n\t\treturn ErrIdentity\n",
+    "replace": "\t}\n\tif false && uid != want {\n\t\treturn ErrIdentity\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestKernelPeerAndSocketIdentity$"
+    },
+    "row": "client kernel peer expected UID",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "R4-torn-refusal",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t\tif len(b) == 0 || !json.Valid(b) {\n\t\t\ttorn[n] = true\n",
+    "replace": "\t\tif len(b) == 0 || !json.Valid(b) {\n return ErrInvalid\n\t\t\ttorn[n] = true\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestTornRecovery$"
+    },
+    "row": "torn records preserve startup",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "R4-intent-gates-helper",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t\t\t_ = e.closeAdmission(\"stop_intent_uncertain\")\n\t\t}\n",
+    "replace": "\t\t\t_ = e.closeAdmission(\"stop_intent_uncertain\")\n e.mu.Unlock(); return response{State:\"unresolved\",Code:\"stop_intent_uncertain\",Closed:true}\n\t\t}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestIntentDurabilityDoesNotGateStop$"
+    },
+    "row": "intent durability does not gate helper",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-CB-V13+V14",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t\t}\n\t\tpin, err := principalPin(*caller)\n\t\tif err != nil {\n\t\t\twakeClose(f)\n\t\t\tresources.release(nil)\n\t\t\tcontinue\n\t\t}\n\t\tif resources.pinChecked != nil {\n\t\t\tresources.pinChecked()\n\t\t}\n\t\tif err = pin.recheck(); err != nil {\n\t\t\tpin.close()\n",
+    "replace": "\t\t}\n\t\tpin, err := pinDirectory(caller.Dir, caller.UID)\n\t\tif err != nil {\n\t\t\twakeClose(f)\n\t\t\tresources.release(nil)\n\t\t\tcontinue\n\t\t}\n\t\tif resources.pinChecked != nil {\n\t\t\tresources.pinChecked()\n\t\t}\n\t\tif err = error(nil); err != nil {\n\t\t\tpin.close()\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServePeerBeforeFrameIntake$"
+    },
+    "row": "pin before any byte",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A02F",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\ts := d.ids[len(d.ids)-1]\n\tif s.uid != uid || s.mode&07777 != 0700 {\n\t\treturn nil, ErrOwnership\n",
+    "replace": "\ts := d.ids[len(d.ids)-1]\n\tif s.uid != uid || s.mode&07777 != 0700 && false {\n\t\treturn nil, ErrOwnership\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStateProtectionAndSyncOrder$"
+    },
+    "row": "state directory exact mode",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-A06F",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\t}\n\tif e = s.sync(f); e != nil {\n\t\treturn e\n",
+    "replace": "\t}\n\tif e = error(nil); e != nil {\n\t\treturn e\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStateProtectionAndSyncOrder$"
+    },
+    "row": "state file fsync",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-L11",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\tif err := e.store.create(\"attempt-\"+a.Generation, marshal(at)); err != nil {\n\t\te.closed = true\n",
+    "replace": "\t}\n\tif err := e.store.create(\"attempt-\"+a.Generation, marshal(at)); false && err != nil {\n\t\te.closed = true\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestMarkerFailureNoChild$"
+    },
+    "row": "attempt durability before child",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-L25",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "func (e *engine) unknown(code string) response {\n\te.mu.Lock()\n\tdefer e.mu.Unlock()\n\tif err := e.closeAdmission(code); err != nil {\n\t\tcode = \"latch_uncertain\"\n\t}\n\treturn response{State: \"unknown\", Code: code, Closed: true}\n",
+    "replace": "func (e *engine) unknown(code string) response {\n\te.mu.Lock()\n\tdefer e.mu.Unlock()\n\tif err := error(nil); err != nil {\n\t\tcode = \"latch_uncertain\"\n\t}\n\treturn response{State: \"unknown\", Code: code, Closed: true}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLaunchUnknown$"
+    },
+    "row": "unknown launch closes admission",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-T38",
+    "file": "internal/demolaunch/engine_linux.go",
+    "find": "\t}\n\trecord := stoppedRecord{ExecutionID: at.ExecutionID, Timing: verdict, Closed: e.closed}\n\tif latchErr != nil {\n",
+    "replace": "\t}\n\trecord := stoppedRecord{ExecutionID: at.ExecutionID, Timing: verdict, Closed: false}\n\tif latchErr != nil {\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStopContinuationAndDurableReplay$"
+    },
+    "row": "persist closed stopped fact",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "R4-checker-writefile",
+    "file": "internal/demolaunch/files_linux_test.go",
+    "find": "\t\"Rmdir\": true, \"Unlink\": true, \"Unlinkat\": true, \"Truncate\": true, \"Ftruncate\": true,\n\t\"WriteFile\": true, \"Create\": true, \"Creat\": true, \"Chmod\": true, \"Fchmod\": true, \"Link\": true, \"Symlink\": true, \"Mknod\": true, \"CommandContext\": true, \"Pdeathsig\": true, \"Syscall\": true,\n\t\"O_TRUNC\": true, \"Kill\": true, \"Signal\": true, \"Tkill\": true, \"Tgkill\": true, \"PidfdSendSignal\": true,\n",
+    "replace": "\t\"Rmdir\": true, \"Unlink\": true, \"Unlinkat\": true, \"Truncate\": true, \"Ftruncate\": true,\n\t\"WriteFile\": false, \"Create\": true, \"Creat\": true, \"Chmod\": true, \"Fchmod\": true, \"Link\": true, \"Symlink\": true, \"Mknod\": true, \"CommandContext\": true, \"Pdeathsig\": true, \"Syscall\": true,\n\t\"O_TRUNC\": true, \"Kill\": true, \"Signal\": true, \"Tkill\": true, \"Tgkill\": true, \"PidfdSendSignal\": true,\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStateMutationChecker$"
+    },
+    "row": "checker recognizes truncating calls",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V21",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t}\n\tif err = pin.recheck(); err != nil {\n\t\treturn \"\", err\n",
+    "replace": "\t}\n\tif err = error(nil); err != nil {\n\t\treturn \"\", err\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientComposedGate$"
+    },
+    "row": "client pin recheck",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V28",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t}\n\tif err = d.recheck(); err != nil {\n\t\treturn \"\", err\n",
+    "replace": "\t}\n\tif err = error(nil); err != nil {\n\t\treturn \"\", err\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientComposedGate$"
+    },
+    "row": "client endpoint recheck",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V29",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t}\n\tif !before.attrs(after) {\n\t\treturn \"\", ErrIdentity\n",
+    "replace": "\t}\n\tif false && !before.attrs(after) {\n\t\treturn \"\", ErrIdentity\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestClientComposedGate$"
+    },
+    "row": "client named socket recheck",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-F30",
+    "file": "internal/demolaunch/files_linux.go",
+    "find": "\t\tmember, err := groupMember(c.ServiceGID)\n\t\tif err != nil || member {\n\t\t\treturn errors.Join(ErrIdentity, err)\n",
+    "replace": "\t\tmember, err := groupMember(c.ServiceGID)\n\t\tif err != nil || false && member {\n\t\t\treturn errors.Join(ErrIdentity, err)\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRuntimeIdentity$"
+    },
+    "row": "client excluded from service group",
+    "qualification": "intended, parent runs it"
+  },
+  {
+    "id": "S2-V12",
+    "file": "internal/demolaunch/service_linux.go",
+    "find": "\t}\n\treturn serveWith(ctx, e, c, stop, engine, peer, resources)\n}\n",
+    "replace": "\t}\n\t_ = peer\n return serveWith(ctx,e,c,stop,engine,func(*os.File)(uint32,error){return c.Caller.UID,nil},resources)\n}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServePeerBeforeFrameIntake$"
+    },
+    "row": "real accept credential lookup wiring",
+    "qualification": "intended, parent runs it"
+  }
+]

@@ -3,10 +3,12 @@
 package demolaunch
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -82,7 +84,14 @@ func (s *stateStore) read(name string) ([]byte, error) {
 	if e != nil || !stateMetadata(id, s.uid) {
 		return nil, ErrOwnership
 	}
-	return readSnapshot(f, 4096)
+	b, err := io.ReadAll(io.LimitReader(f, 4097))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > 4096 {
+		return nil, ErrLimit
+	}
+	return b, nil
 }
 func (s *stateStore) names() ([]string, error) {
 	f, e := openAt(s.dir, ".", syscall.O_RDONLY|syscall.O_DIRECTORY, 0)
@@ -101,7 +110,7 @@ func (s *stateStore) names() ([]string, error) {
 }
 func parseAttempt(b []byte) (attempt, error) {
 	var a attempt
-	if _, e := object(b, 4096, "request_digest execution_id time", ""); e != nil || typed(b, &a) != nil || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {
+	if _, e := object(b, 4096, "request_id request_digest execution_id time", ""); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {
 		return attempt{}, ErrInvalid
 	}
 	if _, e := time.Parse(time.RFC3339Nano, a.Time); e != nil {
@@ -124,6 +133,7 @@ func (e *engine) load() error {
 	if err != nil {
 		return err
 	}
+	torn := map[string]bool{}
 	known := map[string]bool{"closed": true}
 	for _, a := range e.accounts {
 		for _, prefix := range []string{"attempt-", "stopped-", "stop-", "output-"} {
@@ -142,7 +152,7 @@ func (e *engine) load() error {
 		if !known[n] {
 			return fmt.Errorf("state_unknown_entry: %s", n)
 		}
-		if strings.HasPrefix(n, "output-") {
+		if strings.HasSuffix(n, ".log") {
 			f, x := openAt(e.store.dir, n, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
 			if x != nil {
 				return x
@@ -152,24 +162,38 @@ func (e *engine) load() error {
 			if x != nil || !stateMetadata(id, e.store.uid) {
 				return ErrOwnership
 			}
-			if strings.HasSuffix(n, ".log") {
-				if id.size > logCap {
-					return ErrInvalid
-				}
-			} else {
-				b, x := e.store.read(n)
-				if x != nil {
-					return x
-				}
-				want := "true"
-				if strings.HasSuffix(n, ".lost") {
-					want = "output_lost"
-				}
-				if string(b) != want {
-					return ErrInvalid
-				}
+			if id.size > logCap {
+				return ErrInvalid
 			}
+			continue
 		}
+		if n == "closed" {
+			if b, x := e.store.read(n); x == nil && (len(b) == 0 || !json.Valid(b)) {
+				e.torn = append(e.torn, n)
+				e.closed = true
+			}
+			continue
+		}
+		b, x := e.store.read(n)
+		if x != nil {
+			return x
+		}
+		if len(b) == 0 || !json.Valid(b) {
+			torn[n] = true
+			e.torn = append(e.torn, n)
+			e.closed = true
+			continue
+		}
+		if strings.HasSuffix(n, ".truncated") && string(b) != "true" {
+			return ErrInvalid
+		}
+		if strings.HasSuffix(n, ".lost") && string(b) != `"output_lost"` {
+			return ErrInvalid
+		}
+	}
+	sort.Strings(e.torn)
+	if len(e.torn) > 0 {
+		_ = e.closeAdmission("torn_state")
 	}
 	if err = e.store.closedPresent(); err == nil {
 		e.closed = true
@@ -184,24 +208,35 @@ func (e *engine) load() error {
 		if err != nil {
 			return err
 		}
-		at, err := parseAttempt(b)
-		if err != nil {
-			return err
+		at := attempt{}
+		if !torn["attempt-"+a.Generation] {
+			at, err = parseAttempt(b)
+			if err != nil {
+				return err
+			}
 		}
 		e.attempts[name] = at
 		b, err = e.store.read("stop-" + a.Generation)
-		if err == nil {
+		if err == nil && torn["stop-"+a.Generation] {
+			e.tornIntents[name] = true
+		} else if err == nil {
 			si, x := parseIntent(b)
-			if x != nil || si.ExecutionID != at.ExecutionID {
+			if x != nil || (at.ExecutionID != "" && si.ExecutionID != at.ExecutionID) {
 				return ErrInvalid
 			}
 			e.stops[name] = &stopRecord{intent: si}
+			if at.ExecutionID == "" {
+				at.ExecutionID = si.ExecutionID
+				e.attempts[name] = at
+			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		b, err = e.store.read("stopped-" + a.Generation)
-		if err == nil {
-			if e.stops[name] == nil {
+		if err == nil && torn["stopped-"+a.Generation] {
+			// A torn completion is never an absence fact.
+		} else if err == nil {
+			if e.stops[name] == nil && !e.tornIntents[name] {
 				return ErrInvalid
 			}
 			var record stoppedRecord
@@ -217,9 +252,12 @@ func (e *engine) load() error {
 				}
 			}
 			e.stopped[name] = true
+			if e.tornIntents[name] {
+				continue
+			} // No original arguments to replay.
 			e.stops[name].terminal = &response{State: "absent", Timing: record.Timing, Closed: e.closed, Stopped: true, Code: record.Code}
 		} else if errors.Is(err, os.ErrNotExist) {
-			if err = e.closeAdmission("startup_unstopped"); err != nil {
+			if err = e.closeAdmission("startup_unstopped"); err != nil && len(e.torn) == 0 {
 				return err
 			}
 		} else {
@@ -238,7 +276,7 @@ func (e *engine) load() error {
 				break
 			}
 		}
-		if !found {
+		if !found && !torn[n] {
 			return ErrInvalid
 		}
 	}

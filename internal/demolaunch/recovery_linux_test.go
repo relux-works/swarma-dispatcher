@@ -50,7 +50,9 @@ func TestFixtureRunnerIsolation(t *testing.T) {
 func rebuild(t *testing.T, h *harness) *engine {
 	t.Helper()
 	e, err := testEngine(t, h.e.ctx, h.e.store, []account{h.e.accounts["demo"], h.e.accounts["second"]}, serverConfig{})
-	must(t, err)
+	if err != nil {
+		t.Fatalf("restart state rejected: %v", err)
+	}
 	e.run = h.e.run
 	return e
 }

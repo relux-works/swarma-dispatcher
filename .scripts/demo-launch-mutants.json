@@ -1045,7 +1045,7 @@
     },
     "row": "torn records preserve startup",
     "qualification": "Requires execution on an isolated Linux host.",
-    "expect": "torn recovery assertion:|torn recovery status assertion:|want refused/|want unresolved/"
+    "expect": "restart state rejected:|torn recovery assertion:|torn recovery status assertion:|want refused/|want unresolved/"
   },
   {
     "id": "R4-intent-gates-helper",

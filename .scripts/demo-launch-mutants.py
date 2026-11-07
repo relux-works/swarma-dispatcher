@@ -39,25 +39,42 @@ def classify(code, output, timed_out, plant):
     def matches(name):
         parts = name.split("/")
         return len(parts) >= len(selected) and all(re.search(p, n) for p, n in zip(selected, parts))
+    # A t.Run name may itself contain slashes, so slash count is not depth.
+    # Infer actual parents from unindented RUN events, not copied child output.
+    depths, parents = {}, {}
+    for line in output.splitlines():
+        event = re.match(r"^=== RUN\s+(\S+)", line)
+        if event:
+            name = event.group(1)
+            ancestors = [n for n in depths if name.startswith(n + "/")]
+            parent = max(ancestors, key=len) if ancestors else None
+            parents[name] = parent
+            depths[name] = depths[parent] + 1 if parent else 0
     if code == 0:
-        passed = re.findall(r"--- PASS: ([^\s]+)", output)
-        return "survived" if any(matches(name) for name in passed) else "invalid"
+        passed = re.findall(r"^( *)--- PASS: ([^\s]+)", output, re.MULTILINE)
+        return "survived" if any(len(indent) == 4 * depths.get(name, name.count("/")) and matches(name)
+                                 for indent, name in passed) else "invalid"
     blocks = {}
     current = None
     for line in output.splitlines():
-        event = re.match(r"^\s*=== (?:RUN|NAME|CONT)\s+(\S+)", line)
+        # Go streams RUN/NAME/CONT and assertion lines at fixed indentation,
+        # including subtests. Completion summaries use four spaces per depth.
+        # Child output embedded in a parent failure is indented more deeply.
+        event = re.match(r"^=== (?:RUN|NAME|CONT)\s+(\S+)", line)
         if event:
             current = event.group(1)
             blocks.setdefault(current, [])
             continue
-        end = re.match(r"^\s*--- (FAIL|PASS|SKIP): (\S+)", line)
+        end = re.match(r"^( *)--- (FAIL|PASS|SKIP): (\S+)", line)
         if end:
-            kind, name = end.groups()
+            indent, kind, name = end.groups()
+            if len(indent) != 4 * depths.get(name, name.count("/")):
+                continue
             if kind == "FAIL" and matches(name) and any(re.search(expect, a) for a in blocks.get(name, [])):
                 return "killed"
-            current = name.rpartition("/")[0] or None
+            current = parents.get(name)
             continue
-        assertion = re.match(r"^\s*[^\s]+_test\.go:\d+: (.*)$", line)
+        assertion = re.match(r"^ {4}[^\s]+_test\.go:\d+: (.*)$", line)
         if current is not None and assertion:
             blocks[current].append(assertion.group(1))
     return "invalid"

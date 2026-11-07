@@ -4,6 +4,7 @@ package demolaunch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -182,7 +183,8 @@ func TestEndpointPinIdentity(t *testing.T) {
 
 // SIGCHLD is ignored only inside an isolated re-exec. Kernel auto-reaping makes
 // Wait4 return ECHILD; a valid result without an observed exit is not absence.
-// The deployed daemon does not set SIGCHLD to ignored.
+// The deployed daemon does not set SIGCHLD to ignored. A result file transfers
+// the actual stop response; the parent owns both outcome assertions.
 func TestWaitErrorRefusesAbsence(t *testing.T) {
 	if os.Getenv("DEMO_WAIT_WITNESS") == "" {
 		exe, err := os.Executable()
@@ -190,11 +192,24 @@ func TestWaitErrorRefusesAbsence(t *testing.T) {
 		for _, ignore := range []string{"no", "yes"} {
 			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 			c := exec.CommandContext(ctx, exe, "-test.run=^TestWaitErrorRefusesAbsence$", "-test.v")
-			c.Env = append(os.Environ(), "DEMO_WAIT_WITNESS="+ignore, "GORACE=atexit_sleep_ms=0")
+			resultPath := filepath.Join(t.TempDir(), "wait-result")
+			c.Env = append(os.Environ(), "DEMO_WAIT_WITNESS="+ignore, "DEMO_WAIT_RESULT="+resultPath, "GORACE=atexit_sleep_ms=0")
 			out, err := c.CombinedOutput()
 			cancel()
 			if err != nil {
-				t.Fatalf("wait error witness failed: %v\n%s", err, out)
+				t.Fatalf("wait error witness failed: %v\nchild output:\n%s", err, out)
+			}
+			b, readErr := os.ReadFile(resultPath)
+			var r response
+			if readErr != nil || json.Unmarshal(b, &r) != nil {
+				t.Fatalf("wait witness verdict invalid: read=%v value=%q\nchild output:\n%s", readErr, b, out)
+			}
+			if ignore == "yes" {
+				if r.State != "unresolved" || r.Code != "helper_exit" {
+					t.Fatalf("wait error accepted as zero exit: %+v\nchild output:\n%s", r, out)
+				}
+			} else if r.State != "absent" || r.Code != "" {
+				t.Fatalf("wait witness normal-exit control refused: %+v\nchild output:\n%s", r, out)
 			}
 		}
 		return
@@ -204,13 +219,9 @@ func TestWaitErrorRefusesAbsence(t *testing.T) {
 	waitChild(t, h.e.launchChildren["demo"], time.Now().Add(30*time.Second))
 	if os.Getenv("DEMO_WAIT_WITNESS") == "yes" {
 		signal.Ignore(syscall.SIGCHLD)
-		r := h.e.handle(stopBytes(10))
-		if r.State != "unresolved" || r.Code != "helper_exit" {
-			t.Fatalf("wait error accepted as zero exit: %+v", r)
-		}
-	} else {
-		assertState(t, h.e.handle(stopBytes(10)), "absent", "")
 	}
+	r := h.e.handle(stopBytes(10))
+	must(t, os.WriteFile(os.Getenv("DEMO_WAIT_RESULT"), marshal(r), 0600))
 }
 
 // Delaying the fixture runner until the original write deadline has expired

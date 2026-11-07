@@ -19,9 +19,13 @@ import (
 )
 
 // Run the seal in a separate test process: ExtraFiles owns fds 3..302 there,
-// never replacing a descriptor the parent's Go runtime might own.
+// never replacing a descriptor the parent's Go runtime might own. The child
+// writes a numeric verdict; only the parent asserts the offending descriptor.
 func TestSealAllDescriptors(t *testing.T) {
 	if os.Getenv("DEMO_SEAL_HELPER") == "1" {
+		report := func(fd int) {
+			must(t, os.WriteFile(os.Getenv("DEMO_SEAL_RESULT"), []byte(strconv.Itoa(fd)), 0600))
+		}
 		flags := func(fd int) uint64 {
 			b, err := os.ReadFile(fmt.Sprintf("/proc/self/fdinfo/%d", fd))
 			must(t, err)
@@ -43,7 +47,8 @@ func TestSealAllDescriptors(t *testing.T) {
 		must(t, sealInheritedDescriptors())
 		for fd := 3; fd <= 302; fd++ {
 			if flags(fd)&syscall.O_CLOEXEC == 0 {
-				t.Fatalf("unsealed inherited descriptor %d", fd)
+				report(fd)
+				return
 			}
 		}
 		directory, err := os.Open("/proc/self/fd")
@@ -55,9 +60,11 @@ func TestSealAllDescriptors(t *testing.T) {
 			fd, err := strconv.Atoi(name)
 			must(t, err)
 			if fd > 2 && flags(fd)&syscall.O_CLOEXEC == 0 {
-				t.Fatalf("unsealed inherited descriptor %d", fd)
+				report(fd)
+				return
 			}
 		}
+		report(0)
 		return
 	}
 	exe, err := os.Executable()
@@ -65,7 +72,8 @@ func TestSealAllDescriptors(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	c := exec.CommandContext(ctx, exe, "-test.run=^TestSealAllDescriptors$")
-	c.Env = append(os.Environ(), "DEMO_SEAL_HELPER=1")
+	resultPath := filepath.Join(t.TempDir(), "seal-result")
+	c.Env = append(os.Environ(), "DEMO_SEAL_HELPER=1", "DEMO_SEAL_RESULT="+resultPath)
 	r, w, err := os.Pipe()
 	must(t, err)
 	defer r.Close()
@@ -75,7 +83,15 @@ func TestSealAllDescriptors(t *testing.T) {
 	}
 	output, err := c.CombinedOutput()
 	if err != nil {
-		t.Fatalf("descriptor seal child failed: %v\n%s", err, output)
+		t.Fatalf("descriptor seal child failed: %v\nchild output:\n%s", err, output)
+	}
+	verdict, readErr := os.ReadFile(resultPath)
+	fd, parseErr := strconv.Atoi(string(verdict))
+	if readErr != nil || parseErr != nil || fd < 0 || fd == 1 || fd == 2 {
+		t.Fatalf("descriptor seal verdict invalid: read=%v parse=%v value=%q\nchild output:\n%s", readErr, parseErr, verdict, output)
+	}
+	if fd != 0 {
+		t.Fatalf("unsealed inherited descriptor %d\nchild output:\n%s", fd, output)
 	}
 }
 

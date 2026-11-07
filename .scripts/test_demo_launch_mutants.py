@@ -231,17 +231,54 @@ subprocess.Popen([sys.executable,'-c',sys.argv[1],*sys.argv[2:],str(os.getpid())
     def test_assertion_must_belong_to_selected_failure(self):
         plant = dict(kills=dict(run='^TestGuard$'), expect='forbidden')
         cases = [
-            ('=== RUN   TestOther\n other_test.go:1: forbidden\n--- FAIL: TestOther\n=== RUN   TestGuard\n guard_test.go:2: unrelated\n--- FAIL: TestGuard', 'invalid'),
-            ('=== RUN   TestGuard\n=== RUN   TestGuard/control\n guard_test.go:1: forbidden\n--- PASS: TestGuard/control\n guard_test.go:2: unrelated\n--- FAIL: TestGuard', 'invalid'),
-            ('=== RUN   TestGuard\n=== RUN   TestGuard/bad\n guard_test.go:1: forbidden\n--- FAIL: TestGuard/bad\n--- FAIL: TestGuard', 'killed'),
-            ('=== RUN   TestGuard\n guard_test.go:1: forbidden\n--- FAIL: TestGuard', 'killed'),
-            ('=== RUN   TestOther\n other_test.go:1: forbidden\n--- FAIL: TestGuard', 'invalid'),
+            ('=== RUN   TestOther\n    other_test.go:1: forbidden\n--- FAIL: TestOther\n=== RUN   TestGuard\n    guard_test.go:2: unrelated\n--- FAIL: TestGuard', 'invalid'),
+            ('=== RUN   TestGuard\n=== RUN   TestGuard/control\n    guard_test.go:1: forbidden\n    --- PASS: TestGuard/control\n    guard_test.go:2: unrelated\n--- FAIL: TestGuard', 'invalid'),
+            ('=== RUN   TestGuard\n=== RUN   TestGuard/bad\n    guard_test.go:1: forbidden\n    --- FAIL: TestGuard/bad\n--- FAIL: TestGuard', 'killed'),
+            ('=== RUN   TestGuard\n    guard_test.go:1: forbidden\n--- FAIL: TestGuard', 'killed'),
+            ('=== RUN   TestOther\n    other_test.go:1: forbidden\n--- FAIL: TestGuard', 'invalid'),
         ]
         for output, expected in cases:
             self.assertEqual(runner.classify(1, output, False, plant), expected)
         plant['kills']['run'] = '^TestGuard$/bad$'
         self.assertEqual(runner.classify(0, '--- PASS: TestGuard/good\n--- PASS: TestGuard', False, plant), 'invalid')
-        self.assertEqual(runner.classify(1, '=== RUN   TestGuard/good\n guard_test.go:1: forbidden\n--- FAIL: TestGuard/good\n--- FAIL: TestGuard', False, plant), 'invalid')
+        self.assertEqual(runner.classify(1, '=== RUN   TestGuard/good\n    guard_test.go:1: forbidden\n    --- FAIL: TestGuard/good\n--- FAIL: TestGuard', False, plant), 'invalid')
+
+    def test_nested_child_output_is_not_parent_evidence(self):
+        plant = dict(kills=dict(run='^TestSealAllDescriptors$'), expect='unsealed inherited descriptor 3')
+        template = """=== RUN   TestSealAllDescriptors
+    guards_extra_linux_test.go:78: PARENT
+        --- FAIL: TestSealAllDescriptors (0.00s)
+            guards_extra_linux_test.go:46: unsealed inherited descriptor 3
+        FAIL
+--- FAIL: TestSealAllDescriptors (0.00s)
+"""
+        self.assertEqual(runner.classify(1, template.replace('PARENT', 'unsealed inherited descriptor 3'), False, plant), 'killed')
+        self.assertEqual(runner.classify(1, template.replace('PARENT', 'descriptor seal child failed: exit status 1'), False, plant), 'invalid')
+        # A verbose child also cannot replace the active parent's RUN block.
+        verbose = template.replace('        --- FAIL:', '        === RUN   TestOther\n        --- FAIL:')
+        self.assertEqual(runner.classify(1, verbose.replace('PARENT', 'unsealed inherited descriptor 3'), False, plant), 'killed')
+        self.assertEqual(runner.classify(1, verbose.replace('PARENT', 'child failed'), False, plant), 'invalid')
+        self.assertEqual(runner.classify(0, '        --- PASS: TestSealAllDescriptors', False, plant), 'invalid')
+
+    def test_normal_subtest_depth(self):
+        plant = dict(kills=dict(run='^TestGuard$/bad$'), expect='forbidden')
+        output = """=== RUN   TestGuard
+=== RUN   TestGuard/bad
+    guard_test.go:10: forbidden
+--- FAIL: TestGuard (0.01s)
+    --- FAIL: TestGuard/bad (0.01s)
+"""
+        self.assertEqual(runner.classify(1, output, False, plant), 'killed')
+        self.assertEqual(runner.classify(1, output.replace('    --- FAIL: TestGuard/bad', '        --- FAIL: TestGuard/bad'), False, plant), 'invalid')
+        self.assertEqual(runner.classify(1, output.replace('=== RUN   TestGuard/bad', '        === RUN   TestGuard/bad'), False, plant), 'invalid')
+        self.assertEqual(runner.classify(0, '--- PASS: TestGuard\n    --- PASS: TestGuard/bad', False, plant), 'survived')
+        # Slash characters in one t.Run name do not create another nesting level.
+        plant['kills']['run'] = '^TestGuard$'
+        slash_name = output.replace('TestGuard/bad', 'TestGuard/bad/empty')
+        self.assertEqual(runner.classify(1, slash_name, False, plant), 'killed')
+        nested = slash_name.replace('=== RUN   TestGuard/bad/empty', '=== RUN   TestGuard/bad\n=== RUN   TestGuard/bad/empty').replace('    --- FAIL: TestGuard/bad/empty', '        --- FAIL: TestGuard/bad/empty')
+        self.assertEqual(runner.classify(1, nested, False, plant), 'killed')
+
 
     def test_disposable_required(self):
         with self.assertRaises(SystemExit) as caught:

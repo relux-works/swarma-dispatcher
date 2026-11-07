@@ -549,9 +549,12 @@ func TestComposedChildInheritance(t *testing.T) {
 	if err != nil || !strings.Contains(wire, `"state":"receipt-seen"`) {
 		t.Fatalf("sealed reply=%s err=%v inherited:\n%s", wire, err, evidence(h, "1"))
 	}
-	waitChild(t, h.e.launchChildren["demo"], time.Now().Add(30*time.Second))
-	if h.e.launchChildren["demo"].err != nil {
-		t.Fatalf("child=%v inherited:\n%s", h.e.launchChildren["demo"].err, evidence(h, "1"))
+	h.e.mu.Lock()
+	ch := h.e.launchChildren["demo"]
+	h.e.mu.Unlock()
+	waitChild(t, ch, time.Now().Add(30*time.Second))
+	if ch.err != nil {
+		t.Fatalf("child=%v inherited:\n%s", ch.err, evidence(h, "1"))
 	}
 	stopped := h.e.handle(stopBytes(10))
 	if stopped.State != "absent" || stopped.Code != "" {

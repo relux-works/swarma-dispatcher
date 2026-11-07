@@ -1,4 +1,4 @@
-# TASK-261011-feyplb — R-DP1 logbook
+# R-DP1 logbook
 
 2026-10-11. Docs-only contract repair prepared for review.
 

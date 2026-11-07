@@ -1,4 +1,4 @@
-# TASK-261011-feyplb — R-DP1 contract alignment
+# R-DP1 contract alignment
 
 Documentation-only review handoff. The scope is dispatcher prose and the three existing diagrams named by R-DP1; no runtime support or qualification is claimed.
 
@@ -41,8 +41,8 @@ D-GOALS is reflected in §8.4: caller/board authorship for now, no agent goal ca
 |---|---:|---|
 | `git diff --check` | 0 | Standalone whitespace check after prose/diagram edits; repeated after evidence preparation. |
 | `git diff --name-only` | 0 | Five tracked changes: README, dispatcher spec and exactly the three R-DP1 diagrams. The new alignment artifact is separately recorded by `git status --short`. |
-| `git diff --no-index --check /dev/null .research/TASK-261011-feyplb_alignment.md` | 1 (expected difference) | New artifact differs from the empty file; no whitespace diagnostic was printed. This non-zero command is not a passing gate. |
-| `git diff --no-index --check /dev/null .research/TASK-261011-feyplb_logbook.md` | 1 (expected difference) | New artifact differs from the empty file; no whitespace diagnostic was printed. This non-zero command is not a passing gate. |
+| Historical `git diff --no-index --check /dev/null` for the alignment artifact (original filename omitted) | 1 (expected difference) | New artifact differs from the empty file; no whitespace diagnostic was printed. This non-zero command is not a passing gate. |
+| Historical `git diff --no-index --check /dev/null` for the logbook artifact (original filename omitted) | 1 (expected difference) | New artifact differs from the empty file; no whitespace diagnostic was printed. This non-zero command is not a passing gate. |
 | `git status --short` | 0 | Five tracked documentation changes and two new task-scoped Markdown evidence files under `.research/`; no code changes or commits. |
 | Manual source/diff review | Not a command gate | Six audit rows mapped to owning contract rows and precondition decisions; three diagrams reviewed as text. Coverage is 6/6 rows and 3/3 named source diagrams, not runtime coverage. |
 

@@ -106,36 +106,45 @@ func TestAcceptSlotsAndDemoIdentity(t *testing.T) {
 	h := fixture(t, "good")
 	d, err := pinDirectory(h.root, uint32(os.Geteuid()))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("stage=endpoint-directory-pin: %v", err)
 	}
 	// Endpoint mechanism uses 0711; this changes only this fresh fixture leaf.
 	if err = os.Chmod(h.root, 0711); err != nil {
-		t.Fatal(err)
+		t.Fatalf("stage=endpoint-directory-mode: %v", err)
 	}
 	d.close()
 	d, err = pinDirectory(h.root, uint32(os.Geteuid()))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("stage=endpoint-directory-repin: %v", err)
 	}
-	old := syscall.Umask(0177)
-	defer syscall.Umask(old)
-	cfg := commonConfig{ServiceUID: uint32(os.Geteuid()), ServiceGID: uint32(os.Getegid()), ConnectGID: uint32(os.Getegid())}
-	endpoint, err := createEndpoint(d, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer endpoint.close()
+	// Create the caller before the socket-only umask: 0700 &^ 0177 is 0600.
 	pinPath := filepath.Join(h.root, "caller")
 	if err = os.Mkdir(pinPath, 0700); err != nil {
-		t.Fatal(err)
+		t.Fatalf("stage=caller-mkdir: %v", err)
 	}
 	pin, err := pinDirectory(pinPath, uint32(os.Geteuid()))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("stage=caller-directory-pin: %v", err)
 	}
 	id := pin.ids[len(pin.ids)-1]
 	pin.close()
+	if id.mode&07777 != 0700 {
+		t.Fatalf("stage=caller-mode: got %04o, want 0700", id.mode&07777)
+	}
+	cfg := commonConfig{ServiceUID: uint32(os.Geteuid()), ServiceGID: uint32(os.Getegid()), ConnectGID: uint32(os.Getegid())}
 	c := serverConfig{commonConfig: cfg, Caller: principal{Dev: id.dev, Ino: id.ino, UID: id.uid, Dir: pinPath}}
+	pin, err = principalPin(c.Caller)
+	if err != nil {
+		t.Fatalf("stage=caller-principal-pin: %v", err)
+	}
+	pin.close()
+	old := syscall.Umask(0177)
+	defer syscall.Umask(old)
+	endpoint, err := createEndpoint(d, cfg)
+	if err != nil {
+		t.Fatalf("stage=endpoint-create: %v", err)
+	}
+	defer endpoint.close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stop := &shutdown{cancel: cancel}
@@ -144,34 +153,69 @@ func TestAcceptSlotsAndDemoIdentity(t *testing.T) {
 	for i := 0; i < 9; i++ {
 		f, err := connectSocket(endpoint.dir, time.Now())
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("i=%d stage=connect: %v", i, err)
 		}
 		defer wakeClose(f)
-		w := testWire(t, f)
+		w, err := newSocketIO(f, time.Now())
+		if err != nil {
+			t.Fatalf("i=%d stage=wire-setup: %v", i, err)
+		}
 		err = w.writeFrame(`{"protocol":"swarma-demo-dispatcher/1"}`)
 		if i == 8 && err != nil {
 			continue
 		}
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("i=%d stage=hello-write: %v", i, err)
 		}
 		reply, err := w.readFrame()
 		if i == 8 {
 			if err == nil {
-				t.Fatal("ninth admitted", string(reply))
+				t.Fatalf("i=%d stage=hello-read: ninth connection admitted, reply=%q", i, reply)
 			}
 		} else if err != nil || string(reply) != `{"protocol":"swarma-demo-dispatcher/1"}` {
-			t.Fatal(string(reply), err)
+			t.Fatalf("i=%d stage=hello-read: reply=%q err=%v", i, reply, err)
 		}
 	}
 	stop.request(nil)
 	select {
 	case err = <-done:
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("stage=server-shutdown: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("shutdown blocked")
+		t.Fatal("stage=server-shutdown: timeout")
+	}
+}
+
+// A caller directory created under the socket umask is really 0600 and must
+// remain refused, not repaired. The adjacent accept test controls valid 0700.
+func TestCallerPinRejectsSocketUmask(t *testing.T) {
+	root := fixtureDir(t)
+	old := syscall.Umask(0177)
+	defer syscall.Umask(old)
+	name := filepath.Join(root, "masked-caller")
+	if err := os.Mkdir(name, 0700); err != nil {
+		t.Fatalf("stage=masked-caller-mkdir: %v", err)
+	}
+	d, err := pinDirectory(name, uint32(os.Geteuid()))
+	if err != nil {
+		t.Fatalf("stage=masked-caller-directory-pin: %v", err)
+	}
+	id := d.ids[len(d.ids)-1]
+	d.close()
+	if id.mode&07777 != 0600 {
+		t.Fatalf("stage=umask-control: got %04o, want 0600", id.mode&07777)
+	}
+	p := principal{Dev: id.dev, Ino: id.ino, UID: id.uid, Dir: name}
+	if pin, err := principalPin(p); pin != nil || !errors.Is(err, ErrIdentity) {
+		if pin != nil {
+			pin.close()
+		}
+		t.Fatalf("stage=masked-caller-refusal: want identity_mismatch, got %v", err)
+	}
+	info, err := os.Lstat(name)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("stage=masked-caller-preservation: info=%v err=%v", info, err)
 	}
 }
 

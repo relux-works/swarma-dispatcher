@@ -88,7 +88,7 @@ func TestStateProtectionAndSyncOrder(t *testing.T) {
 		if other != nil {
 			other.dir.Close()
 		}
-		t.Fatal(err)
+		t.Fatalf("0750 state directory accepted: %v", err)
 	}
 	info, err := os.Stat(root)
 	if err != nil || info.Mode().Perm() != 0750 {

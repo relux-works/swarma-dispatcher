@@ -380,7 +380,7 @@ func fileBytes(t *testing.T, h *harness, name string) []byte {
 	t.Helper()
 	b, e := h.e.store.read(name)
 	if e != nil {
-		t.Fatal(name, e)
+		t.Fatalf("state evidence read failed: %s: %v", name, e)
 	}
 	return b
 }

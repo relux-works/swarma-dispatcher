@@ -369,7 +369,7 @@
     },
     "row": "stopped closed restoration",
     "qualification": "Requires execution on an isolated Linux host.",
-    "expect": "closed fact lost|closed no such file"
+    "expect": "closed fact lost|state evidence read failed: closed:"
   },
   {
     "id": "S1-A19",
@@ -382,7 +382,7 @@
     },
     "row": "stopped durable latch restoration",
     "qualification": "Requires execution on an isolated Linux host.",
-    "expect": "closed fact lost|closed no such file"
+    "expect": "closed fact lost|state evidence read failed: closed:"
   },
   {
     "id": "S2-A25",
@@ -1084,7 +1084,7 @@
     },
     "row": "state directory exact mode",
     "qualification": "Requires execution on an isolated Linux host.",
-    "expect": "not file then directory|exclusive state name reused:"
+    "expect": "0750 state directory accepted:"
   },
   {
     "id": "S2-A06F",
@@ -1123,7 +1123,7 @@
     },
     "row": "unknown launch closes admission",
     "qualification": "Requires execution on an isolated Linux host.",
-    "expect": "closed no such file"
+    "expect": "state evidence read failed: closed:"
   },
   {
     "id": "S2-T38",
@@ -1136,7 +1136,7 @@
     },
     "row": "persist closed stopped fact",
     "qualification": "Requires execution on an isolated Linux host.",
-    "expect": "stop continuation assertion:|stop replay assertion:"
+    "expect": "restart refused durable stopped fact:"
   },
   {
     "id": "R4-checker-writefile",
@@ -1264,7 +1264,7 @@
       "package": "./internal/demolaunch",
       "run": "^TestLatchRecovery$"
     },
-    "expect": "closed no such file|restart latch|healed latch",
+    "expect": "state evidence read failed: closed:|restart latch|healed latch",
     "row": "marker-durable-latch",
     "qualification": "Requires execution on an isolated Linux host."
   },
@@ -1580,7 +1580,7 @@
     "file": "internal/demolaunch/engine_linux.go",
     "find": "if err != nil || overflow {",
     "replace": "if overflow {",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "accepted_residue": "A read error after a valid helper document, without overflow, needs a deterministic pipe-read fault after deadline setup; capture construction is local to stop and existing seams cannot inject it.",
     "row": "helper-capture-error-residue"
   },
   {
@@ -1588,23 +1588,33 @@
     "file": "internal/demolaunch/engine_linux.go",
     "find": " || !validID(code)",
     "replace": " || code == \"\"",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "helper-code-charset-residue"
+    "row": "helper-code-charset-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestHelperErrorFormats$"
+    },
+    "expect": "helper error format accepted:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "helper-message-size-residue",
     "file": "internal/demolaunch/engine_linux.go",
     "find": " || len(msg) > 1024",
     "replace": "",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "helper-message-size-residue"
+    "row": "helper-message-size-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestHelperErrorFormats$"
+    },
+    "expect": "helper error format accepted:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "state-enumeration-error-residue",
     "file": "internal/demolaunch/state_linux.go",
     "find": "if e != nil && e != io.EOF {\n\t\treturn nil, e",
     "replace": "if e != nil && e != io.EOF {\n\t\treturn nil, nil",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "accepted_residue": "Readdirnames must fail after openAt successfully opens the directory; ordinary permission/type faults fail earlier at openAt and still refuse startup, while getdents EIO needs filesystem fault injection.",
     "row": "state-enumeration-error-residue"
   },
   {
@@ -1612,95 +1622,150 @@
     "file": "internal/demolaunch/state_linux.go",
     "find": "if len(entries) >= 256 {",
     "replace": "if false && len(entries) >= 256 {",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "state-enumeration-limit-residue"
+    "row": "state-enumeration-limit-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStateEnumerationBound$"
+    },
+    "expect": "state enumeration bound accepted:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "torn-latch-status-residue",
     "file": "internal/demolaunch/state_linux.go",
     "find": "e.torn = append(e.torn, n)\n\t\t\t\te.closed = true",
     "replace": "e.closed = true",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "torn-latch-status-residue"
+    "row": "torn-latch-status-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestTornResidueRecovery$"
+    },
+    "expect": "torn latch omitted from status:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "torn-attempt-identity-residue",
     "file": "internal/demolaunch/state_linux.go",
     "find": "at.ExecutionID = si.ExecutionID",
     "replace": "at.ExecutionID = \"\"",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "torn-attempt-identity-residue"
+    "row": "torn-attempt-identity-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestTornResidueRecovery$"
+    },
+    "expect": "torn attempt lost recoverable identity:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "restored-latch-error-residue",
     "file": "internal/demolaunch/state_linux.go",
     "find": "_ = e.closeAdmission(\"restored_closed_stop\")",
     "replace": "_ = error(nil)",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "restored-latch-error-residue"
+    "row": "restored-latch-error-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStoppedRestoresMissingLatch$"
+    },
+    "expect": "closed fact lost|state evidence read failed: closed:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "orphan-torn-residue",
     "file": "internal/demolaunch/state_linux.go",
     "find": "if !found && !torn[n] {",
     "replace": "if !found {",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "orphan-torn-residue"
+    "row": "orphan-torn-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestTornResidueRecovery$"
+    },
+    "expect": "torn recovery unavailable:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "loss-unreadable-residue",
     "file": "internal/demolaunch/state_linux.go",
     "find": "loss = append(loss, stream+\":evidence_unavailable\")",
     "replace": "loss = append(loss, stream+\":output_lost\")",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "loss-unreadable-residue"
+    "row": "loss-unreadable-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLossStatusResidues$"
+    },
+    "expect": "loss status confused evidence:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "loss-live-residue",
     "file": "internal/demolaunch/state_linux.go",
     "find": "if _, _, err := c.snapshot(); err != nil {",
-    "replace": "if _, _, err := c.snapshot(); false {",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "loss-live-residue"
+    "replace": "if _, _, err := c.snapshot(); false && err != nil {",
+    "row": "loss-live-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLossStatusResidues$"
+    },
+    "expect": "loss status confused evidence:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "latch-existing-metadata-residue",
     "file": "internal/demolaunch/state_linux.go",
     "find": "err = e.store.closedPresent()\n\t\tif err == nil {",
     "replace": "err = nil\n\t\tif err == nil {",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "latch-existing-metadata-residue"
+    "row": "latch-existing-metadata-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestExistingLatchMetadata$"
+    },
+    "expect": "bad existing latch acknowledged:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "attempt-digest-residue",
     "file": "internal/demolaunch/engine_linux.go",
     "find": "Digest: hex.EncodeToString(digest[:])",
     "replace": "Digest: hex.EncodeToString(make([]byte, len(digest)))",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "attempt-digest-residue"
+    "row": "attempt-digest-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestAttemptWireDigest$"
+    },
+    "expect": "attempt wire digest changed:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "log-create-sync-residue",
     "file": "internal/demolaunch/runner_linux.go",
     "find": "if err = e.store.sync(f); err == nil {",
     "replace": "if err = error(nil); err == nil {",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "log-create-sync-residue"
+    "row": "log-create-sync-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLogCreationSync$"
+    },
+    "expect": "log sync error ignored:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "truncate-error-residue",
     "file": "internal/demolaunch/runner_linux.go",
     "find": "c.err = errors.Join(c.err, c.onTruncate())",
     "replace": "_ = c.onTruncate()",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "truncate-error-residue"
+    "row": "truncate-error-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestCaptureFailureResidues$"
+    },
+    "expect": "truncation failure discarded:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "wait-error-residue",
     "file": "internal/demolaunch/runner_linux.go",
     "find": "ch.err = e\n\t\t\t\treturn",
     "replace": "ch.err = nil\n\t\t\t\treturn",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "accepted_residue": "A non-EINTR Wait4 error for a successfully started owned child requires competing reaping or a kernel fault; racing an external reap is not a deterministic witness with the current runner seam.",
     "row": "wait-error-residue"
   },
   {
@@ -1708,15 +1773,20 @@
     "file": "internal/demolaunch/runner_linux.go",
     "find": "c.err = errors.Join(c.err, c.file.Sync(), c.file.Close())",
     "replace": "_ = errors.Join(c.err, c.file.Sync(), c.file.Close())",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "log-final-sync-residue"
+    "row": "log-final-sync-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestCaptureFailureResidues$"
+    },
+    "expect": "final capture failure discarded:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "loss-read-error-residue",
     "file": "internal/demolaunch/runner_linux.go",
     "find": "c.err = err\n\t\t\t\tc.recordLoss()",
     "replace": "c.err = err\n\t\t\t\t// loss record omitted",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "accepted_residue": "The omitted loss callback is on a non-EOF read error after SetReadDeadline succeeds; closing the pipe races that stage or hits the separately guarded deadline setup, so a deterministic read-fault seam is absent.",
     "row": "loss-read-error-residue"
   },
   {
@@ -1724,7 +1794,7 @@
     "file": "internal/demolaunch/socket_linux.go",
     "find": "syscall.MSG_CMSG_CLOEXEC|syscall.MSG_DONTWAIT",
     "replace": "syscall.MSG_DONTWAIT",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
+    "accepted_residue": "disposeControls still rejects ancillary input and closes every delivered descriptor immediately; demonstrating inheritance in the intervening recvmsg-to-close window needs deterministic concurrent-exec scheduling absent from this harness.",
     "row": "received-close-on-exec-residue"
   },
   {
@@ -1732,112 +1802,182 @@
     "file": "internal/demolaunch/protocol.go",
     "find": "if depth > 8 {",
     "replace": "if depth > 80 {",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "json-depth-residue"
+    "row": "json-depth-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestProtocolResidueGuards$"
+    },
+    "expect": "JSON depth guard accepted:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "path-quote-residue",
     "file": "internal/demolaunch/protocol.go",
     "find": " || c == '\"'",
     "replace": "",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "path-quote-residue"
+    "row": "path-quote-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestConfigResidueGuards$"
+    },
+    "expect": "config residue guard accepted quote",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "execution-format-residue",
     "file": "internal/demolaunch/protocol.go",
     "find": "`^EX-[0-9a-f]{32}$`",
     "replace": "`^EX-[A-Za-z0-9]{32}$`",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "execution-format-residue"
+    "row": "execution-format-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestProtocolResidueGuards$"
+    },
+    "expect": "execution format accepted:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "client-members-residue",
     "file": "internal/demolaunch/config.go",
     "find": "if _, e = object(m[\"caller\"], 1024, \"dev dir ino uid\", \"\"); e != nil {\n\t\treturn clientConfig{}, ErrConfig",
     "replace": "if _, e = object(m[\"caller\"], 1024, \"dev dir ino uid\", \"\"); false {\n\t\treturn clientConfig{}, ErrConfig",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "client-members-residue"
+    "row": "client-members-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestConfigResidueGuards$"
+    },
+    "expect": "config residue guard accepted case-key",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "roster-members-residue",
     "file": "internal/demolaunch/config.go",
     "find": "e != nil || typed(b, &a) != nil",
     "replace": "false && e != nil || typed(b, &a) != nil",
-    "accepted_residue": "Roster schema reconciliation is deferred; the exact-key narrowing remains an explicit coverage residue. No roster implementation change.",
-    "row": "roster-members-residue"
+    "row": "roster-members-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterExactCase$"
+    },
+    "expect": "roster member case accepted:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "state-owner-residue",
     "file": "internal/demolaunch/state_linux.go",
     "find": "return id.uid == uid && id.mode&syscall.S_IFMT",
     "replace": "return (id.uid == uid || true) && id.mode&syscall.S_IFMT",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "state-owner-residue"
+    "row": "state-owner-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStateReadOwner$"
+    },
+    "expect": "state owner accepted:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "config-version-residue",
     "file": "internal/demolaunch/config.go",
     "find": "c.Version == 1 &&",
     "replace": "(c.Version == 1 || true) &&",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "config-version-residue"
+    "row": "config-version-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestConfigResidueGuards$"
+    },
+    "expect": "config residue guard accepted version",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "caller-path-residue",
     "file": "internal/demolaunch/config.go",
     "find": " && validPath(p.Dir, 512)",
     "replace": "",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "caller-path-residue"
+    "row": "caller-path-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestConfigResidueGuards$"
+    },
+    "expect": "config residue guard accepted (relative|quote)",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "client-caller-residue",
     "file": "internal/demolaunch/config.go",
     "find": "!c.Caller.valid(c.ServiceUID) {\n\t\treturn clientConfig{}, ErrConfig",
     "replace": "false && !c.Caller.valid(c.ServiceUID) {\n\t\treturn clientConfig{}, ErrConfig",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "client-caller-residue"
+    "row": "client-caller-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestConfigResidueGuards$"
+    },
+    "expect": "config residue guard accepted same-uid",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "launch-members-residue",
     "file": "internal/demolaunch/protocol.go",
     "find": "len(m) != 4 || m[\"plan\"] == nil",
     "replace": "len(m) < 4 || m[\"plan\"] == nil",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "launch-members-residue"
+    "row": "launch-members-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestProtocolResidueGuards$"
+    },
+    "expect": "launch member guard accepted:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "reply-bound-residue",
     "file": "internal/demolaunch/service_linux.go",
     "find": "object(b, 16384, \"state closed\"",
     "replace": "object(b, 131072, \"state closed\"",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "reply-bound-residue"
+    "row": "reply-bound-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestReplyByteBoundary$"
+    },
+    "expect": "reply byte bound accepted:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "protected-intake-residue",
     "file": "internal/demolaunch/protocol.go",
     "find": "io.ReadAll(io.LimitReader(r, int64(limit+1)))",
     "replace": "io.ReadAll(r)",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "protected-intake-residue"
+    "row": "protected-intake-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestProtectedIntakeBound$"
+    },
+    "expect": "protected intake overread:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "ancillary-truncation-residue",
     "file": "internal/demolaunch/socket_linux.go",
     "find": "flags & ^syscall.MSG_CMSG_CLOEXEC != 0",
     "replace": "flags & ^(syscall.MSG_CMSG_CLOEXEC|syscall.MSG_CTRUNC) != 0",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "ancillary-truncation-residue"
+    "row": "ancillary-truncation-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestAncillaryFlagRefusal$"
+    },
+    "expect": "truncated control flag accepted:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "lock-links-residue",
     "file": "internal/demolaunch/endpoint_linux.go",
     "find": " || s.links != 1 || !s.attrs(named)",
     "replace": " || !s.attrs(named)",
-    "accepted_residue": "Coverage residue: this narrower failure path has no committed driving assertion.",
-    "row": "lock-links-residue"
+    "row": "lock-links-residue",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLockHardLink$"
+    },
+    "expect": "hard-linked lock accepted:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "id": "state-link",

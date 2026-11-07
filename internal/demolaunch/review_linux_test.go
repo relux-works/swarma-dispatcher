@@ -209,7 +209,9 @@ func TestStopContinuationAndDurableReplay(t *testing.T) {
 			intent := fileBytes(t, h, "stop-"+gen)
 			record := fileBytes(t, h, "stopped-"+gen)
 			restarted, err := testEngine(t, context.Background(), e.store, []account{e.accounts["demo"]}, serverConfig{})
-			must(t, err)
+			if err != nil {
+				t.Fatalf("restart refused durable stopped fact: %v", err)
+			}
 			restarted.run = func(string) *exec.Cmd { t.Fatal("replay invoked runner"); return nil }
 			replay := restarted.handle(stopBytes(13))
 			assertState(t, replay, "absent", "")

@@ -290,10 +290,13 @@ func (e *engine) load() error {
 // Caller holds the short state mutex, or is in single-threaded startup.
 func (e *engine) closeAdmission(reason string) error {
 	e.closed = true
+	if e.latchReason == "" {
+		e.latchReason = reason
+	}
 	if e.latchWritten {
 		return nil
 	}
-	err := e.store.create("closed", marshal(map[string]string{"reason": reason, "time": time.Now().UTC().Format(time.RFC3339Nano)}))
+	err := e.store.create("closed", marshal(map[string]string{"reason": e.latchReason, "time": time.Now().UTC().Format(time.RFC3339Nano)}))
 	if errors.Is(err, os.ErrExist) {
 		err = e.store.closedPresent()
 		if err == nil {

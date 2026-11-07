@@ -24,6 +24,7 @@ type stopRecord struct {
 	latchErr error
 }
 type engine struct {
+	latchReason                     string
 	torn                            []string
 	tornIntents                     map[string]bool
 	mu                              sync.Mutex
@@ -64,7 +65,7 @@ func newEngineWithRunner(ctx context.Context, store *stateStore, accounts []acco
 func (e *engine) handle(b []byte) (reply response) {
 	e.mu.Lock()
 	if e.closed && !e.latchWritten {
-		_ = e.closeAdmission("latch_retry")
+		_ = e.closeAdmission(e.latchReason)
 	}
 	e.mu.Unlock()
 	defer func() { e.mu.Lock(); reply.Closed = e.closed; e.mu.Unlock() }()

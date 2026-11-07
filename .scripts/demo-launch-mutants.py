@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run intended mutation witnesses only on an explicitly disposable Linux host."""
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -34,14 +35,33 @@ def classify(code, output, timed_out, plant):
         return "invalid"
     if 'panic:' in output or 'fatal error:' in output:
         return "invalid"
-    pattern = plant["kills"]["run"].split("/")[0]
+    selected = plant["kills"]["run"].split("/")
+    def matches(name):
+        parts = name.split("/")
+        return len(parts) >= len(selected) and all(re.search(p, n) for p, n in zip(selected, parts))
     if code == 0:
         passed = re.findall(r"--- PASS: ([^\s]+)", output)
-        return "survived" if any(re.search(pattern, name.split("/")[0]) for name in passed) else "invalid"
-    names = re.findall(r"--- FAIL: ([^\s]+)", output)
-    assertions = re.findall(r"^\s*[^\s]+_test\.go:\d+: (.*)$", output, re.MULTILINE)
-    failed = any(re.search(pattern, name.split("/")[0]) for name in names)
-    return "killed" if failed and any(re.search(expect, line) for line in assertions) else "invalid"
+        return "survived" if any(matches(name) for name in passed) else "invalid"
+    blocks = {}
+    current = None
+    for line in output.splitlines():
+        event = re.match(r"^\s*=== (?:RUN|NAME|CONT)\s+(\S+)", line)
+        if event:
+            current = event.group(1)
+            blocks.setdefault(current, [])
+            continue
+        end = re.match(r"^\s*--- (FAIL|PASS|SKIP): (\S+)", line)
+        if end:
+            kind, name = end.groups()
+            if kind == "FAIL" and matches(name) and any(re.search(expect, a) for a in blocks.get(name, [])):
+                return "killed"
+            current = name.rpartition("/")[0] or None
+            continue
+        assertion = re.match(r"^\s*[^\s]+_test\.go:\d+: (.*)$", line)
+        if current is not None and assertion:
+            blocks[current].append(assertion.group(1))
+    return "invalid"
+
 
 
 def execute(argv, cwd, timeout):
@@ -76,8 +96,45 @@ def execute(argv, cwd, timeout):
 
 
 SUDO_PATHS = ('/usr/bin/sudo', '/usr/bin/sudo-rs', '/usr/bin/sudo.ws',
-              '/bin/sudo', '/usr/local/bin/sudo')
+              '/bin/sudo', '/usr/local/bin/sudo', '/usr/sbin/sudo')
 
+
+
+def require_no_new_privs():
+    if not re.search(r"^NoNewPrivs:\s+1$", Path('/proc/self/status').read_text(), re.MULTILINE):
+        raise ValueError('NoNewPrivs: 1 is required')
+
+
+def recording_dir():
+    return Path('/tmp/demo-launch-fake-' + str(os.getuid()))
+
+
+def check_recording():
+    root = recording_dir()
+    if not (root / 'healthy').is_file():
+        raise ValueError('fake sudo recording failed: sentinel missing')
+
+
+@contextmanager
+def recording_session(log):
+    if log is None:
+        raise ValueError('--fake-sudo and --fake-log are required')
+    root = recording_dir()
+    # An existing rendezvous is never taken over, including after an interrupted run.
+    root.mkdir(mode=0o700)
+    try:
+        for name, content in [('log-path', str(log.resolve())), ('healthy', 'healthy')]:
+            fd = os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+            with os.fdopen(fd, 'w') as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+        yield
+        check_recording()
+    finally:
+        for name in ('log-path', 'healthy'):
+            (root / name).unlink(missing_ok=True)
+        root.rmdir()
 
 def log_count(log):
     if not log.exists():
@@ -160,9 +217,19 @@ def main(argv=None):
         parser.error('mutation execution requires a disposable Linux host')
     if args.timeout < 1:
         parser.error('timeout must be positive')
+    try:
+        require_no_new_privs()
+        with recording_session(args.fake_log):
+            return run_selected(args, parser)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        parser.error(str(error))
+
+
+def run_selected(args, parser):
     source = Path(__file__).resolve().parent.parent
     try:
         verify_fake(args.fake_sudo, args.fake_log, source / '.scripts/demo-fake-sudo')
+        check_recording()
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         parser.error(str(error))
     scratch = args.scratch_root.resolve()
@@ -191,6 +258,7 @@ def main(argv=None):
             copy_tree(source, work)
             before = log_count(args.fake_log)
             result = run_test(work, plant, args.logs / (plant['id'] + '-control.log'), args.timeout)
+            check_recording()
             calls = log_count(args.fake_log) - before
             sudo_total += calls
             print(plant['id'] + ' control ' + result + ' sudo_calls=' + str(calls), flush=True)
@@ -212,6 +280,7 @@ def main(argv=None):
                 (args.logs / (plant['id'] + '.log')).write_text(str(error))
                 result = 'invalid'
             counts[result] += 1
+            check_recording()
             calls = log_count(args.fake_log) - before
             sudo_total += calls
             print(plant['id'] + ' ' + result + ' sudo_calls=' + str(calls), flush=True)

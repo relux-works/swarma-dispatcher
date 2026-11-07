@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -138,5 +139,72 @@ func TestIntakeBounds(t *testing.T) {
 	got, err := intake(r, 5*time.Second)
 	if err != nil || string(got) != "pipe control" {
 		t.Fatal(string(got), err)
+	}
+}
+
+// Intake restores the shared pipe status flags on success, size refusal and
+// timeout. fdinfo observes the original open description without changing it.
+func TestIntakeRestoresFlags(t *testing.T) {
+	for _, variant := range []string{"success", "limit", "timeout"} {
+		t.Run(variant, func(t *testing.T) {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			defer w.Close()
+			fd := r.Fd() // Fd makes this pipe blocking before the baseline observation.
+			flags := func() string {
+				b, err := os.ReadFile("/proc/self/fdinfo/" + fmt.Sprint(fd))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, line := range strings.Split(string(b), "\n") {
+					if strings.HasPrefix(line, "flags:") {
+						return line
+					}
+				}
+				t.Fatal("fdinfo flags absent")
+				return ""
+			}
+			before := flags()
+			done := make(chan error, 1)
+			if variant != "timeout" {
+				payload := []byte("control")
+				if variant == "limit" {
+					payload = bytes.Repeat([]byte{'x'}, 131073)
+				}
+				go func() { _, e := w.Write(payload); w.Close(); done <- e }()
+			}
+			b, err := intake(r, time.Second)
+			after := flags()
+			if before != after {
+				t.Fatalf("intake changed shared flags: %s -> %s", before, after)
+			}
+			switch variant {
+			case "success":
+				if err != nil || string(b) != "control" {
+					t.Fatalf("intake control: %q %v", b, err)
+				}
+			case "limit":
+				if !errors.Is(err, errIntakeLimit) {
+					t.Fatalf("intake limit: %v", err)
+				}
+			case "timeout":
+				if !errors.Is(err, os.ErrDeadlineExceeded) {
+					t.Fatalf("intake timeout: %v", err)
+				}
+			}
+			if variant != "timeout" {
+				select {
+				case e := <-done:
+					if e != nil {
+						t.Fatal(e)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("writer stalled")
+				}
+			}
+		})
 	}
 }

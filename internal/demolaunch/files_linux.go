@@ -119,7 +119,11 @@ func principalPin(p principal) (*directory, error) {
 	return d, nil
 }
 func endpointPin(c commonConfig) (*directory, error) {
-	d, err := pinDirectory(endpointDir, c.ServiceUID)
+	return endpointPinIn(c, endpointDir)
+}
+
+func endpointPinIn(c commonConfig, name string) (*directory, error) {
+	d, err := pinDirectory(name, c.ServiceUID)
 	if err != nil {
 		return nil, errors.Join(ErrIdentity, err)
 	}

@@ -1,4 +1,4 @@
-"""Bounded runner controls. No Go toolchain or subprocesses are used."""
+"""Bounded runner controls; Python subprocess fixtures only, no Go or sudo."""
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -28,8 +28,8 @@ class RunnerTests(unittest.TestCase):
 
     def test_failure_classification(self):
         plant = dict(kills=dict(package='./internal/demolaunch', run='^TestGuard$'), expect='guard admitted forbidden input')
-        self.assertEqual(runner.classify(1, 'guard_test.go:42: guard admitted forbidden input\n--- FAIL: TestGuard (0.1s)', False, plant), 'killed')
-        for output in ['compile error', '--- SKIP: TestGuard', '--- FAIL: TestOther (0.1s)', 'panic: unrelated', '--- FAIL: TestGuard (0.1s)\npanic: runtime error: slice bounds out of range', 'guard_test.go:10: fixture setup failed\n--- FAIL: TestGuard', 'guard_test.go:42: wrong reason\n--- FAIL: TestGuard', 'guard_test.go:42: guard admitted forbidden input\n--- FAIL: TestGuard\nfatal error: runtime failure']:
+        self.assertEqual(runner.classify(1, '=== RUN   TestGuard\n    guard_test.go:42: guard admitted forbidden input\n--- FAIL: TestGuard (0.1s)', False, plant), 'killed')
+        for output in ['compile error', '--- SKIP: TestGuard', '--- FAIL: TestOther (0.1s)', 'panic: unrelated', '--- FAIL: TestGuard (0.1s)\npanic: runtime error: slice bounds out of range', 'guard_test.go:10: fixture setup failed\n--- FAIL: TestGuard', 'guard_test.go:42: wrong reason\n--- FAIL: TestGuard', '=== RUN   TestGuard\n    guard_test.go:42: guard admitted forbidden input\n--- FAIL: TestGuard\nfatal error: runtime failure']:
             self.assertEqual(runner.classify(1, output, False, plant), 'invalid')
         self.assertEqual(runner.classify(0, '--- PASS: TestGuard (0.1s)', False, plant), 'survived')
         self.assertEqual(runner.classify(1, '--- FAIL: TestGuard', True, plant), 'invalid')
@@ -62,7 +62,7 @@ class RunnerTests(unittest.TestCase):
                 if override is not None:
                     plant['timeout_seconds'] = override
                 with patch.object(runner, 'execute', side_effect=[
-                    (0, '', False), (1, 'guard_test.go:42: guard admitted forbidden input\n--- FAIL: TestGuard (100s)', False)
+                    (0, '', False), (1, '=== RUN   TestGuard\n    guard_test.go:42: guard admitted forbidden input\n--- FAIL: TestGuard (100s)', False)
                 ]) as execute:
                     self.assertEqual(runner.run_test(tree, plant, log, 90), 'killed')
                     args = execute.call_args_list[1].args
@@ -124,24 +124,124 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(runner.execute(['unused'], Path('.'), 1), (1, 'assertion output', False))
         self.assertEqual(events, ['observe-unreaped', 'signal-group', 'reap'])
 
-    def test_fake_empty_child_environment(self):
+    def load_fake(self):
         loader = SourceFileLoader('fake_sudo', str(Path(__file__).with_name('demo-fake-sudo')))
         fake_spec = importlib.util.spec_from_loader(loader.name, loader)
         fake = importlib.util.module_from_spec(fake_spec)
         loader.exec_module(fake)
-        payload = b'UNRELATED=never-record-this\0DEMO_FAKE_SUDO_LOG=/fixture/log\0'
-        with patch.dict(fake.os.environ, {}, clear=True), patch('builtins.open', mock_open(read_data=payload)) as opened:
-            self.assertEqual(fake.log_path(), '/fixture/log')
-            self.assertEqual(opened.call_args.args[0], '/proc/' + str(fake.os.getppid()) + '/environ')
-        with patch.dict(fake.os.environ, {}, clear=True), patch('builtins.open', mock_open(read_data=b'UNRELATED=value\0')):
-            with self.assertRaisesRegex(RuntimeError, 'unavailable'):
-                fake.log_path()
+        return fake
+
+    def test_recording_failure_is_fatal(self):
+        fake = self.load_fake()
         with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'rendezvous'
             log = Path(tmp) / 'calls'
-            with patch.dict(fake.os.environ, {'DEMO_FAKE_SUDO_LOG': str(log)}), patch.object(fake.sys, 'argv', ['fake', '-n', '/bin/true']):
-                self.assertEqual(fake.main(), 77)
-            self.assertEqual(runner.log_count(log), 1)
-            self.assertNotIn('UNRELATED', log.read_text())
+            with patch.object(runner, 'recording_dir', return_value=root), patch.object(fake, 'recording_dir', return_value=root), patch.dict(fake.os.environ, {}, clear=True):
+                with self.assertRaisesRegex(ValueError, 'sentinel'):
+                    with runner.recording_session(log):
+                        (root / 'log-path').unlink()
+                        self.assertEqual(fake.main(), 78)
+                        runner.check_recording()
+                self.assertFalse(root.exists())
+
+    def test_log_failure_is_fatal(self):
+        fake = self.load_fake()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, log = Path(tmp) / 'rendezvous', Path(tmp) / 'calls'
+            log.mkdir()  # Opening this as the append log must fail.
+            with patch.object(runner, 'recording_dir', return_value=root), patch.object(fake, 'recording_dir', return_value=root), patch.dict(fake.os.environ, {}, clear=True):
+                with self.assertRaisesRegex(ValueError, 'sentinel'):
+                    with runner.recording_session(log):
+                        self.assertEqual(fake.main(), 78)
+                        runner.check_recording()
+
+    def test_pointer_protection(self):
+        fake = self.load_fake()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, log = Path(tmp) / 'rendezvous', Path(tmp) / 'calls'
+            with patch.object(runner, 'recording_dir', return_value=root), patch.object(fake, 'recording_dir', return_value=root):
+                with runner.recording_session(log):
+                    self.assertEqual(fake.protected_pointer(), str(log))
+                    (root / 'log-path').chmod(0o644)
+                    with self.assertRaisesRegex(RuntimeError, 'unsafe'):
+                        fake.protected_pointer()
+                    (root / 'log-path').chmod(0o600)
+                    with self.assertRaises(FileExistsError):
+                        with runner.recording_session(log):
+                            pass
+
+    def test_fake_cleared_environment_and_orphan(self):
+        import subprocess
+        import sys
+        import time
+        import json
+        fake = str(Path(__file__).with_name('demo-fake-sudo').resolve())
+        # Import the committed fake, substitute only the test rendezvous path.
+        child = """import importlib.machinery, importlib.util, os, pathlib, sys, time, json
+loader=importlib.machinery.SourceFileLoader('fake',sys.argv[1])
+spec=importlib.util.spec_from_loader(loader.name,loader)
+fake=importlib.util.module_from_spec(spec);loader.exec_module(fake)
+root=pathlib.Path(sys.argv[2]);fake.recording_dir=lambda:root
+parent=int(sys.argv[4])
+deadline=time.monotonic()+5
+if parent:
+ while os.getppid()==parent and time.monotonic()<deadline: time.sleep(.01)
+code=fake.main()
+result=pathlib.Path(sys.argv[3]);tmp=result.with_suffix('.pending')
+tmp.write_text(json.dumps([code,os.getppid()!=parent]));tmp.replace(result)
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root, log = Path(tmp) / 'rendezvous', Path(tmp) / 'calls'
+            with patch.object(runner, 'recording_dir', return_value=root):
+                with runner.recording_session(log):
+                    result = Path(tmp) / 'result'
+                    subprocess.run([sys.executable, '-c', child, fake, str(root), str(result), '0'], env={}, check=True, timeout=10)
+                    self.assertEqual(json.loads(result.read_text())[0], 77)
+                    result.unlink()
+                    parent = """import os, subprocess, sys
+subprocess.Popen([sys.executable,'-c',sys.argv[1],*sys.argv[2:],str(os.getpid())],env={},stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+"""
+                    subprocess.run([sys.executable, '-c', parent, child, fake, str(root), str(result)], env={}, check=True, timeout=10)
+                    deadline = time.monotonic() + 10
+                    while not result.exists() and time.monotonic() < deadline:
+                        time.sleep(.02)
+                    self.assertTrue(result.exists(), 'orphan fake did not finish')
+                    self.assertEqual(json.loads(result.read_text()), [77, True])
+                    self.assertEqual(runner.log_count(log), 2)
+                    runner.check_recording()
+
+    def test_no_new_privileges(self):
+        for status, accepted in [('Name: fixture\nNoNewPrivs:\t1\n', True),
+                                 ('NoNewPrivs:\t0\n', False), ('Name: fixture\n', False)]:
+            with patch.object(Path, 'read_text', return_value=status):
+                if accepted:
+                    runner.require_no_new_privs()
+                else:
+                    with self.assertRaisesRegex(ValueError, 'NoNewPrivs'):
+                        runner.require_no_new_privs()
+
+    def test_main_refuses_before_subprocess_without_nnp(self):
+        with patch.object(runner.sys, 'platform', 'linux'), patch.object(runner, 'require_no_new_privs', side_effect=ValueError('NoNewPrivs required')), patch.object(runner, 'verify_fake') as verify, patch.object(runner, 'execute') as execute:
+            with self.assertRaises(SystemExit) as caught:
+                runner.main(['--disposable', '--logs', '/unused'])
+            self.assertEqual(caught.exception.code, 2)
+            verify.assert_not_called()
+            execute.assert_not_called()
+
+    def test_assertion_must_belong_to_selected_failure(self):
+        plant = dict(kills=dict(run='^TestGuard$'), expect='forbidden')
+        cases = [
+            ('=== RUN   TestOther\n other_test.go:1: forbidden\n--- FAIL: TestOther\n=== RUN   TestGuard\n guard_test.go:2: unrelated\n--- FAIL: TestGuard', 'invalid'),
+            ('=== RUN   TestGuard\n=== RUN   TestGuard/control\n guard_test.go:1: forbidden\n--- PASS: TestGuard/control\n guard_test.go:2: unrelated\n--- FAIL: TestGuard', 'invalid'),
+            ('=== RUN   TestGuard\n=== RUN   TestGuard/bad\n guard_test.go:1: forbidden\n--- FAIL: TestGuard/bad\n--- FAIL: TestGuard', 'killed'),
+            ('=== RUN   TestGuard\n guard_test.go:1: forbidden\n--- FAIL: TestGuard', 'killed'),
+            ('=== RUN   TestOther\n other_test.go:1: forbidden\n--- FAIL: TestGuard', 'invalid'),
+        ]
+        for output, expected in cases:
+            self.assertEqual(runner.classify(1, output, False, plant), expected)
+        plant['kills']['run'] = '^TestGuard$/bad$'
+        self.assertEqual(runner.classify(0, '--- PASS: TestGuard/good\n--- PASS: TestGuard', False, plant), 'invalid')
+        self.assertEqual(runner.classify(1, '=== RUN   TestGuard/good\n guard_test.go:1: forbidden\n--- FAIL: TestGuard/good\n--- FAIL: TestGuard', False, plant), 'invalid')
 
     def test_disposable_required(self):
         with self.assertRaises(SystemExit) as caught:

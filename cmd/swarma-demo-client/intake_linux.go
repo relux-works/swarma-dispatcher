@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"os"
 	"syscall"
@@ -11,8 +12,9 @@ import (
 
 // Rewrap a duplicate only after making a blocking inherited pipe nonblocking;
 // os.NewFile then registers it with the runtime poller. No reader goroutine can
-// survive a deadline. This standalone CLI owns stdin and its open description.
-func intake(input *os.File, budget time.Duration) ([]byte, error) {
+// survive a deadline. The duplicate shares the caller's open description, so
+// its original status flags must be restored before the duplicate closes.
+func intake(input *os.File, budget time.Duration) (result []byte, resultErr error) {
 	info, err := input.Stat()
 	if err != nil {
 		return nil, err
@@ -38,12 +40,24 @@ func intake(input *os.File, budget time.Duration) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_GETFL, 0)
+		if errno != 0 {
+			syscall.Close(fd)
+			return nil, errno
+		}
 		if err = syscall.SetNonblock(fd, true); err != nil {
 			syscall.Close(fd)
 			return nil, err
 		}
 		reader = os.NewFile(uintptr(fd), "bounded stdin")
 		defer reader.Close()
+		defer func() {
+			_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_SETFL, flags)
+			if errno != 0 {
+				result = nil
+				resultErr = errors.Join(resultErr, errno)
+			}
+		}()
 		if err = reader.SetReadDeadline(time.Now().Add(budget)); err != nil {
 			return nil, err
 		}

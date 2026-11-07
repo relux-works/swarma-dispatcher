@@ -2,26 +2,60 @@
 """Recording substitute for sudo on a disposable mutation host only."""
 import json
 import os
+from pathlib import Path
+import stat
 import sys
 
 
+def recording_dir():
+    return Path('/tmp/demo-launch-fake-' + str(os.getuid()))
+
+
+def protected_pointer():
+    root = recording_dir()
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise RuntimeError('unsafe fake recording directory')
+    fd = os.open(root / 'log-path', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(fd, 'r') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
+            raise RuntimeError('unsafe fake log pointer')
+        path = stream.read(4097)
+    if len(path) > 4096 or not os.path.isabs(path):
+        raise RuntimeError('invalid fake log pointer')
+    return path
+
+
 def log_path():
-    path = os.environ.get('DEMO_FAKE_SUDO_LOG')
-    if path:
-        return path
-    # fixedRunner deliberately clears Env. Its same-UID test parent inherits
-    # this one harness variable from the mutation runner. Never log other data.
-    key = b'DEMO_FAKE_SUDO_LOG='
-    with open('/proc/' + str(os.getppid()) + '/environ', 'rb') as parent:
-        for entry in parent.read(2 * 1024 * 1024).split(b'\0'):
-            if entry.startswith(key):
-                return os.fsdecode(entry[len(key):])
-    raise RuntimeError('DEMO_FAKE_SUDO_LOG unavailable')
+    # The protected pointer survives a cleared environment and an exited parent.
+    pointer = protected_pointer()
+    supplied = os.environ.get('DEMO_FAKE_SUDO_LOG')
+    if supplied and supplied != pointer:
+        raise RuntimeError('fake log pointer differs from environment')
+    return pointer
 
 
 def main():
-    with open(log_path(), 'a', encoding='utf-8') as log:
-        log.write(json.dumps({'argv': sys.argv, 'cwd': os.getcwd()}) + '\n')
+    try:
+        record = (json.dumps({'argv': sys.argv, 'cwd': os.getcwd()}) + '\n').encode()
+        fd = os.open(log_path(), os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            if os.write(fd, record) != len(record):
+                raise RuntimeError('short fake log write')
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except Exception:
+        # Removing a precreated sentinel needs no file-data allocation, unlike
+        # appending an error on a full log filesystem. Missing sentinel/dir is
+        # itself a run failure; the runner checks after every control and plant.
+        try:
+            (recording_dir() / 'healthy').unlink()
+        except OSError:
+            pass
+        print('fake sudo recording failed', file=sys.stderr)
+        return 78
     return 77
 
 

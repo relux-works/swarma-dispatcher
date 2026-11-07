@@ -18,6 +18,7 @@ contracts, not a promotion of this cut.
 | §§3.1–3.4 grants, M0 protected policy | None; the caller is a pinned peer UID, which is not authority |
 | Demo launch call contract §6, evidence loss | An intact `.lost` records loss without closing admission. A torn loss record closes admission at startup. |
 | Demo launch call contract §6 and demo acceptance AC14, crash/reboot | If every attempt has a durable stopped record and no latch exists, restart permits the next generation. The demo does not latch every crash. |
+| Deployment qualification | TestEntrypointBoundaryWiring is an identifier gate only. The positive Daemon path and token-preserving edits to the runtime check result, startup caller pin result, roster parse result and client runtime check require a disposable VM run. Endpoint device/inode has a separate non-root behavioral witness. |
 | Capacity reservation | None; sequential by construction |
 | R-WATCH, NETBIND, R-TRANSFER | Excluded; workspace preparation belongs to the operator |
 
@@ -141,7 +142,9 @@ Launch stdout/stderr each go to a separately created `0600` log,
 past the cap. First excess creates the corresponding `.truncated` record with
 `true`. Capture errors, including errors after `receipt-seen`, create the
 corresponding `.lost` record with the JSON string `"output_lost"`, fsync file and directory,
-and continue draining/discarding. `demo.status.output_loss` reports
+and continue draining/discarding after log-write errors. A pipe read error or
+read-deadline setup error instead returns and closes the read end; the executor
+may receive EPIPE. `demo.status.output_loss` reports
 `stdout:output_lost` or `stderr:output_lost`, including after restart. If the
 evidence itself cannot be saved/read, live status reports `loss_unpersisted` or
 `evidence_unavailable` for that stream; persistence cannot be promised on failed
@@ -248,14 +251,18 @@ with its non-timely timing. This is not a deliberate contract departure.
 | Helper delivery/start failure | `unresolved/helper_io` | Closed; original intent; no stopped record |
 | Shutdown during a wait | `unknown/shutdown` or `unresolved/shutdown` | Closed; no claim of absence; no signal |
 | Detected launch reply failure after child call | No deliverable reply; latch reason `launch_reply_lost` | Closed; attempt retained |
-| Capture error after receipt reply | Status `output_loss`, with durable `.lost` where storage permits | Keep draining; no retrospective readiness claim |
+| Capture error after receipt reply | Status `output_loss`, with durable `.lost` where storage permits | Log-write errors keep draining; pipe-read errors close the read end; no retrospective readiness claim |
 
 A durable `closed` inode is irreversible. While closed in memory without a durable
-latch, every request first retries the exclusive latch create once. Status reports
+latch, every request first retries the exclusive latch create once, keeping the
+first reason retained in memory. Status reports
 `code:"latch_uncertain"` until persistence succeeds. A pre-name marker failure
 combined with a failed latch can leave no evidence at all: restart can reopen
-admission in that sole case. No launcher was called, so no generation effect is
-duplicated. A retained attempt or closed stopped fact otherwise carries the
+admission in that case. No launcher was called. A second, narrow case is a failed
+launch reply detected after a concurrent stop already verified timely absence:
+if the launch_reply_lost latch also fails, restart can reopen. In both cases no
+agent child remains (none was launched, or absence was verified); no generation
+effect is duplicated. A retained attempt or closed stopped fact otherwise carries the
 restart obligation even when the latch cannot be saved. Stop temporarily excludes forward admission before
 calling the helper; a failed/unresolved stop persists the latch. A successful
 first stop allows the next roster generation after prior child resources finish.

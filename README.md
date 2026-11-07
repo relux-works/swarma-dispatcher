@@ -302,7 +302,7 @@ reach unknown paths. No mutation kill is established by source inspection:
 manifest expectations require hosted execution. All named unmutated
 controls run before any plant. Match/build errors and unexpected timeouts are
 invalid, never kills. A kill additionally requires the named test failure and its
-`expect` assertion regex; panic and runtime fatal errors are invalid. Accepted
+`expect` assertion regex inside that selected failing test’s RUN-to-FAIL output block; panic and runtime fatal errors are invalid. Accepted
 coverage residues are listed explicitly and excluded from execution. Use a non-root user and non-group-writable ancestors:
 
 ```sh
@@ -336,8 +336,9 @@ every existing sudo path (including resolved alternatives), and drop to the
 unprivileged test user inside that namespace. Set `DEMO_FAKE_SUDO` to that same
 inode and `DEMO_FAKE_SUDO_LOG` to an absolute writable JSONL path. The runner
 checks bytes and device/inode for `/usr/bin/sudo`, `/usr/bin/sudo-rs`,
-`/usr/bin/sudo.ws`, `/bin/sudo`, `/usr/local/bin/sudo` and PATH's sudo, then requires
-one recorded self-test exiting 77. It never sets up mounts or escalates privileges.
+`/usr/bin/sudo.ws`, `/bin/sudo`, `/usr/local/bin/sudo`, `/usr/sbin/sudo` and PATH's sudo, then requires
+one recorded self-test exiting 77. Before any subprocess it requires
+`NoNewPrivs: 1` from `/proc/self/status`. It never sets up mounts or escalates privileges.
 For example, in a root shell **on the disposable host only**, set absolute
 checkout/log paths and the test user's numeric UID/GID, then enter the namespace:
 
@@ -347,11 +348,11 @@ export DEMO_FAKE_SUDO_LOG=/absolute/test-home/demo-sudo.jsonl
 export DEMO_TEST_UID=1000 DEMO_TEST_GID=1000
 unshare --mount --propagation private /bin/sh
 # The following commands run inside the new namespace.
-for candidate in /usr/bin/sudo /usr/bin/sudo-rs /usr/bin/sudo.ws /bin/sudo /usr/local/bin/sudo "$(command -v sudo)"; do
+for candidate in /usr/bin/sudo /usr/bin/sudo-rs /usr/bin/sudo.ws /bin/sudo /usr/local/bin/sudo /usr/sbin/sudo "$(command -v sudo)"; do
     [ -e "$candidate" ] || continue
     mount --bind "$DEMO_FAKE_SUDO" "$(readlink -f "$candidate")" || exit 1
 done
-exec setpriv --reuid="$DEMO_TEST_UID" --regid="$DEMO_TEST_GID" --init-groups /bin/sh
+exec setpriv --no-new-privs --reuid="$DEMO_TEST_UID" --regid="$DEMO_TEST_GID" --init-groups /bin/sh
 # Now run the mutation command above as the unprivileged user.
 ```
 
@@ -359,10 +360,16 @@ The log location must be writable by that user; no setuid executable remains
 reachable at any checked sudo alias inside the namespace.
 
 Each control/plant and the summary report `sudo_calls`; the fake never executes
-its arguments. Because the product clears child Env, the fake falls back to
-reading only `DEMO_FAKE_SUDO_LOG` from its same-UID test parent’s `/proc`
-environment; other variables are never recorded. `/proc` access must permit
-this on the disposable host. Do not run this on a shared host merely by passing
+its arguments. The runner exclusively creates a per-UID rendezvous directory
+`/tmp/demo-launch-fake-<uid>` (0700) with a `log-path` pointer (0600, single link,
+caller-owned) and a precreated `healthy` sentinel. The fake checks the pointer
+even with an empty environment; it never depends on its parent surviving.
+A recording failure removes the sentinel and exits 78. The runner checks it
+after each control/plant and at exit, and fails rather than reporting a zero
+call count. Removing the sentinel requires no log-file allocation on a full disk.
+The directory is removed when the run exits; a stale directory refuses a new
+run and needs owner inspection in the disposable namespace. Only one runner per
+UID may use that namespace at a time. Do not run this on a shared host merely by passing
 `--disposable`.
 
 Fixture ancestors must not be group/other writable. Fixtures explicitly set

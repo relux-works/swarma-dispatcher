@@ -55,7 +55,28 @@ func TestReceiptFileGuards(t *testing.T) {
 				must(t, os.WriteFile(name, bytes.Repeat([]byte{'x'}, 4097), 0644))
 				must(t, os.Chmod(name, 0644))
 			}
-			b, err := h.e.receiptBytes(h.e.accounts["demo"], id)
+			var b []byte
+			var err error
+			if variant == "fifo" {
+				done := make(chan struct{})
+				go func() { b, err = h.e.receiptBytes(h.e.accounts["demo"], id); close(done) }()
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					// Release a mutant's blocking open before fixture cleanup.
+					fd, x := syscall.Open(name, syscall.O_WRONLY|syscall.O_NONBLOCK, 0)
+					if x == nil {
+						syscall.Close(fd)
+					}
+					select {
+					case <-done:
+					case <-time.After(2 * time.Second):
+					}
+					t.Fatal("receipt FIFO open exceeded bound")
+				}
+			} else {
+				b, err = h.e.receiptBytes(h.e.accounts["demo"], id)
+			}
 			if variant == "valid" {
 				if err != nil || !bytes.Equal(b, body) {
 					t.Fatal(string(b), err)
@@ -388,14 +409,26 @@ func TestAdmissionResourceRows(t *testing.T) {
 	for _, variant := range []string{"valid", "child_unreaped", "output_pending", "stop_in_flight"} {
 		t.Run(variant, func(t *testing.T) {
 			h := fixture(t, "good")
+			if variant == "child_unreaped" {
+				h.mode = "hold-launch"
+				assertState(t, h.e.handle(launchBytes("demo")), "receipt-seen", "")
+				h.mode = "good"
+				assertState(t, h.e.handle(stopBytes(10)), "absent", "")
+				before := h.calls.Load()
+				r := h.e.handle(launchBytes("second"))
+				if r.State != "refused" || r.Code != "child_unreaped" || h.calls.Load() != before {
+					t.Fatalf("child_unreaped custody not enforced: %+v calls=%d", r, h.calls.Load()-before)
+				}
+				must(t, os.WriteFile(filepath.Join(h.root, "release-launch"), nil, 0600))
+				waitChild(t, h.e.launchChildren["demo"], time.Now().Add(30*time.Second))
+				assertState(t, h.e.handle(launchBytes("second")), "receipt-seen", "")
+				return
+			}
 			assertState(t, h.e.handle(launchBytes("demo")), "receipt-seen", "")
 			assertState(t, h.e.handle(stopBytes(10)), "absent", "")
 			waitChild(t, h.e.launchChildren["demo"], time.Now().Add(30*time.Second))
 			ch := h.e.launchChildren["demo"]
 			done, out := ch.done, ch.outputDone
-			if variant == "child_unreaped" {
-				ch.done = make(chan struct{})
-			}
 			if variant == "output_pending" {
 				ch.outputDone = make(chan struct{})
 			}

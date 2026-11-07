@@ -9,7 +9,10 @@ It works with a privileged account manager and launcher, and an unprivileged cre
 
 The one-shot executor is `curator-run` from `curator-agent-launcher`, in a versioned narrow exec mode under the agent account: it verifies and executes a caller-composed plan, never composes or resolves profiles, and has no network access except to the broker. It is the first broker consumer; the board runner and session host ask the dispatcher rather than embedding broker clients. Its intake and the Decision 0021 amendment must be published and qualified before activation. SH2+ long sessions instead use the agent-side `swarma-session-runner`, sharing the launch library; the host service owns session metadata and fences, while the runner owns PTY or app-server transport and lease renewal.
 
-**Status: launch design in progress; byte-frame/admission libraries and Linux capacity-refusal transport source are implemented. Native transport deployment remains unqualified.**
+**Status: production launch design in progress; byte-frame/admission libraries, Linux capacity-refusal transport and a separate demo-only launch path have source implementations. Native deployment remains unqualified.**
+The [demo cut](spec/demo-launch.md) is **not production and not a conforming dispatcher**.
+Its fake-child tests exercise dispatcher behavior only; real-account execution
+requires separate qualification. The production binaries remain capacity-only.
 [`internal/frame`](internal/frame/) reads and writes a four-byte unsigned
 big-endian length followed by 1–131072 payload bytes, per
 [§8.3](spec/dispatcher.md#83-socket-dispatch1) and the closed
@@ -24,7 +27,7 @@ independent allocation/execution quotas, cancellation and epoch/version-fenced
 completion. Unknown outcomes retain their claims. A trusted adapter must supply
 authenticated principals, current gates and independently verified evidence;
 the reducer supplies neither durable storage nor process-absence verification.
-No running launch service is supplied. The specification (the `swarma-dispatcher`
+No qualified production launch service is supplied. The specification (the `swarma-dispatcher`
 Unix-socket service on `dispatch/1` from slice 0; later queueing, events, long waits
 and integrations behind capability gates on the same core and transport) is
 [`spec/dispatcher.md`](spec/dispatcher.md); diagrams are in [`diagrams/`](diagrams/).
@@ -104,7 +107,7 @@ caller UID non-reuse and fixed `/opt/swarma/run/dispatcher/dispatcher.sock` path
 are normative in the contract. This repository does not provision them. The
 transport never uses the admission reducer to advertise readiness or availability;
 every valid capacity request returns `capacity:hold`. No launch, journal,
-accounting, signed authority or recovery-control operation is implemented here.
+accounting, signed authority or recovery-control operation is implemented in this transport.
 
 On an admitted isolated Linux runner, build and test with the pinned CI toolchain:
 
@@ -157,6 +160,33 @@ CLI deployment. The root-owned fixed endpoint and separate UID/group enrollment
 need an admitted isolated deployment fixture; no such qualification is supplied
 here and no production bypass flag exists. Config/pin filesystems must be local
 and trusted; userspace deadlines cannot bound a hung kernel/filesystem operation.
+
+## Demo tools (not production)
+
+The separate [demo contract](spec/demo-launch.md) defines protected configuration,
+roster, irreversible attempt markers, receipt observations and bounded helper
+stops. No production flag enables it. Both commands refuse non-Linux platforms.
+These are build/entrypoint references for a separately authorized isolated demo,
+not an installation or real-account execution instruction:
+
+```sh
+go build -o .temp/swarma-demo-dispatcher ./cmd/swarma-demo-dispatcher
+go build -o .temp/swarma-demo-client ./cmd/swarma-demo-client
+.temp/swarma-demo-dispatcher --config /absolute/demo-server.json
+.temp/swarma-demo-client --config /absolute/demo-client.json launch < launch-request.json
+.temp/swarma-demo-client --config /absolute/demo-client.json stop < stop-request.json
+.temp/swarma-demo-client --config /absolute/demo-client.json status < status-request.json
+```
+
+The client prints one JSON result with no automatic retry. `receipt-seen` proves
+only receipt observation; `unknown` and `unresolved` retain uncertainty. A client
+exit of zero means a reply was received, not absence or readiness. Daemon errors
+go to stderr. Attempt/stop/closed records and capped output logs remain in the
+protected configured state directory; nothing deletes, renames or truncates them.
+Fixture child processes and sockets use checkout-local `.temp/` allocations;
+Linux CI emits test results to its hosted job log. Tests require neither root,
+sudo nor provisioned `/run`, `/etc` or `/var` paths. They do not qualify the real
+launcher, helper, process identity, sudo policy or account-wide absence.
 
 ## Tools and CI
 

@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+type stoppedRecord struct {
+	ExecutionID string `json:"execution_id"`
+	Timing      string `json:"timing"`
+	Closed      bool   `json:"closed"`
+	Code        string `json:"code"`
+}
+
 type stopIntent struct {
 	RequestID   string `json:"request_id"`
 	ExecutionID string `json:"execution_id"`
@@ -72,7 +79,7 @@ func (s *stateStore) read(name string) ([]byte, error) {
 	}
 	defer f.Close()
 	id, e := identity(f)
-	if e != nil || id.uid != s.uid || id.mode&syscall.S_IFMT != syscall.S_IFREG || id.mode&07777 != 0600 || id.links != 1 {
+	if e != nil || !stateMetadata(id, s.uid) {
 		return nil, ErrOwnership
 	}
 	return readSnapshot(f, 4096)
@@ -124,6 +131,7 @@ func (e *engine) load() error {
 				for _, stream := range []string{"stdout", "stderr"} {
 					known[prefix+a.Generation+"-"+stream+".log"] = true
 					known[prefix+a.Generation+"-"+stream+".truncated"] = true
+					known[prefix+a.Generation+"-"+stream+".lost"] = true
 				}
 			} else {
 				known[prefix+a.Generation] = true
@@ -134,8 +142,36 @@ func (e *engine) load() error {
 		if !known[n] {
 			return fmt.Errorf("state_unknown_entry: %s", n)
 		}
+		if strings.HasPrefix(n, "output-") {
+			f, x := openAt(e.store.dir, n, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+			if x != nil {
+				return x
+			}
+			id, x := identity(f)
+			f.Close()
+			if x != nil || !stateMetadata(id, e.store.uid) {
+				return ErrOwnership
+			}
+			if strings.HasSuffix(n, ".log") {
+				if id.size > logCap {
+					return ErrInvalid
+				}
+			} else {
+				b, x := e.store.read(n)
+				if x != nil {
+					return x
+				}
+				want := "true"
+				if strings.HasSuffix(n, ".lost") {
+					want = "output_lost"
+				}
+				if string(b) != want {
+					return ErrInvalid
+				}
+			}
+		}
 	}
-	if _, err = e.store.read("closed"); err == nil {
+	if err = e.store.closedPresent(); err == nil {
 		e.closed = true
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -165,10 +201,23 @@ func (e *engine) load() error {
 		}
 		b, err = e.store.read("stopped-" + a.Generation)
 		if err == nil {
-			if string(b) != string(marshal(map[string]string{"execution_id": at.ExecutionID})) {
+			if e.stops[name] == nil {
 				return ErrInvalid
 			}
+			var record stoppedRecord
+			if _, x := object(b, 4096, "execution_id timing closed code", ""); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != "" && record.Code != "latch_uncertain") || (record.Timing != "timely" && record.Timing != "missed" && record.Timing != "unknown") {
+				return ErrInvalid
+			}
+			if (record.Timing != "timely" || record.Code != "") && !record.Closed {
+				return ErrInvalid
+			}
+			if record.Closed {
+				if x := e.closeAdmission("restored_closed_stop"); x != nil {
+					return x
+				}
+			}
 			e.stopped[name] = true
+			e.stops[name].terminal = &response{State: "absent", Timing: record.Timing, Closed: e.closed, Stopped: true, Code: record.Code}
 		} else if errors.Is(err, os.ErrNotExist) {
 			if err = e.closeAdmission("startup_unstopped"); err != nil {
 				return err
@@ -204,10 +253,76 @@ func (e *engine) closeAdmission(reason string) error {
 	}
 	err := e.store.create("closed", marshal(map[string]string{"reason": reason, "time": time.Now().UTC().Format(time.RFC3339Nano)}))
 	if errors.Is(err, os.ErrExist) {
-		_, err = e.store.read("closed")
+		err = e.store.closedPresent()
 	}
 	if err == nil {
 		e.latchWritten = true
 	}
 	return err
+}
+
+func stateMetadata(id fileID, uid uint32) bool {
+	return id.uid == uid && id.mode&syscall.S_IFMT == syscall.S_IFREG && id.mode&07777 == 0600 && id.links == 1
+}
+
+// Called under engine.mu. Durable evidence survives restart; an unwritable
+// evidence directory additionally exposes the live capture error as uncertainty.
+func (e *engine) outputLoss(name string) []string {
+	var loss []string
+	a, ok := e.accounts[name]
+	if !ok {
+		return nil
+	}
+	for _, stream := range []string{"stdout", "stderr"} {
+		if ch := e.launchChildren[name]; ch != nil {
+			c := ch.stdout
+			if stream == "stderr" {
+				c = ch.stderr
+			}
+			c.mu.Lock()
+			uncertain := c.lossPersistErr != nil
+			c.mu.Unlock()
+			if uncertain {
+				loss = append(loss, stream+":loss_unpersisted")
+				continue
+			}
+		}
+		_, err := e.store.read("output-" + a.Generation + "-" + stream + ".lost")
+		if err == nil {
+			loss = append(loss, stream+":output_lost")
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			loss = append(loss, stream+":evidence_unavailable")
+			continue
+		}
+		if ch := e.launchChildren[name]; ch != nil {
+			c := ch.stdout
+			if stream == "stderr" {
+				c = ch.stderr
+			}
+			if _, _, err := c.snapshot(); err != nil {
+				loss = append(loss, stream+":loss_unpersisted")
+			}
+		}
+	}
+	return loss
+}
+
+// The latch is its protected inode, not a parsed payload. Even a torn/empty
+// payload keeps stop available; malformed metadata still refuses startup.
+func (s *stateStore) closedPresent() error {
+	f, err := openAt(s.dir, "closed", syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	id, err := identity(f)
+	if err != nil {
+		return err
+	}
+	if !stateMetadata(id, s.uid) {
+		return ErrOwnership
+	}
+	return nil
 }

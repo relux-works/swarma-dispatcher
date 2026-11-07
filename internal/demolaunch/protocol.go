@@ -218,13 +218,14 @@ func parseReceipt(b []byte, execution string) (*receipt, error) {
 }
 
 type response struct {
-	State   string   `json:"state"`
-	Code    string   `json:"code,omitempty"`
-	Timing  string   `json:"timing,omitempty"`
-	Receipt *receipt `json:"receipt,omitempty"`
-	Attempt *attempt `json:"attempt,omitempty"`
-	Closed  bool     `json:"closed"`
-	Stopped bool     `json:"stopped,omitempty"`
+	OutputLoss []string `json:"output_loss,omitempty"`
+	State      string   `json:"state"`
+	Code       string   `json:"code,omitempty"`
+	Timing     string   `json:"timing,omitempty"`
+	Receipt    *receipt `json:"receipt,omitempty"`
+	Attempt    *attempt `json:"attempt,omitempty"`
+	Closed     bool     `json:"closed"`
+	Stopped    bool     `json:"stopped,omitempty"`
 }
 
 func refusal(code string) response { return response{State: "refused", Code: code} }

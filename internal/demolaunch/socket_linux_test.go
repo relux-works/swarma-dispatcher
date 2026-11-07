@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -225,7 +226,10 @@ func TestDemoWireAndClient(t *testing.T) {
 	h := fixture(t, "good")
 	a, b := socketPair(t)
 	done := make(chan error, 1)
-	go func() { done <- serveOperation(b, time.Now(), func() error { return nil }, h.e); wakeClose(b) }()
+	go func(f *os.File, result chan<- error) {
+		result <- serveOperation(f, time.Now(), func() error { return nil }, h.e)
+		wakeClose(f)
+	}(b, done)
 	reply, err := clientExchange(a, time.Now(), []byte(`{"op":"demo.status","account":"demo"}`))
 	if err != nil || !bytes.Contains([]byte(reply), []byte(`"state":"facts"`)) {
 		t.Fatal(reply, err)
@@ -235,7 +239,10 @@ func TestDemoWireAndClient(t *testing.T) {
 	}
 	a, b = socketPair(t)
 	done = make(chan error, 1)
-	go func() { done <- serveOperation(b, time.Now(), func() error { return nil }, h.e); wakeClose(b) }()
+	go func(f *os.File, result chan<- error) {
+		result <- serveOperation(f, time.Now(), func() error { return nil }, h.e)
+		wakeClose(f)
+	}(b, done)
 	w := testWire(t, a)
 	if err = w.writeFrame(`{"request_id":"r","versions":[1]}`); err != nil {
 		t.Fatal(err)
@@ -292,5 +299,302 @@ func TestAncillaryAndDeadline(t *testing.T) {
 	w.start = time.Now().Add(-sessionBudget + 20*time.Millisecond)
 	if got, err := w.readFrame(); got != nil || !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatal("partial frame deadline", got, err)
+	}
+}
+
+// This helper starts the real accept loop with only peer lookup and occupied
+// slots injectable. Pin resolution, rechecks, protocol and cleanup remain real.
+func serveFixture(t *testing.T, h *harness, variant string, supplied ...*slots) (*endpoint, func(), string) {
+	t.Helper()
+	pinPath := filepath.Join(h.root, "caller")
+	must(t, os.Mkdir(pinPath, 0700))
+	p, err := pinDirectory(pinPath, uint32(os.Geteuid()))
+	must(t, err)
+	id := p.ids[len(p.ids)-1]
+	p.close()
+	cfg := commonConfig{ServiceUID: uint32(os.Geteuid()), ServiceGID: uint32(os.Getegid()), ConnectGID: uint32(os.Getegid())}
+	c := serverConfig{commonConfig: cfg, Caller: principal{Dev: id.dev, Ino: id.ino, UID: id.uid, Dir: pinPath}}
+	switch variant {
+	case "mode":
+		must(t, os.Chmod(pinPath, 0750))
+	case "replaced":
+		must(t, os.Rename(pinPath, pinPath+"-old"))
+		must(t, os.Mkdir(pinPath, 0700))
+	case "device":
+		c.Caller.Dev++
+	case "inode":
+		c.Caller.Ino++
+	}
+	must(t, os.Chmod(h.root, 0711))
+	d, err := pinDirectory(h.root, uint32(os.Geteuid()))
+	must(t, err)
+	old := syscall.Umask(0177)
+	endpoint, err := createEndpoint(d, cfg)
+	syscall.Umask(old)
+	must(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := &shutdown{cancel: cancel}
+	done := make(chan error, 1)
+	peer := peerUID
+	if variant == "peer" {
+		peer = func(f *os.File) (uint32, error) { uid, err := peerUID(f); return uid + 1, err }
+	}
+	resources := newSlots()
+	if len(supplied) > 0 {
+		resources = supplied[0]
+	}
+	if variant == "global-full" {
+		resources.total = 64
+	}
+	if variant == "global-room" {
+		resources.total = 63
+	}
+	go func() { done <- serveWith(ctx, endpoint, c, stop, h.e, peer, resources) }()
+	finish := func() {
+		stop.request(nil)
+		select {
+		case err := <-done:
+			must(t, err)
+		case <-time.After(30 * time.Second):
+			t.Error("accept loop did not stop")
+		}
+		must(t, endpoint.close())
+	}
+	t.Cleanup(finish)
+	return endpoint, func() { must(t, os.Chmod(pinPath, 0750)) }, pinPath
+}
+
+// Real accept controls kill bypasses of peer enrollment, principal mode,
+// device/inode, replacement, operation recheck and global admission. A positive
+// exchange accompanies every refusal family; no distinct deployed UID is claimed.
+func TestServeEnrollmentGuards(t *testing.T) {
+	for _, variant := range []string{"valid", "peer", "mode", "replaced", "device", "inode", "between", "global-room", "global-full"} {
+		t.Run(variant, func(t *testing.T) {
+			h := fixture(t, "good")
+			ep, change, _ := serveFixture(t, h, variant)
+			f, err := connectSocket(ep.dir, time.Now())
+			must(t, err)
+			defer wakeClose(f)
+			w := testWire(t, f)
+			err = w.writeFrame(`{"protocol":"swarma-demo-dispatcher/1"}`)
+			admitted := variant == "valid" || variant == "between" || variant == "global-room"
+			if !admitted {
+				if err == nil {
+					_, err = w.readFrame()
+				}
+				if err == nil {
+					t.Fatal("stage=hello forbidden admission", variant)
+				}
+				if h.calls.Load() != 0 {
+					t.Fatal("child on rejection")
+				}
+				absentFile(t, h, "attempt-"+gen)
+				return
+			}
+			must(t, err)
+			b, err := w.readFrame()
+			must(t, err)
+			if string(b) != `{"protocol":"swarma-demo-dispatcher/1"}` {
+				t.Fatal("hello", string(b))
+			}
+			if variant == "between" {
+				change()
+			}
+			err = w.writeFrame(`{"op":"demo.launch","request_id":"r","account":"demo","plan":"AAE="}`)
+			w.responseWait = true
+			if err == nil {
+				b, err = w.readFrame()
+			}
+			if variant == "between" {
+				if err == nil {
+					t.Fatal("changed pin admitted", string(b))
+				}
+				absentFile(t, h, "attempt-"+gen)
+				if h.calls.Load() != 0 {
+					t.Fatal("changed pin launched")
+				}
+			} else {
+				must(t, err)
+				if !bytes.Contains(b, []byte(`"state":"receipt-seen"`)) {
+					t.Fatal(string(b))
+				}
+				if h.calls.Load() != 1 {
+					t.Fatal("valid control refused")
+				}
+			}
+		})
+	}
+}
+
+// Detected write failure after a real launcher call closes admission. The
+// receipt reader handshake closes the peer before the result write, with no
+// timing race or client retry. Kills omission of the lost-reply latch.
+func TestLostLaunchReplyCloses(t *testing.T) {
+	for _, lost := range []bool{false, true} {
+		t.Run(jsonNumber(boolInt(lost)), func(t *testing.T) {
+			h := fixture(t, "good")
+			a, b := socketPair(t)
+			real := h.e.readReceipt
+			h.e.readReceipt = func(ac account, id string) ([]byte, error) {
+				data, err := real(ac, id)
+				if err == nil && lost {
+					wakeClose(a)
+				}
+				return data, err
+			}
+			done := make(chan error, 1)
+			go func() { done <- serveOperation(b, time.Now(), func() error { return nil }, h.e) }()
+			w := testWire(t, a)
+			must(t, w.writeFrame(`{"protocol":"swarma-demo-dispatcher/1"}`))
+			_, err := w.readFrame()
+			must(t, err)
+			must(t, w.writeFrame(string(launchBytes("demo"))))
+			w.responseWait = true
+			if !lost {
+				reply, err := w.readFrame()
+				must(t, err)
+				if !bytes.Contains(reply, []byte(`"state":"receipt-seen"`)) {
+					t.Fatal(string(reply))
+				}
+			}
+			select {
+			case err := <-done:
+				if lost && err == nil {
+					t.Fatal("write unexpectedly succeeded")
+				}
+				if !lost {
+					must(t, err)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatal("reply deadline")
+			}
+			if lost {
+				fileBytes(t, h, "closed")
+				assertState(t, h.e.handle(launchBytes("second")), "refused", "admission_closed")
+			} else {
+				absentFile(t, h, "closed")
+			}
+			if h.calls.Load() != 1 {
+				t.Fatal("runner count")
+			}
+		})
+	}
+}
+
+// Mutate only after accept has registered its pinned worker, or after a real
+// launch. Kills removing either session pin recheck; releasing each UID/global
+// slot is observed before the next valid control rather than assumed by timing.
+func TestServePinRechecksAndSlotRelease(t *testing.T) {
+	for _, stage := range []string{"valid", "before-hello", "before-result"} {
+		t.Run(stage, func(t *testing.T) {
+			h := fixture(t, "good")
+			slots := newSlots()
+			ep, change, _ := serveFixture(t, h, "valid", slots)
+			if stage == "before-result" {
+				real := h.e.readReceipt
+				h.e.readReceipt = func(a account, id string) ([]byte, error) {
+					b, e := real(a, id)
+					if e == nil {
+						change()
+					}
+					return b, e
+				}
+			}
+			f, err := connectSocket(ep.dir, time.Now())
+			must(t, err)
+			defer wakeClose(f)
+			w := testWire(t, f)
+			until := time.Now().Add(30 * time.Second)
+			for {
+				slots.mu.Lock()
+				n := len(slots.active)
+				slots.mu.Unlock()
+				if n == 1 {
+					break
+				}
+				if time.Now().After(until) {
+					t.Fatal("stage=worker-registration")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if stage == "before-hello" {
+				change()
+			}
+			err = w.writeFrame(`{"protocol":"swarma-demo-dispatcher/1"}`)
+			var b []byte
+			if err == nil {
+				b, err = w.readFrame()
+			}
+			if stage == "before-hello" {
+				if err == nil {
+					t.Fatal("changed pin greeted", string(b))
+				}
+				absentFile(t, h, "attempt-"+gen)
+			} else {
+				must(t, err)
+				must(t, w.writeFrame(string(launchBytes("demo"))))
+				w.responseWait = true
+				b, err = w.readFrame()
+				if stage == "before-result" {
+					if err == nil {
+						t.Fatal("changed pin received result", string(b))
+					}
+					fileBytes(t, h, "closed")
+				} else {
+					must(t, err)
+					if !bytes.Contains(b, []byte(`"state":"receipt-seen"`)) {
+						t.Fatal(string(b))
+					}
+					absentFile(t, h, "closed")
+				}
+			}
+			wakeClose(f)
+			until = time.Now().Add(30 * time.Second)
+			for {
+				slots.mu.Lock()
+				total, uid, active := slots.total, slots.byUID[uint32(os.Geteuid())], len(slots.active)
+				slots.mu.Unlock()
+				if total == 0 && uid == 0 && active == 0 {
+					break
+				}
+				if time.Now().After(until) {
+					t.Fatalf("slots leaked total=%d uid=%d active=%d", total, uid, active)
+				}
+				time.Sleep(time.Millisecond)
+			}
+		})
+	}
+}
+
+// The real accept loop never enters frame intake for a wrong peer, even with a
+// queued hello. The admitted control enters exactly hello + operation intake.
+// The observer counts reads but supplies no bytes and changes no verdict.
+func TestServePeerBeforeFrameIntake(t *testing.T) {
+	for _, variant := range []string{"valid", "peer"} {
+		t.Run(variant, func(t *testing.T) {
+			h := fixture(t, "good")
+			resources := newSlots()
+			var reads atomic.Int32
+			resources.readObserved = func() { reads.Add(1) }
+			ep, _, _ := serveFixture(t, h, variant, resources)
+			f, err := connectSocket(ep.dir, time.Now())
+			must(t, err)
+			defer wakeClose(f)
+			reply, err := clientExchange(f, time.Now(), []byte(`{"op":"demo.status","account":"demo"}`))
+			if variant == "valid" {
+				must(t, err)
+				if reads.Load() != 2 || !bytes.Contains([]byte(reply), []byte(`"state":"facts"`)) {
+					t.Fatal(reads.Load(), reply)
+				}
+			} else {
+				if err == nil || reads.Load() != 0 {
+					t.Fatal("peer consumed input", reads.Load(), reply, err)
+				}
+			}
+			if h.calls.Load() != 0 {
+				t.Fatal("intake caused effect")
+			}
+			absentFile(t, h, "attempt-"+gen)
+		})
 	}
 }

@@ -37,13 +37,17 @@ type child struct {
 	stderr     *capture
 }
 type capture struct {
-	mu         sync.Mutex
-	data       []byte
-	limit      int
-	overflow   bool
-	err        error
-	file       *os.File
-	onTruncate func() error
+	mu             sync.Mutex
+	data           []byte
+	limit          int
+	overflow       bool
+	err            error
+	file           *os.File
+	onTruncate     func() error
+	onLoss         func() error
+	lossRecorded   bool
+	lossPersistErr error
+	writeFile      func([]byte) (int, error)
 }
 
 func (c *capture) write(b []byte) {
@@ -60,7 +64,11 @@ func (c *capture) write(b []byte) {
 	}
 	if c.file != nil {
 		if c.err == nil && n > 0 {
-			written, e := c.file.Write(b[:n])
+			write := c.writeFile
+			if write == nil {
+				write = c.file.Write
+			}
+			written, e := write(b[:n])
 			c.limit -= written
 			if e != nil {
 				c.err = e
@@ -78,6 +86,7 @@ func (c *capture) write(b []byte) {
 			c.err = errors.Join(c.err, c.onTruncate())
 		}
 	}
+	c.recordLoss()
 }
 func (c *capture) snapshot() ([]byte, bool, error) {
 	c.mu.Lock()
@@ -87,13 +96,19 @@ func (c *capture) snapshot() ([]byte, bool, error) {
 func drain(ctx context.Context, f *os.File, c *capture) {
 	defer f.Close()
 	if c.file != nil {
-		defer func() { c.mu.Lock(); c.err = errors.Join(c.err, c.file.Sync(), c.file.Close()); c.mu.Unlock() }()
+		defer func() {
+			c.mu.Lock()
+			c.err = errors.Join(c.err, c.file.Sync(), c.file.Close())
+			c.recordLoss()
+			c.mu.Unlock()
+		}()
 	}
 	var b [32768]byte
 	for ctx.Err() == nil {
 		if err := f.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
 			c.mu.Lock()
 			c.err = err
+			c.recordLoss()
 			c.mu.Unlock()
 			return
 		}
@@ -108,6 +123,7 @@ func drain(ctx context.Context, f *os.File, c *capture) {
 			if err != io.EOF {
 				c.mu.Lock()
 				c.err = err
+				c.recordLoss()
 				c.mu.Unlock()
 			}
 			return
@@ -220,5 +236,14 @@ func (e *engine) logCapture(generation, stream string) (*capture, error) {
 		f.Close()
 		return nil, err
 	}
-	return &capture{file: f, limit: logCap, onTruncate: func() error { return e.store.create(name+".truncated", []byte("true")) }}, nil
+	return &capture{file: f, limit: logCap, onTruncate: func() error { return e.store.create(name+".truncated", []byte("true")) }, onLoss: func() error { return e.store.create(name+".lost", []byte("output_lost")) }}, nil
+}
+
+// capture.mu is held; persist at most once, continue draining on every failure.
+func (c *capture) recordLoss() {
+	if c.err != nil && !c.lossRecorded && c.onLoss != nil {
+		c.lossRecorded = true
+		c.lossPersistErr = c.onLoss()
+		c.err = errors.Join(c.err, c.lossPersistErr)
+	}
 }

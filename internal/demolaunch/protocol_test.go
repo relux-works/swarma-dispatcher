@@ -125,3 +125,76 @@ func TestConfigRosterBounds(t *testing.T) {
 		}
 	}
 }
+
+// Canonical neighboring encodings kill accepting nonzero pad bits, embedded
+// whitespace or omitted padding even when a permissive decoder accepts them.
+func TestCanonicalPlan(t *testing.T) {
+	for _, plan := range []string{"AA==", "AAA=", "AAAA", ""} {
+		if _, err := parseRequest([]byte(`{"op":"demo.launch","request_id":"r","account":"demo","plan":"` + plan + `"}`)); err != nil {
+			t.Fatal(plan, err)
+		}
+	}
+	for _, plan := range []string{"AB==", "AAB=", "AA", "AA==\n", "AA== "} {
+		b := marshal(map[string]string{"op": "demo.launch", "request_id": "r", "account": "demo", "plan": plan})
+		if _, err := parseRequest(b); !errors.Is(err, ErrInvalid) {
+			t.Fatal(plan, err)
+		}
+	}
+}
+
+// A complete 20-row roster is the positive bound; individual duplicated name,
+// UID or generation must refuse, as must an empty or 21-row roster. The 21st
+// row also necessarily exceeds the UID domain, a documented redundant guard.
+func TestRosterUniquenessAndCount(t *testing.T) {
+	var rows []map[string]any
+	for i := 0; i < 20; i++ {
+		rows = append(rows, map[string]any{"name": "demo-" + jsonNumber(i), "uid": 30000 + i, "gid": 30000 + i, "generation": strings.Repeat("0", 30) + string("0123456789abcdef"[i/16]) + string("0123456789abcdef"[i%16]), "owner": "demo-service"})
+	}
+	encode := func() []byte { return marshal(map[string]any{"accounts": rows}) }
+	if a, err := parseRoster(encode(), "demo-service"); err != nil || len(a) != 20 {
+		t.Fatal(len(a), err)
+	}
+	for _, key := range []string{"name", "uid", "generation"} {
+		old := rows[1][key]
+		rows[1][key] = rows[0][key]
+		if key == "uid" {
+			rows[1]["gid"] = rows[0]["uid"]
+		}
+		if a, err := parseRoster(encode(), "demo-service"); a != nil || !errors.Is(err, ErrConfig) {
+			t.Fatal(key, a, err)
+		}
+		rows[1][key] = old
+		rows[1]["gid"] = 30001
+	}
+	rows = append(rows, rows[0])
+	if a, err := parseRoster(encode(), "demo-service"); a != nil || !errors.Is(err, ErrConfig) {
+		t.Fatal(a, err)
+	}
+	rows = rows[:0]
+	if a, err := parseRoster(encode(), "demo-service"); a != nil || !errors.Is(err, ErrConfig) {
+		t.Fatal(a, err)
+	}
+}
+
+// Client snapshots accept only the smaller exact contract, with a valid control.
+func TestClientConfig(t *testing.T) {
+	cfg := cfgFixture()
+	for _, k := range []string{"executor", "service_account", "receipt_root", "state_dir"} {
+		delete(cfg, k)
+	}
+	if _, err := parseClient(marshal(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"caller", "v", "connect_gid"} {
+		old := cfg[key]
+		delete(cfg, key)
+		if _, err := parseClient(marshal(cfg)); !errors.Is(err, ErrConfig) {
+			t.Fatal(key, err)
+		}
+		cfg[key] = old
+	}
+	cfg["executor"] = "forbidden"
+	if _, err := parseClient(marshal(cfg)); !errors.Is(err, ErrConfig) {
+		t.Fatal(err)
+	}
+}

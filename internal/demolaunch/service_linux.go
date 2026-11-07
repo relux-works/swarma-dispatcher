@@ -41,11 +41,12 @@ func (s *shutdown) snapshot() (time.Time, error) {
 }
 
 type slots struct {
-	mu      sync.Mutex
-	total   int
-	byUID   map[uint32]int
-	active  map[*os.File]struct{}
-	stopped bool
+	mu           sync.Mutex
+	total        int
+	byUID        map[uint32]int
+	active       map[*os.File]struct{}
+	stopped      bool
+	readObserved func() // Optional non-reading test observer; nil in production.
 }
 
 func newSlots() *slots {
@@ -100,11 +101,20 @@ func (s *slots) stop() {
 }
 
 func serveOperation(f *os.File, start time.Time, recheck func() error, engine *engine) error {
+	return serveOperationObserved(f, start, recheck, engine, nil)
+}
+func serveOperationObserved(f *os.File, start time.Time, recheck func() error, engine *engine, observe func()) (result error) {
 	wire, err := newSocketIO(f, start)
 	if err != nil {
 		return err
 	}
-	b, err := wire.readFrame()
+	read := func() ([]byte, error) {
+		if observe != nil {
+			observe()
+		}
+		return wire.readFrame()
+	}
+	b, err := read()
 	if err != nil {
 		return err
 	}
@@ -117,14 +127,22 @@ func serveOperation(f *os.File, start time.Time, recheck func() error, engine *e
 	if err = wire.writeFrame(`{"protocol":"swarma-demo-dispatcher/1"}`); err != nil {
 		return err
 	}
-	b, err = wire.readFrame()
+	b, err = read()
 	if err != nil {
 		return err
 	}
 	if err = recheck(); err != nil {
 		return err
 	}
+	req, _ := parseRequest(b)
 	reply := engine.handle(b)
+	if req.Op == "demo.launch" && (reply.State == "receipt-seen" || reply.State == "unknown") {
+		defer func() {
+			if result != nil {
+				engine.unknown("launch_reply_lost")
+			}
+		}()
+	}
 	if err = recheck(); err != nil {
 		return err
 	}
@@ -161,7 +179,11 @@ func transientAccept(err error) bool {
 	return errors.Is(err, syscall.EINTR) || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EPROTO)
 }
 func serve(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, engine *engine) error {
-	resources := newSlots()
+	return serveWith(ctx, e, c, stop, engine, peerUID, newSlots())
+}
+
+// Tests inject a peer result without weakening enrollment or the real entrypoint.
+func serveWith(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, engine *engine, peer func(*os.File) (uint32, error), resources *slots) error {
 	var workers sync.WaitGroup
 	watcherDone := make(chan struct{})
 	listener := e.listener
@@ -191,7 +213,7 @@ func serve(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, eng
 			resources.release(nil)
 			continue
 		}
-		uid, err := peerUID(f)
+		uid, err := peer(f)
 		if err != nil {
 			wakeClose(f)
 			resources.release(nil)
@@ -213,7 +235,7 @@ func serve(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, eng
 			resources.release(nil)
 			continue
 		}
-		if err = authenticate(f, caller.UID, pin.recheck); err != nil {
+		if err = pin.recheck(); err != nil {
 			pin.close()
 			wakeClose(f)
 			resources.release(nil)
@@ -239,7 +261,7 @@ func serve(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, eng
 			defer pin.close()
 			defer wakeClose(f)
 			// Protocol errors close only this connection, without retaining payload/IDs.
-			_ = serveOperation(f, start, pin.recheck, engine)
+			_ = serveOperationObserved(f, start, pin.recheck, engine, resources.readObserved)
 		}(f, uid, pin, start)
 	}
 	stop.request(nil)
@@ -295,12 +317,7 @@ func Daemon(configPath string) (result error) {
 			}
 		}
 	}()
-	b, err := sourceSnapshot(configPath, true)
-	if err != nil {
-		stop.request(err)
-		return err
-	}
-	c, err := parseServer(b)
+	c, roster, err := loadServerInputs(configPath, protectedSnapshot)
 	if err != nil {
 		stop.request(err)
 		return err
@@ -314,14 +331,6 @@ func Daemon(configPath string) (result error) {
 		return x
 	}
 	pin.close()
-	rosterBytes, err := protectedSnapshot(rosterPath, 0644, 0, 16384)
-	if err != nil {
-		return err
-	}
-	roster, err := parseRoster(rosterBytes, c.ServiceAccount)
-	if err != nil {
-		return err
-	}
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -441,7 +450,7 @@ func clientExchange(f *os.File, start time.Time, input []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	m, err := object(b, 16384, "state closed", "code timing receipt attempt stopped")
+	m, err := object(b, 16384, "state closed", "code timing receipt attempt stopped output_loss")
 	if err != nil {
 		return "", ErrInvalid
 	}
@@ -471,4 +480,23 @@ func authenticate(f *os.File, uid uint32, pin func() error) error {
 		return err
 	}
 	return pin()
+}
+
+// Both protected inputs are read before endpoint publication or state access.
+// Tests substitute expected ownership, never the compiled roster path or modes.
+func loadServerInputs(configPath string, read func(string, uint32, uint32, int) ([]byte, error)) (serverConfig, []account, error) {
+	b, err := read(configPath, 0440, uint32(os.Getegid()), serverConfigLimit)
+	if err != nil {
+		return serverConfig{}, nil, err
+	}
+	c, err := parseServer(b)
+	if err != nil {
+		return serverConfig{}, nil, err
+	}
+	b, err = read(rosterPath, 0644, 0, 16384)
+	if err != nil {
+		return serverConfig{}, nil, err
+	}
+	roster, err := parseRoster(b, c.ServiceAccount)
+	return c, roster, err
 }

@@ -22,8 +22,11 @@ command or a qualified deployment.
   Those designs do not add callable operations to the current transport.
 
 Every valid capacity exchange returns `capacity:hold`; negotiation success does
-not open admission. There is no implemented launch service, plugin registration
-API or configuration-based plugin loader. Do not translate proposed operations
+not open admission. The separate [demo launch cut](../../../spec/demo-launch.md)
+has source implementations and fake-child tests; it is not production, not a
+conforming dispatcher, and not a qualified deployment. Production commands do
+not offer launch. There is no plugin registration API or configuration-based
+plugin loader. Do not translate proposed operations
 into assumed commands or treat schema-valid M0 specimens as authorized requests.
 For M0 shape questions, use the existing [fixture guide](../../../fixtures/m0-launch/README.md),
 which distinguishes shape checks from pending runtime enforcement.

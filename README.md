@@ -184,7 +184,8 @@ exit of zero means a reply was received, not absence or readiness. Daemon errors
 go to stderr. Attempt/stop/closed records and capped output logs remain in the
 protected configured state directory; nothing deletes, renames or truncates them.
 Fixture child processes and sockets use checkout-local `.temp/` allocations;
-Linux CI emits test results to its hosted job log. Tests require neither root,
+Linux CI emits test results to its hosted job log. Fixtures require non-group-writable ancestors (including the checkout path);
+they do not repair those permissions. Tests require neither root,
 sudo nor provisioned `/run`, `/etc` or `/var` paths. They do not qualify the real
 launcher, helper, process identity, sudo policy or account-wide absence.
 

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"sync"
 	"syscall"
@@ -35,13 +36,16 @@ type engine struct {
 	executor                        string
 	receiptRoot                     string
 	receiptOwner                    uint32
+	receiptGroup                    uint32
+	now                             func() time.Time
 	receiptWait                     time.Duration
 	stopWait                        time.Duration
 	readReceipt                     func(account, string) ([]byte, error)
+	readFile                        func(io.Reader, int) ([]byte, error)
 }
 
 func newEngine(ctx context.Context, store *stateStore, accounts []account, cfg serverConfig) (*engine, error) {
-	e := &engine{ctx: ctx, store: store, accounts: map[string]account{}, attempts: map[string]attempt{}, stopped: map[string]bool{}, stops: map[string]*stopRecord{}, launchChildren: map[string]*child{}, run: fixedRunner, executor: cfg.Executor, receiptRoot: cfg.ReceiptRoot, receiptWait: 10 * time.Second, stopWait: 45 * time.Second}
+	e := &engine{ctx: ctx, store: store, accounts: map[string]account{}, attempts: map[string]attempt{}, stopped: map[string]bool{}, stops: map[string]*stopRecord{}, launchChildren: map[string]*child{}, run: fixedRunner, readFile: readSnapshot, now: time.Now, executor: cfg.Executor, receiptRoot: cfg.ReceiptRoot, receiptWait: 10 * time.Second, stopWait: 45 * time.Second}
 	for _, a := range accounts {
 		e.accounts[a.Name] = a
 	}
@@ -72,7 +76,7 @@ func (e *engine) handle(b []byte) (reply response) {
 func (e *engine) status(name string) response {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	r := response{State: "facts", Closed: e.closed, Stopped: e.stopped[name]}
+	r := response{State: "facts", Closed: e.closed, Stopped: e.stopped[name], OutputLoss: e.outputLoss(name)}
 	if a, ok := e.attempts[name]; ok {
 		copy := a
 		r.Attempt = &copy
@@ -138,7 +142,7 @@ func (e *engine) launch(r request, raw []byte) response {
 	e.launching = true
 	e.mu.Unlock()
 	defer func() { e.mu.Lock(); e.launching = false; e.mu.Unlock() }()
-	deadline := time.Now().Add(e.receiptWait)
+	deadline := e.now().Add(e.receiptWait)
 	out, err := e.logCapture(a.Generation, "stdout")
 	if err != nil {
 		return e.unknown("log_unavailable")
@@ -180,13 +184,13 @@ func (e *engine) launch(r request, raw []byte) response {
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
-		// Exit observed before receipt observation is never promoted to receipt-seen.
+		exited := false
 		select {
 		case <-ch.done:
-			return e.unknown("launcher_exit")
+			exited = true
 		default:
 		}
-		if !time.Now().Before(deadline) {
+		if !e.now().Before(deadline) {
 			return e.unknown("receipt_timeout")
 		}
 		if _, _, x := out.snapshot(); x != nil {
@@ -201,7 +205,7 @@ func (e *engine) launch(r request, raw []byte) response {
 			if err != nil {
 				return e.unknown("receipt_mismatch")
 			}
-			if !time.Now().Before(deadline) {
+			if !e.now().Before(deadline) {
 				return e.unknown("receipt_timeout")
 			}
 			return response{State: "receipt-seen", Receipt: rec}
@@ -209,9 +213,12 @@ func (e *engine) launch(r request, raw []byte) response {
 		if !errors.Is(err, os.ErrNotExist) {
 			return e.unknown("receipt_mismatch")
 		}
+		if exited {
+			return e.unknown("launcher_exit")
+		}
 		select {
 		case <-ch.done:
-			return e.unknown("launcher_exit")
+			// Loop back for one final bounded receipt observation before classifying exit.
 		case <-timer.C:
 			return e.unknown("receipt_timeout")
 		case <-e.ctx.Done():
@@ -240,10 +247,10 @@ func (e *engine) receiptBytes(a account, execution string) ([]byte, error) {
 	}
 	defer f.Close()
 	before, err := identity(f)
-	if err != nil || before.uid != e.receiptOwner || before.gid != 0 || before.mode&syscall.S_IFMT != syscall.S_IFREG || before.mode&07777 != 0644 || before.links != 1 {
+	if err != nil || !receiptMetadata(before, e.receiptOwner, e.receiptGroup) {
 		return nil, ErrOwnership
 	}
-	b, err := readSnapshot(f, 4096)
+	b, err := e.readFile(f, 4096)
 	if err != nil {
 		return nil, err
 	}
@@ -261,6 +268,7 @@ func (e *engine) receiptBytes(a account, execution string) ([]byte, error) {
 	return b, nil
 }
 func (e *engine) stop(r request) response {
+	callDeadline := time.Now().Add(e.stopWait)
 	e.mu.Lock()
 	at, ok := e.attempts[r.Account]
 	if !ok {
@@ -297,23 +305,13 @@ func (e *engine) stop(r request) response {
 			}
 		}
 		now := time.Now()
-		s = &stopRecord{intent: stopIntent{r.RequestID, at.ExecutionID, r.Grace, now.UTC().Format(time.RFC3339Nano)}, deadline: now.Add(e.stopWait)}
+		s = &stopRecord{intent: stopIntent{r.RequestID, at.ExecutionID, r.Grace, now.UTC().Format(time.RFC3339Nano)}, deadline: callDeadline}
 		if err := e.store.create("stop-"+a.Generation, marshal(s.intent)); err != nil {
 			_ = e.closeAdmission("stop_intent_uncertain")
 			e.mu.Unlock()
 			return response{State: "unresolved", Code: "stop_intent_uncertain", Timing: "unknown", Closed: true}
 		}
 		e.stops[r.Account] = s
-	}
-	if s.deadline.IsZero() {
-		_ = e.closeAdmission("stop_clock_unknown")
-		e.mu.Unlock()
-		return response{State: "unresolved", Code: "stop_clock_unknown", Timing: "unknown", Closed: true}
-	}
-	if !time.Now().Before(s.deadline) {
-		_ = e.closeAdmission("stop_timeout")
-		e.mu.Unlock()
-		return response{State: "unresolved", Code: "stop_timeout", Timing: "missed", Closed: true}
 	}
 	if s.child != nil {
 		select {
@@ -329,9 +327,22 @@ func (e *engine) stop(r request) response {
 			return refusal("stop_in_flight")
 		}
 	}
+	// The original deadline classifies the effect; it is never replenished.
+	// A continuation has a separate finite call budget even when the original
+	// monotonic deadline is missed or lost. The helper owns its original grace.
+	if !s.deadline.IsZero() && time.Now().Before(s.deadline) && s.deadline.Before(callDeadline) {
+		callDeadline = s.deadline
+	}
+	var callLatchErr error
+	if timing(s.deadline) != "timely" {
+		callLatchErr = e.closeAdmission("stop_time_uncertain")
+	}
 	s.active = true
 	e.mu.Unlock()
 	defer func() { e.mu.Lock(); s.active = false; e.mu.Unlock() }()
+	if !time.Now().Before(callDeadline) {
+		return e.unresolved("stop_timeout", s)
+	}
 	payload := marshal(struct {
 		V         int    `json:"v"`
 		Op        string `json:"op"`
@@ -350,14 +361,14 @@ func (e *engine) stop(r request) response {
 		return e.unresolved("helper_request_limit", s)
 	}
 	out, stderr := &capture{limit: 16384}, &capture{limit: 16384}
-	ch, err := startChild(e.ctx, e.run, managerPath, payload, s.deadline, out, stderr)
+	ch, err := startChild(e.ctx, e.run, managerPath, payload, callDeadline, out, stderr)
 	e.mu.Lock()
 	s.child = ch
 	e.mu.Unlock()
 	if err != nil {
 		return e.unresolved("helper_io", s)
 	}
-	timer := time.NewTimer(time.Until(s.deadline))
+	timer := time.NewTimer(time.Until(callDeadline))
 	defer timer.Stop()
 	for _, done := range []chan struct{}{ch.done, ch.outputDone} {
 		select {
@@ -368,9 +379,6 @@ func (e *engine) stop(r request) response {
 			return e.unresolved("shutdown", s)
 		}
 	}
-	if ch.err != nil {
-		return e.unresolved("helper_exit", s)
-	}
 	b, overflow, err := out.snapshot()
 	if err != nil || overflow {
 		return e.unresolved("helper_result_invalid", s)
@@ -379,17 +387,32 @@ func (e *engine) stop(r request) response {
 	if code != "" {
 		return e.unresolved(code, s)
 	}
+	if ch.err != nil {
+		return e.unresolved("helper_exit", s)
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if err = e.store.create("stopped-"+a.Generation, marshal(map[string]string{"execution_id": at.ExecutionID})); err != nil {
-		_ = e.closeAdmission("stopped_uncertain")
-		return response{State: "unresolved", Code: "stopped_uncertain", Timing: timing(s.deadline), Closed: true}
+	verdict := timing(s.deadline)
+	latchErr := callLatchErr
+	if verdict != "timely" {
+		latchErr = errors.Join(latchErr, e.closeAdmission("stop_time_uncertain"))
+	}
+	record := stoppedRecord{ExecutionID: at.ExecutionID, Timing: verdict, Closed: e.closed}
+	if latchErr != nil {
+		record.Code = "latch_uncertain"
+	}
+	if err = e.store.create("stopped-"+a.Generation, marshal(record)); err != nil {
+		code := "stopped_uncertain"
+		if e.closeAdmission(code) != nil {
+			code = "latch_uncertain"
+		}
+		return response{State: "unresolved", Code: code, Timing: verdict, Closed: true}
 	}
 	e.stopped[r.Account] = true
-	if timing(s.deadline) == "missed" {
-		_ = e.closeAdmission("stop_deadline_missed")
+	result := response{State: "absent", Timing: verdict, Closed: e.closed, Stopped: true}
+	if latchErr != nil {
+		result.Code = "latch_uncertain"
 	}
-	result := response{State: "absent", Timing: timing(s.deadline), Closed: e.closed, Stopped: true}
 	s.terminal = &result
 	return result
 }
@@ -465,4 +488,8 @@ func stopResult(b []byte, id, execution string) string {
 		}
 	}
 	return ""
+}
+
+func receiptMetadata(id fileID, owner, group uint32) bool {
+	return id.uid == owner && id.gid == group && id.mode&syscall.S_IFMT == syscall.S_IFREG && id.mode&07777 == 0644 && id.links == 1
 }

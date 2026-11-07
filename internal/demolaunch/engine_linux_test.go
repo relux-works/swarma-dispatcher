@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -42,12 +43,26 @@ func TestFakeChild(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(root, op+".input"), b, 0600); err != nil {
 		os.Exit(33)
 	}
+	call := os.Getenv("DEMO_FAKE_CALL")
+	record := struct {
+		Path  string `json:"path"`
+		Stdin string `json:"stdin"`
+	}{os.Getenv("DEMO_FAKE_PATH"), string(b)}
+	if err = os.WriteFile(filepath.Join(root, "call-"+call+".json"), marshal(record), 0600); err != nil {
+		os.Exit(38)
+	}
+	if (op == "launch.start" && record.Path != "/usr/local/libexec/swarma/swarma-user-launcher") || (op == "exec.stop" && record.Path != "/usr/local/libexec/swarma/swarma-user-manager") {
+		os.Exit(37)
+	}
+	if mode == "hold-stop" && op == "exec.stop" {
+		fakeWait(root, "release-stop")
+	}
 	if op == "launch.start" {
 		if mode == "exit" {
 			os.Exit(9)
 		}
 		if mode == "timeout" {
-			time.Sleep(500 * time.Millisecond)
+			fakeWait(root, "release-launch")
 			os.Exit(0)
 		}
 		var execution string
@@ -70,10 +85,35 @@ func TestFakeChild(t *testing.T) {
 				}
 			}
 		}
-		if err = os.WriteFile(filepath.Join(root, "receipt.json"), []byte(rec), 0600); err != nil {
+		var generation string
+		json.Unmarshal(input["generation"], &generation)
+		dir := filepath.Join(root, generation)
+		if err = os.MkdirAll(dir, 0700); err != nil {
 			os.Exit(36)
 		}
-		time.Sleep(400 * time.Millisecond)
+		tmp := filepath.Join(dir, execution+".tmp")
+		if err = os.WriteFile(tmp, []byte(rec), 0644); err != nil {
+			os.Exit(36)
+		}
+		f, x := os.Open(tmp)
+		if x != nil {
+			os.Exit(36)
+		}
+		x = f.Sync()
+		f.Close()
+		if x != nil {
+			os.Exit(36)
+		}
+		if err = os.Rename(tmp, filepath.Join(dir, execution+".json")); err != nil {
+			os.Exit(36)
+		}
+		if mode == "hold-launch" || mode == "after-output" {
+			fakeWait(root, "release-launch")
+		}
+		if mode == "after-output" {
+			os.Stdout.Write(bytes.Repeat([]byte{'z'}, 2<<20))
+			os.Stderr.Write(bytes.Repeat([]byte{'z'}, 2<<20))
+		}
 		os.Exit(0)
 	}
 	var args struct {
@@ -86,7 +126,7 @@ func TestFakeChild(t *testing.T) {
 	switch mode {
 	case "remaining":
 		result = strings.Replace(result, `"remaining":0`, `"remaining":1`, 1)
-	case "false":
+	case "false", "false-nonzero":
 		result = `{"request_id":"` + id + `","ok":false,"error":{"code":"target_not_owned","message":"refused"}}`
 	case "malformed":
 		result = `{`
@@ -96,9 +136,14 @@ func TestFakeChild(t *testing.T) {
 		os.Stdout.WriteString(result)
 		os.Exit(7)
 	case "slow":
-		time.Sleep(500 * time.Millisecond)
+		fakeWait(root, "release-stop")
+	case "overflow":
+		result = strings.Repeat("x", 16385)
 	}
 	os.Stdout.WriteString(result)
+	if mode == "false-nonzero" {
+		os.Exit(1)
+	}
 	os.Exit(0)
 }
 func fixtureDir(t *testing.T) string {
@@ -148,26 +193,29 @@ func fixture(t *testing.T, mode string) *harness {
 		cancel()
 		t.Fatal(err)
 	}
-	e.receiptWait = 2 * time.Second
-	e.stopWait = 2 * time.Second
+	e.receiptRoot = root
+	e.receiptOwner = uint32(os.Geteuid())
+	e.receiptGroup = uint32(os.Getegid())
 	h := &harness{e: e, root: root, cancel: cancel, mode: mode}
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.run = func(path string) *exec.Cmd {
-		h.calls.Add(1)
+		call := h.calls.Add(1)
 		if path != launcherPath && path != managerPath {
 			t.Error("foreign runner path", path)
 		}
 		c := exec.Command(exe, "-test.run=^TestFakeChild$")
-		c.Env = []string{"DEMO_FAKE_CHILD=1", "DEMO_FAKE_MODE=" + h.mode, "DEMO_FAKE_ROOT=" + root}
+		c.Env = []string{"DEMO_FAKE_CHILD=1", "DEMO_FAKE_MODE=" + h.mode, "DEMO_FAKE_ROOT=" + root, "DEMO_FAKE_PATH=" + path, "DEMO_FAKE_CALL=" + strconv.Itoa(int(call)), "GORACE=atexit_sleep_ms=0"}
 		return c
 	}
-	e.readReceipt = func(account, string) ([]byte, error) { return os.ReadFile(filepath.Join(root, "receipt.json")) }
+
 	t.Cleanup(func() {
-		// Fixture children terminate themselves in at most 500 ms. Reap before cancel.
-		until := time.Now().Add(3 * time.Second)
+		// Release only fixture children; all waits have a finite failure deadline.
+		os.WriteFile(filepath.Join(root, "release-launch"), nil, 0600)
+		os.WriteFile(filepath.Join(root, "release-stop"), nil, 0600)
+		until := time.Now().Add(30 * time.Second)
 		for _, ch := range e.launchChildren {
 			waitChild(t, ch, until)
 		}
@@ -301,7 +349,7 @@ func TestLaunchUnknown(t *testing.T) {
 		t.Run(tc.mode, func(t *testing.T) {
 			h := fixture(t, tc.mode)
 			if tc.mode == "timeout" {
-				h.e.receiptWait = 100 * time.Millisecond
+				expireReceiptAfterInput(h)
 			}
 			r := h.e.handle(launchBytes("demo"))
 			if tc.code == "" {
@@ -325,7 +373,7 @@ func TestLaunchUnknown(t *testing.T) {
 func TestLogsKeepDraining(t *testing.T) {
 	h := fixture(t, "flood")
 	assertState(t, h.e.handle(launchBytes("demo")), "receipt-seen", "")
-	waitChild(t, h.e.launchChildren["demo"], time.Now().Add(3*time.Second))
+	waitChild(t, h.e.launchChildren["demo"], time.Now().Add(30*time.Second))
 	for _, stream := range []string{"stdout", "stderr"} {
 		name := filepath.Join(h.root, "state", "output-"+gen+"-"+stream+".log")
 		info, err := os.Stat(name)
@@ -341,13 +389,13 @@ func TestLogsKeepDraining(t *testing.T) {
 // Only matching ok:true/remaining:0 establishes absence. Exit zero alone,
 // malformed bytes, helper refusal, remaining processes and deadline expiry do not.
 func TestStopResults(t *testing.T) {
-	for _, tc := range []struct{ mode, code string }{{"good", ""}, {"remaining", "processes_remain"}, {"false", "target_not_owned"}, {"malformed", "helper_result_invalid"}, {"empty", "helper_result_invalid"}, {"nonzero", "helper_exit"}, {"slow", "stop_timeout"}} {
+	for _, tc := range []struct{ mode, code string }{{"good", ""}, {"remaining", "processes_remain"}, {"false", "target_not_owned"}, {"false-nonzero", "target_not_owned"}, {"overflow", "helper_result_invalid"}, {"malformed", "helper_result_invalid"}, {"empty", "helper_result_invalid"}, {"nonzero", "helper_exit"}, {"slow", "stop_timeout"}} {
 		t.Run(tc.mode, func(t *testing.T) {
 			h := fixture(t, "good")
 			assertState(t, h.e.handle(launchBytes("demo")), "receipt-seen", "")
 			h.mode = tc.mode
 			if tc.mode == "slow" {
-				h.e.stopWait = 100 * time.Millisecond
+				h.e.stopWait = 5 * time.Second
 			}
 			r := h.e.handle(stopBytes(10))
 			if tc.code == "" {
@@ -412,8 +460,8 @@ func TestStopRetryAndRestart(t *testing.T) {
 	}
 	assertState(t, restarted.handle(stopBytes(11)), "refused", "stop_conflict")
 	r := restarted.handle(stopBytes(10))
-	assertState(t, r, "unresolved", "stop_clock_unknown")
-	if r.Timing != "unknown" {
+	assertState(t, r, "absent", "")
+	if r.Timing != "timely" {
 		t.Fatal(r)
 	}
 }
@@ -422,16 +470,32 @@ func TestStopRetryAndRestart(t *testing.T) {
 // before any effect. Invalid intake has zero filesystem/runner effects.
 func TestConcurrentAdmissionAndInvalidEffects(t *testing.T) {
 	h := fixture(t, "timeout")
-	h.e.receiptWait = 150 * time.Millisecond
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	var expired atomic.Bool
+	h.e.now = func() time.Time {
+		n := time.Now()
+		if expired.Load() {
+			return n.Add(time.Hour)
+		}
+		return n
+	}
+	h.e.readReceipt = func(account, string) ([]byte, error) {
+		close(entered)
+		<-release
+		expired.Store(true)
+		return nil, os.ErrNotExist
+	}
 	for _, b := range [][]byte{[]byte(`{"op":"demo.launch","account":"demo","request_id":"r","plan":"","uid":30000}`), stopBytes(0)} {
 		assertState(t, h.e.handle(b), "refused", "request_invalid")
 		absentFile(t, h, "attempt-"+gen)
 	}
 	done := make(chan response, 1)
 	go func() { done <- h.e.handle(launchBytes("demo")) }()
-	until := time.Now().Add(time.Second)
-	for h.calls.Load() == 0 && time.Now().Before(until) {
-		time.Sleep(time.Millisecond)
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("launch did not reach receipt reader")
 	}
 	if h.calls.Load() != 1 {
 		t.Fatal("launch not reached")
@@ -441,10 +505,12 @@ func TestConcurrentAdmissionAndInvalidEffects(t *testing.T) {
 		t.Fatal(status)
 	}
 	assertState(t, h.e.handle(launchBytes("second")), "refused", "launch_in_flight")
+	assertState(t, h.e.handle(stopBytes(10)), "refused", "launch_in_flight")
+	release <- struct{}{}
 	select {
 	case r := <-done:
 		assertState(t, r, "unknown", "receipt_timeout")
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("state lock held across wait")
 	}
 	if h.calls.Load() != 1 {
@@ -456,7 +522,7 @@ func TestConcurrentAdmissionAndInvalidEffects(t *testing.T) {
 // after a verified stopped record does not fabricate an unstopped crash latch.
 func TestClosedStopAndStoppedRestart(t *testing.T) {
 	h := fixture(t, "timeout")
-	h.e.receiptWait = 100 * time.Millisecond
+	expireReceiptAfterInput(h)
 	assertState(t, h.e.handle(launchBytes("demo")), "unknown", "receipt_timeout")
 	h.mode = "good"
 	r := h.e.handle(stopBytes(10))
@@ -511,4 +577,36 @@ func TestRefusalPreservesClosedFact(t *testing.T) {
 		t.Fatal("false open fact", r)
 	}
 	absentFile(t, h, "attempt-"+gen)
+}
+
+// File handshakes synchronize the fake without assuming a scheduling latency.
+func fakeWait(root, name string) {
+	end := time.Now().Add(30 * time.Second)
+	for time.Now().Before(end) {
+		if _, err := os.Stat(filepath.Join(root, name)); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	os.Exit(39)
+}
+
+// Keep real fsync and stdin delivery outside the timeout witness. Only once the
+// fake has read its document does the test advance the launch observation clock.
+func expireReceiptAfterInput(h *harness) {
+	var expired atomic.Bool
+	real := h.e.readReceipt
+	h.e.now = func() time.Time {
+		n := time.Now()
+		if expired.Load() {
+			return n.Add(time.Hour)
+		}
+		return n
+	}
+	h.e.readReceipt = func(a account, id string) ([]byte, error) {
+		if _, err := os.Stat(filepath.Join(h.root, "launch.start.input")); err == nil {
+			expired.Store(true)
+		}
+		return real(a, id)
+	}
 }

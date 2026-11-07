@@ -4,6 +4,7 @@ package demolaunch
 
 import (
 	"errors"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -148,6 +149,14 @@ func sourceSnapshot(name string, server bool) ([]byte, error) {
 	return protectedSnapshot(name, mode, gid, limit)
 }
 func protectedSnapshot(name string, mode, gid uint32, limit int) ([]byte, error) {
+	return protectedSnapshotAs(name, mode, gid, limit, 0)
+}
+
+// The non-root fixture seam changes only expected ownership; production pins root.
+func protectedSnapshotAs(name string, mode, gid uint32, limit int, owner uint32) ([]byte, error) {
+	return protectedRead(name, mode, gid, limit, owner, readSnapshot)
+}
+func protectedRead(name string, mode, gid uint32, limit int, owner uint32, read func(io.Reader, int) ([]byte, error)) ([]byte, error) {
 	if !validPath(name, 4095) {
 		return nil, ErrConfig
 	}
@@ -172,7 +181,7 @@ func protectedSnapshot(name string, mode, gid uint32, limit int) ([]byte, error)
 		}
 		d = &directory{path: "/", files: []*os.File{f}, ids: []fileID{s}}
 	} else {
-		d, err = pinDirectory(parent, 0)
+		d, err = pinDirectory(parent, owner)
 		if err != nil {
 			return nil, errors.Join(ErrConfig, err)
 		}
@@ -187,10 +196,10 @@ func protectedSnapshot(name string, mode, gid uint32, limit int) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	if !snapshotMetadata(before, mode, gid) {
+	if !snapshotMetadataAs(before, mode, gid, owner) {
 		return nil, ErrConfig
 	}
-	b, err := readSnapshot(f, limit)
+	b, err := read(f, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -248,5 +257,8 @@ func runtimeConfig(c commonConfig, uid uint32, server bool) error {
 }
 
 func snapshotMetadata(id fileID, mode, gid uint32) bool {
-	return id.mode&syscall.S_IFMT == syscall.S_IFREG && id.uid == 0 && id.gid == gid && id.mode&07777 == mode && id.links == 1
+	return snapshotMetadataAs(id, mode, gid, 0)
+}
+func snapshotMetadataAs(id fileID, mode, gid, owner uint32) bool {
+	return id.mode&syscall.S_IFMT == syscall.S_IFREG && id.uid == owner && id.gid == gid && id.mode&07777 == mode && id.links == 1
 }

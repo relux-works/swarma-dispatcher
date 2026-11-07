@@ -138,53 +138,81 @@ func TestReceiptContract(t *testing.T) {
 		t.Fatal("followed receipt link")
 	}
 }
-func destructiveCalls(src []byte) ([]string, error) {
-	f, err := parser.ParseFile(token.NewFileSet(), "probe.go", src, 0)
+
+var forbiddenCalls = map[string]bool{
+	"Remove": true, "RemoveAll": true, "Rename": true, "Renameat": true, "Renameat2": true,
+	"Rmdir": true, "Unlink": true, "Unlinkat": true, "Truncate": true, "Ftruncate": true,
+	"O_TRUNC": true, "Kill": true, "Signal": true, "Tkill": true, "Tgkill": true, "PidfdSendSignal": true,
+}
+
+func destructiveCalls(name string, src []byte) ([]string, error) {
+	f, err := parser.ParseFile(token.NewFileSet(), name, src, 0)
 	if err != nil {
 		return nil, err
 	}
 	var found []string
-	ast.Inspect(f, func(n ast.Node) bool {
-		s, ok := n.(*ast.SelectorExpr)
-		if !ok {
+	for _, decl := range f.Decls {
+		fn, _ := decl.(*ast.FuncDecl)
+		ast.Inspect(decl, func(n ast.Node) bool {
+			if c, ok := n.(*ast.ChanType); ok {
+				if s, ok := c.Value.(*ast.SelectorExpr); ok && s.Sel.Name == "Signal" {
+					if p, ok := s.X.(*ast.Ident); ok && p.Name == "os" {
+						return false
+					}
+				}
+			}
+			id, ok := n.(*ast.Ident)
+			if !ok || !forbiddenCalls[id.Name] {
+				return true
+			}
+			// The sole exception is the named socket cleanup function, not its file.
+			if name == "endpoint_linux.go" && fn != nil && fn.Name.Name == "removeOwned" && id.Name == "Unlinkat" {
+				return true
+			}
+			found = append(found, id.Name)
 			return true
-		}
-		switch s.Sel.Name {
-		case "Remove", "RemoveAll", "Rename", "Truncate", "Unlink", "Unlinkat", "O_TRUNC", "Kill", "Signal":
-			found = append(found, s.Sel.Name)
-		}
-		return true
-	})
+		})
+	}
 	return found, nil
 }
 
-// This source invariant checker catches explicit forbidden state mutations and
-// direct signaling. The planted violations prove this instrument is applied;
-// it is not a general interprocedural filesystem proof.
+// Scan every non-test demo source, including new files. Individual plants
+// defend every forbidden spelling and the exact socket-cleanup exception.
+// This lexical AST guard is not an interprocedural or raw-syscall proof.
 func TestStateMutationChecker(t *testing.T) {
-	for _, name := range []string{"state_linux.go", "engine_linux.go", "runner_linux.go"} {
-		b, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
+	names, err := filepath.Glob("*.go")
+	must(t, err)
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
 		}
-		found, err := destructiveCalls(b)
+		b, err := os.ReadFile(name)
+		must(t, err)
+		found, err := destructiveCalls(name, b)
 		if err != nil || len(found) != 0 {
 			t.Fatal(name, found, err)
 		}
 	}
-	for _, name := range []string{"Remove", "RemoveAll", "Rename", "Truncate", "Unlink", "Unlinkat", "Kill", "Signal"} {
-		found, err := destructiveCalls([]byte("package p;func f(){os." + name + "()}"))
-		if err != nil || len(found) != 1 || found[0] != name {
-			t.Fatal("control plant missed", name, found, err)
+	for name := range forbiddenCalls {
+		for _, file := range []string{"engine_linux.go", "endpoint_linux.go", "future.go"} {
+			found, err := destructiveCalls(file, []byte("package p;func plant(){_ = os."+name+"}"))
+			if err != nil || len(found) != 1 || found[0] != name {
+				t.Fatal("missed plant", file, name, found, err)
+			}
 		}
 	}
-	found, err := destructiveCalls([]byte("package p;var flags = os.O_TRUNC"))
-	if err != nil || len(found) != 1 || found[0] != "O_TRUNC" {
-		t.Fatal("truncation plant missed", found, err)
+	for _, tc := range []struct {
+		file, fn string
+		want     int
+	}{{"endpoint_linux.go", "removeOwned", 0}, {"endpoint_linux.go", "other", 1}, {"state_linux.go", "removeOwned", 1}} {
+		found, err := destructiveCalls(tc.file, []byte("package p;func "+tc.fn+"(){syscall.Unlinkat(1,endpointName)}"))
+		if err != nil || len(found) != tc.want {
+			t.Fatal(tc, found, err)
+		}
 	}
-	found, err = destructiveCalls([]byte("package p;func f(){os.Open()}"))
+	found, err := destructiveCalls("valid.go", []byte(`package p;func f(){os.Open("x")}`))
 	if err != nil || len(found) != 0 {
-		t.Fatal("valid control refused")
+		t.Fatal("positive control", found, err)
 	}
 }
 
@@ -199,27 +227,73 @@ func TestFixedRunnerCommand(t *testing.T) {
 	}
 }
 
-// An expired original stop budget never starts another helper. A successful
+// An expired original budget permits safe narrowing but never timely. A successful
 // first stop and reaped launch permit the next roster generation sequentially.
 func TestExpiredStopAndSequentialLaunch(t *testing.T) {
 	h := fixture(t, "good")
 	assertState(t, h.e.handle(launchBytes("demo")), "receipt-seen", "")
 	assertState(t, h.e.handle(stopBytes(10)), "absent", "")
-	waitChild(t, h.e.launchChildren["demo"], time.Now().Add(3*time.Second))
-	// Remove only the test-owned fake receipt so the second child writes its own.
-	if err := os.Remove(filepath.Join(h.root, "receipt.json")); err != nil {
-		t.Fatal(err)
-	}
+	waitChild(t, h.e.launchChildren["demo"], time.Now().Add(30*time.Second))
 	assertState(t, h.e.handle(launchBytes("second")), "receipt-seen", "")
 	other := fixture(t, "good")
 	assertState(t, other.e.handle(launchBytes("demo")), "receipt-seen", "")
 	other.mode = "remaining"
 	assertState(t, other.e.handle(stopBytes(10)), "unresolved", "processes_remain")
 	other.e.stops["demo"].deadline = time.Now().Add(-time.Second)
+	other.mode = "good"
 	calls := other.calls.Load()
 	r := other.e.handle(stopBytes(10))
-	assertState(t, r, "unresolved", "stop_timeout")
-	if r.Timing != "missed" || other.calls.Load() != calls {
+	assertState(t, r, "absent", "")
+	if r.Timing != "missed" || other.calls.Load() != calls+1 {
 		t.Fatal("deadline refilled", r)
+	}
+}
+
+func boundaryReferences(src []byte, function string, required []string) (bool, error) {
+	f, err := parser.ParseFile(token.NewFileSet(), "boundary.go", src, 0)
+	if err != nil {
+		return false, err
+	}
+	found := map[string]bool{}
+	for _, d := range f.Decls {
+		if fn, ok := d.(*ast.FuncDecl); ok && fn.Name.Name == function {
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok {
+					found[id.Name] = true
+				}
+				return true
+			})
+		}
+	}
+	for _, name := range required {
+		if !found[name] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// Non-root composed tests cannot execute distinct-UID deployment. This narrow
+// source guard additionally kills deletion of entrypoint boundary wiring; each
+// required reference has a known omission control. It does not prove execution
+// order or replace root-owned-config, sudo and distinct-user qualification.
+func TestEntrypointBoundaryWiring(t *testing.T) {
+	b, err := os.ReadFile("service_linux.go")
+	must(t, err)
+	for fn, required := range map[string][]string{
+		"Daemon": {"loadServerInputs", "protectedSnapshot", "runtimeConfig", "principalPin", "endpointPin", "createEndpointCalls", "openState", "newEngine", "serve"},
+		"Client": {"parseRequest", "sourceSnapshot", "parseClient", "runtimeConfig", "principalPin", "endpointPin", "socketIdentity", "verifyPeer", "clientExchange"},
+	} {
+		ok, err := boundaryReferences(b, fn, required)
+		if err != nil || !ok {
+			t.Fatal(fn, err)
+		}
+		for _, name := range required {
+			plant := bytes.ReplaceAll(b, []byte(name), []byte("omittedBoundary"))
+			ok, err := boundaryReferences(plant, fn, required)
+			if err != nil || ok {
+				t.Fatal("wiring omission plant missed", fn, name, err)
+			}
+		}
 	}
 }

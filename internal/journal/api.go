@@ -1,6 +1,9 @@
 package journal
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // Config contains explicit caller attestations, not automatically inferred facts.
 // Records and Inputs are single descendant directory basenames, already present.
@@ -24,7 +27,7 @@ func validate(c Config, first []byte, initializing bool) error {
 	if c.ConsumerBudget == 0 || c.ConsumerBudget > uint64(^uint(0)>>1) {
 		return failure(ConsumerFailure, "budget required", nil)
 	}
-	if c.Directory == "" || strings.IndexByte(c.Directory, 0) >= 0 || !basename(c.Records) || !basename(c.Inputs) {
+	if filepath.Clean(c.Directory) != c.Directory || filepath.Base(c.Directory) == "." || filepath.Base(c.Directory) == ".." || c.Directory == "" || strings.IndexByte(c.Directory, 0) >= 0 || !basename(c.Records) || !basename(c.Inputs) {
 		return failure(InvalidState, "paths", nil)
 	}
 	if initializing && (len(first) < 1 || len(first) > MaxPayload) {

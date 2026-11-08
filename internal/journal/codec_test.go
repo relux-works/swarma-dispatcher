@@ -138,7 +138,8 @@ func TestAllHeaderPrefixes(t *testing.T) {
 	}
 }
 
-// Cap checks precede body reads/allocation, including a cap+1 file and a final
+// Cap checks precede body reads (allocation is measured separately by
+// TestGuardHeaderNoAllocModerate), including a cap+1 file and a final
 // header whose projected end exceeds the cap although the file is truncated.
 func TestCapsAndBoundedReads(t *testing.T) {
 	for _, size := range []int64{-1, FileCap + 1} {

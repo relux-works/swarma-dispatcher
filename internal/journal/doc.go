@@ -4,9 +4,11 @@
 //
 // Installation supplies protected nonsymlink ancestors and qualified ext4/XFS
 // backing. Only the final root component and direct descendant components are
-// checked here. The filesystem type gate does not qualify durability. Descendant
+// checked here. Root paths must be lexically clean, with no final dot or dot-dot.
+// The filesystem type gate does not qualify durability. Descendant
 // mounts/st_dev are not checked for equality with the root; no cross-mount
-// qualification is claimed. Records and inputs must be distinct dev/inode pairs.
+// qualification is claimed. Records, inputs and root must have distinct
+// dev/inode pairs.
 // Neither entry creates directories. Files are never repaired or deleted.
 //
 // Declare the stable process umask explicitly. The library neither reads /proc
@@ -45,9 +47,11 @@
 // without opening or deleting them. ReadInput requires a digest from committed
 // history; mismatched bytes refuse corruption. A crashed partial input is never
 // reused implicitly. Records cannot rename into the separate input directory.
-// Record and input byte arguments are bounded to MaxPayload; consumers charge
-// returned input bytes to their budget. No input-read success establishes that
-// the supplied digest actually came from committed history; that is caller duty.
+// Record and input byte arguments are bounded to MaxPayload. Recovery.ReadInput
+// charges the exact input size before allocation/read; consumers must not charge
+// those bytes again, and release their charge only when no longer retained.
+// No input-read success establishes that the supplied digest actually came from
+// committed history; that is caller duty.
 //
 // Stale .record-tmp-* files are retained and ignored, with no reclamation. Their
 // unbounded growth across crashes is an operator/storage cost. ENOSPC is an

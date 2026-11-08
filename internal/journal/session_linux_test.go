@@ -43,6 +43,13 @@ func fixture(t *testing.T, mechanism bool) (Config, *engine) {
 	m := uint32(0077)
 	c := Config{Directory: d, Records: "records", Inputs: "inputs", DeclaredUmask: &m, SupportedLocalStorage: true, RecoveryPrerequisiteEstablished: true, ConsumerBudget: 4 * MaxPayload}
 	e := &engine{calls: nativeCalls}
+	e.calls.flock = func(fd, how int) error {
+		if how&syscall.LOCK_NB == 0 {
+			t.Error("FLOCK-BLOCK: acquisition omitted nonblocking flag")
+			return syscall.EWOULDBLOCK
+		}
+		return syscall.Flock(fd, how)
+	}
 	if mechanism {
 		// Fault-mechanism tests deliberately substitute only the type result. They
 		// exercise real descriptors but do not establish supported storage/durability.
@@ -634,7 +641,7 @@ func TestSyncFailureBoundaries(t *testing.T) {
 					err = s.CreateInput("i", []byte{'i'})
 				}
 				cl := StorageWriteFailure
-				if unsupported(errno) {
+				if errno == syscall.EINVAL || errno == syscall.ENOLCK || errno == syscall.ENOSYS || errno == syscall.EOPNOTSUPP {
 					cl = UnsupportedStorage
 				}
 				wantClass(t, err, cl)
@@ -1245,7 +1252,7 @@ func TestInputReadBounds(t *testing.T) {
 			}
 			e.calls.read = func(fd int, p []byte, o int64) (int, error) {
 				if kind == "oversize" || kind == "negative-size" {
-					t.Fatal("oversized input allocated/read")
+					t.Fatal("oversized input read (allocation independently measured by TestGuardInputSizeNoAlloc)")
 				}
 				if kind == "short" {
 					return 0, nil

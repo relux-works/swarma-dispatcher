@@ -61,7 +61,8 @@ func (e *engine) enter(c Config, first []byte, consumer Consumer, initializing b
 	if err != nil {
 		return nil, err
 	}
-	if _, err = s.check(s.root, true); err != nil {
+	root, err := s.check(s.root, true)
+	if err != nil {
 		return nil, err
 	}
 	var fs syscall.Statfs_t
@@ -104,6 +105,9 @@ func (e *engine) enter(c Config, first []byte, consumer Consumer, initializing b
 	inp, err := s.check(s.inputs, true)
 	if err != nil {
 		return nil, err
+	}
+	if (rec.Dev == root.Dev && rec.Ino == root.Ino) || (inp.Dev == root.Dev && inp.Ino == root.Ino) {
+		return nil, failure(InvalidState, "root directory alias", nil)
 	}
 	if rec.Dev == inp.Dev && rec.Ino == inp.Ino {
 		return nil, failure(InvalidState, "record/input directory alias", nil)
@@ -194,6 +198,9 @@ func poison(err error) error {
 func (s *Session) open(dir int, name string, flags int, mode uint32, mutation bool) (int, error) {
 	fd, err := s.e.calls.open(dir, name, flags|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, mode)
 	if err != nil {
+		if err == syscall.EISDIR || err == syscall.ENXIO {
+			return -1, failure(InvalidState, "nonregular entry", err)
+		}
 		if mutation && err != syscall.EEXIST && err != syscall.ELOOP && err != syscall.ENOTDIR && err != syscall.EACCES {
 			return -1, poison(failure(StorageWriteFailure, "create", err))
 		}
@@ -435,6 +442,10 @@ func (s *Session) createInput(name string, p []byte) error {
 	return s.closeFD(fd)
 }
 func (s *Session) readInput(name string, digest [32]byte) ([]byte, error) {
+	return s.readInputBudget(name, digest, nil)
+}
+
+func (s *Session) readInputBudget(name string, digest [32]byte, budget *Budget) ([]byte, error) {
 	if !basename(name) {
 		return nil, failure(InvalidState, "input name", nil)
 	}
@@ -448,6 +459,11 @@ func (s *Session) readInput(name string, digest [32]byte) ([]byte, error) {
 	}
 	if st.Size < 0 || st.Size > MaxPayload {
 		return nil, failure(Corruption, "input size", nil)
+	}
+	if budget != nil {
+		if err = budget.Charge(uint64(st.Size)); err != nil {
+			return nil, err
+		}
 	}
 	b := make([]byte, int(st.Size))
 	n, err := readExact(func(p []byte, off int64) (int, error) { return s.e.calls.read(fd, p, off) }, b, 0)
@@ -551,14 +567,7 @@ func (r *Recovery) ReadInput(name string, digest [32]byte) ([]byte, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
-	// Reserve the maximum before allocating. Release the unused part afterwards.
-	if r.err = r.Budget.Charge(MaxPayload); r.err != nil {
-		return nil, r.err
-	}
-	b, err := r.s.readInput(name, digest)
+	b, err := r.s.readInputBudget(name, digest, r.Budget)
 	r.err = err
-	if err == nil {
-		_ = r.Budget.Release(MaxPayload - uint64(len(b)))
-	}
 	return b, err
 }

@@ -45,8 +45,8 @@ func wantClass(t *testing.T, err error, c Class) {
 	}
 }
 
-// Literal vector and altered neighbors independently constrain the format/hash;
-// malformed final frames cannot become complete history.
+// The literal vector is valid; altered neighbors distinguish invalid headers
+// and digests from admissible headers with incomplete bodies (spec/journal.md:283-299).
 func TestGoldenAndCorruption(t *testing.T) {
 	b := golden(t)
 	if !bytes.Equal(literalFrame(1, []byte{'a'}), b) {
@@ -60,12 +60,25 @@ func TestGoldenAndCorruption(t *testing.T) {
 	if err != nil || next != 2 {
 		t.Fatalf("golden accepted: %d %v", next, err)
 	}
-	for _, index := range []int{0, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 23, 24, 56} {
-		t.Run(string(rune('A'+index)), func(t *testing.T) {
+	// Spec/journal.md:283-295: fixed fields and sequence must match; at O=0,
+	// U=1048576. Flips at 12/13 yield N=2147483649/8388609, both above U.
+	// Flips at 14/15 yield admissible N=32769/129 but short bodies: incomplete-tail
+	// (:297-298). At 24/56 the complete frame has a bad digest (:299).
+	// TestCapsAndBoundedReads also constrains full headers with N=0 and N=U+1.
+	for _, tc := range []struct {
+		index int
+		want  Class
+	}{
+		{0, Corruption}, {7, Corruption}, {8, Corruption}, {9, Corruption},
+		{10, Corruption}, {11, Corruption}, {12, Corruption}, {13, Corruption},
+		{14, IncompleteTail}, {15, IncompleteTail},
+		{16, Corruption}, {23, Corruption}, {24, Corruption}, {56, Corruption},
+	} {
+		t.Run(string(rune('A'+tc.index)), func(t *testing.T) {
 			bad := append([]byte(nil), b...)
-			bad[index] ^= 0x80
+			bad[tc.index] ^= 0x80
 			_, e := walk(reader(bad), int64(len(bad)), nil)
-			wantClass(t, e, Corruption)
+			wantClass(t, e, tc.want)
 		})
 	}
 	for _, seq := range []uint64{0, 2, ^uint64(0)} {
@@ -136,6 +149,9 @@ func TestCapsAndBoundedReads(t *testing.T) {
 			t.Fatal("oversized file read before cap check")
 		}
 	}
+	// Spec/journal.md:283-285,294-295: at O=0, N=0 and N=U+1=1048577
+	// are inadmissible full headers, hence corruption even with no body;
+	// the maximum uint32 is likewise above U=1048576.
 	for _, length := range []uint32{0, 1048577, 0xffffffff} {
 		h := append([]byte(nil), golden(t)[:24]...)
 		binary.BigEndian.PutUint32(h[12:16], length)

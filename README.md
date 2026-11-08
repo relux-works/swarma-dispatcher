@@ -36,6 +36,13 @@ independent allocation/execution quotas, cancellation and epoch/version-fenced
 completion. Unknown outcomes retain their claims. A trusted adapter must supply
 authenticated principals, current gates and independently verified evidence;
 the reducer supplies neither durable storage nor process-absence verification.
+[`internal/journal`](internal/journal/) implements the opaque local
+[durable-journal contract](spec/journal.md), with explicit initialization,
+two-pass established recovery, pinned ownership, immutable inputs and record
+replacement. It has no daemon integration or semantic transition schema.
+Sync failure requires process exit and an externally enforced recovery hold;
+Linux execution and independent acceptance remain pending. See the
+[package obligations](internal/journal/doc.go).
 No qualified production launch service is supplied. The specification (the `swarma-dispatcher`
 Unix-socket service on `dispatch/1` from slice 0; later queueing, events, long waits
 and integrations behind capability gates on the same core and transport) is
@@ -169,6 +176,23 @@ CLI deployment. The root-owned fixed endpoint and separate UID/group enrollment
 need an admitted isolated deployment fixture; no such qualification is supplied
 here and no production bypass flag exists. Config/pin filesystems must be local
 and trusted; userspace deadlines cannot bound a hung kernel/filesystem operation.
+
+## Local journal checks
+
+On an admitted isolated Linux runner, the component checks are:
+
+```sh
+go test -v -count=1 -timeout=20m ./internal/journal/
+go vet ./internal/journal/
+gofmt -l internal/journal/
+```
+
+The package has no CLI or deployment entrypoint. Tests use temporary filesystem
+fixtures and child test processes; results go to the test/CI log. Real storage
+controls require ext4 or XFS and print an explicit skip reason otherwise. Pure
+codec and deterministic fault tests still run; substituted filesystem metadata
+in fault tests is not durability qualification. Root-only foreign-UID cases,
+reboot/writeback durability and deployment recovery enforcement are unqualified.
 
 ## Demo tools (not production)
 

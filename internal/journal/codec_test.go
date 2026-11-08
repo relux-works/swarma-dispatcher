@@ -11,6 +11,13 @@ import (
 
 const goldenHex = "53444a524e4c303100010000000000010000000000000001617cbca5bdd6e3f363ddc0daf2942196ceada4e8d7a329922773e755ad35a6dc83"
 
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func golden(t *testing.T) []byte {
 	t.Helper()
 	b, e := hex.DecodeString(goldenHex)

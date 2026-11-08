@@ -63,12 +63,6 @@ func fixture(t *testing.T, mechanism bool) (Config, *engine) {
 	}
 	return c, e
 }
-func must(t *testing.T, err error) {
-	t.Helper()
-	if err != nil {
-		t.Fatal(err)
-	}
-}
 func start(t *testing.T, c Config, e *engine) *Session {
 	t.Helper()
 	s, err := e.enter(c, []byte{'a'}, nil, true)

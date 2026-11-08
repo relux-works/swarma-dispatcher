@@ -290,7 +290,7 @@ func TestGuardCloseDuringAppendOwnership(t *testing.T) {
 		early = true
 	case <-time.After(200 * time.Millisecond):
 	}
-	e2 := &engine{calls: nativeCalls}
+	e2 := newFixtureEngine(t, nativeCalls)
 	e2.calls.statfs = e.calls.statfs
 	type entry struct {
 		s   *Session
@@ -324,6 +324,7 @@ func TestGuardCloseDuringAppendOwnership(t *testing.T) {
 // Claim (215,219-221): literal mutation errnos poison at every create site.
 // Success at each site and the nonregular-entry tests are neighboring controls.
 func TestGuardCreateErrnoClasses(t *testing.T) {
+	t.Run("established-lock", guardEstablishedLockCreateErrnos)
 	for _, at := range []string{"lock", "journal", "temp", "input"} {
 		for _, errno := range []syscall.Errno{0, syscall.EIO, syscall.EROFS, syscall.EDQUOT, syscall.ENOSPC} {
 			t.Run(fmt.Sprintf("%s/%d", at, errno), func(t *testing.T) {

@@ -105,7 +105,7 @@ func TestGuardContenderTouchesOnlyLock(t *testing.T) {
 		t.Fatalf("owner acquisition opened %v", owner)
 	}
 	for _, init := range []bool{false, true} {
-		e2 := &engine{calls: e.calls}
+		e2 := newFixtureEngine(t, e.calls)
 		var names []string
 		e2.calls.open = func(d int, n string, f int, m uint32) (int, error) { names = append(names, n); return o(d, n, f, m) }
 		var err error
@@ -261,7 +261,7 @@ func TestGuardNoReleaseInsideCallback(t *testing.T) {
 					wantClass(t, r.Budget.Charge(^uint64(0)), ConsumerFailure)
 					_, opErr = r.ReadInput("arg", sha256.Sum256([]byte("abc")))
 				}
-				e2 := &engine{calls: nativeCalls}
+				e2 := newFixtureEngine(t, nativeCalls)
 				e2.calls.statfs = e.calls.statfs
 				type entry struct {
 					s   *Session

@@ -4,6 +4,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 type consumerFuncs struct {
@@ -32,7 +34,7 @@ func (c consumerFuncs) Finish(r *Recovery) error {
 	}
 	return nil
 }
-func fixture(t *testing.T, mechanism bool) (Config, *engine) {
+func fixture(t *testing.T, mechanism bool) (Config, *fixtureEngine) {
 	t.Helper()
 	verifyNativeFlock(t)
 	d := t.TempDir()
@@ -43,7 +45,7 @@ func fixture(t *testing.T, mechanism bool) (Config, *engine) {
 	}
 	m := uint32(0077)
 	c := Config{Directory: d, Records: "records", Inputs: "inputs", DeclaredUmask: &m, SupportedLocalStorage: true, RecoveryPrerequisiteEstablished: true, ConsumerBudget: 4 * MaxPayload}
-	e := &engine{calls: nativeCalls}
+	e := newFixtureEngine(t, nativeCalls)
 	e.calls.flock = func(fd, how int) error {
 		if how&syscall.LOCK_NB == 0 {
 			t.Error("FLOCK-BLOCK: acquisition omitted nonblocking flag")
@@ -64,7 +66,7 @@ func fixture(t *testing.T, mechanism bool) (Config, *engine) {
 	}
 	return c, e
 }
-func start(t *testing.T, c Config, e *engine) *Session {
+func start(t *testing.T, c Config, e *fixtureEngine) *Session {
 	t.Helper()
 	s, err := e.enter(c, []byte{'a'}, nil, true)
 	must(t, err)
@@ -1116,9 +1118,14 @@ func TestProcessHelper(t *testing.T) {
 }
 func child(t *testing.T, c Config, mode string) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessHelper$", "-test.v")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestProcessHelper$", "-test.v")
 	cmd.Env = append(os.Environ(), "JOURNAL_TEST_CHILD="+mode, "JOURNAL_TEST_DIR="+c.Directory)
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("FLOCK-BOUND: child %s exceeded five seconds", mode)
+	}
 	if err != nil {
 		t.Fatalf("child %s: %v\n%s", mode, err, out)
 	}

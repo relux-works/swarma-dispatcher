@@ -246,8 +246,11 @@ func TestIntakeDeviceFallback(t *testing.T) {
 }
 
 // VMIN>0 plus VTIME>0 can extend a large blocking read on every trickled byte.
-// This private non-root pty must keep the same five-second budget. Skip only
-// when the environment cannot provide a pty; hosted qualification must record it.
+// A 400 ms trickle stays below the five-second inter-byte timer and keeps the
+// fixed-size read plant beyond the parent's eight-second bound. The assertion
+// requires the original five-second timeout (1.5 s scheduling margin), without
+// depending on the kernel's eventual read size. This covers one private raw pty;
+// skip only if a non-root pty is unavailable, and record that qualification gap.
 func TestIntakePTYTrickle(t *testing.T) {
 	m, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
@@ -282,7 +285,7 @@ func TestIntakePTYTrickle(t *testing.T) {
 	res := guardedIntake(t, s, func(int, int) {
 		go func() {
 			defer close(done)
-			tick := time.NewTicker(100 * time.Millisecond)
+			tick := time.NewTicker(400 * time.Millisecond)
 			defer tick.Stop()
 			for {
 				select {

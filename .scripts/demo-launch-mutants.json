@@ -231,8 +231,8 @@
   {
     "id": "S1-H03",
     "file": "internal/demolaunch/runner_linux.go",
-    "find": "intake := childIntakeDeadline(time.Now(), deadline)\n\terr = inW.SetWriteDeadline(intake)",
-    "replace": "intake := time.Now().Add(50 * time.Second)\n\t_ = intake\n\terr = nil",
+    "find": "intake := childIntakeDeadline(now(), deadline)\n\tif out.stdinDeadline != nil {\n\t\tout.stdinDeadline(intake)\n\t}\n\terr = inW.SetWriteDeadline(intake)",
+    "replace": "intake := now().Add(50 * time.Second)\n\t_ = intake\n\terr = nil",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestChildStdinDeadline$"
@@ -3040,5 +3040,200 @@
     },
     "row": "roster-revision-unpinned",
     "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "loss-latch-lock-order",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\t\t\tc.mu.Unlock()\n\t\t\tc.onLossUnpersisted()\n\t\t\tc.mu.Lock()",
+    "replace": "\t\t\tc.onLossUnpersisted()",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLossLatchLockOrder$"
+    },
+    "row": "Release capture lock before acquiring engine lock",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "loss latch deadlocked against concurrent status"
+  },
+  {
+    "id": "loss-latch-engine-lock",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "onLossUnpersisted: func() { e.mu.Lock(); defer e.mu.Unlock(); _ = e.closeAdmission(\"loss_unpersisted\") }",
+    "replace": "onLossUnpersisted: func() { _ = e.closeAdmission(\"loss_unpersisted\") }",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLossLatchEngineLock$"
+    },
+    "row": "Serialize latch fields with engine requests",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "loss latch changed fields while engine lock held"
+  },
+  {
+    "id": "loss-latch-immediate-durable",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "onLossUnpersisted: func() { e.mu.Lock(); defer e.mu.Unlock(); _ = e.closeAdmission(\"loss_unpersisted\") }",
+    "replace": "onLossUnpersisted: func() { e.mu.Lock(); defer e.mu.Unlock(); e.closed = true; if e.latchReason == \"\" { e.latchReason = \"loss_unpersisted\" } }",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLossLatchImmediateDurable$"
+    },
+    "row": "Persist latch before a later request retries",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "durable loss latch not attempted at loss time"
+  },
+  {
+    "id": "loss-latch-persisted-control",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "if c.lossPersistErr != nil && c.onLossUnpersisted != nil {",
+    "replace": "if c.onLossUnpersisted != nil {",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLossLatchImmediateDurable$"
+    },
+    "row": "An intact loss record alone leaves admission open",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "persisted loss unexpectedly latched"
+  },
+  {
+    "id": "intake-socket-read-bound",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "count, e := syscall.Read(fd, buf[:size])",
+    "replace": "_ = size\n\t\tcount, e := syscall.Read(fd, buf[:32768])",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeSocketReadBound$"
+    },
+    "row": "Bound blocking read by queued bytes and remaining frame allowance",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "socket intake read exceeded budget"
+  },
+  {
+    "id": "intake-pipe-consumption",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "count, e := syscall.Read(fd, buf[:size])",
+    "replace": "_ = size\n\t\tcount, e := syscall.Read(fd, buf[:32768])",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakePipeConsumption$"
+    },
+    "row": "Bound blocking read by queued bytes and remaining frame allowance",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "pipe intake consumed beyond cap"
+  },
+  {
+    "id": "intake-pty-read-bound",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "count, e := syscall.Read(fd, buf[:size])",
+    "replace": "_ = size\n\t\tcount, e := syscall.Read(fd, buf[:32768])",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakePTYTrickle$"
+    },
+    "row": "Bound blocking read by queued bytes and remaining frame allowance",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "pty intake read exceeded budget"
+  },
+  {
+    "id": "child-stdin-callsite",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "intake := childIntakeDeadline(now(), deadline)",
+    "replace": "intake := childIntakeDeadline(now().Add(time.Second), deadline)",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadlineCallsite$"
+    },
+    "row": "Pin the five-second leg at the call site",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "child stdin callsite deadline changed"
+  },
+  {
+    "id": "client-stdin-callsite",
+    "file": "cmd/swarma-demo-client/main.go",
+    "find": "intake(os.Stdin, stdinBudget)",
+    "replace": "intake(os.Stdin, 2*stdinBudget)",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestCLIStdin$"
+    },
+    "row": "Bound the actual CLI intake invocation",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "CLI intake budget exceeded"
+  },
+  {
+    "id": "intake-budget-doubled",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "deadline := time.Now().Add(budget)",
+    "replace": "deadline := time.Now().Add(2 * budget)",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeOriginalBudget/stalled$"
+    },
+    "row": "Retain the supplied intake budget",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "intake original budget exceeded"
+  },
+  {
+    "id": "intake-partial-refresh",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "result = append(result, buf[:count]...)",
+    "replace": "result = append(result, buf[:count]...)\n\t\tdeadline = time.Now().Add(budget)",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeOriginalBudget/trickle$"
+    },
+    "row": "Partial progress cannot refresh the deadline",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "intake original budget exceeded"
+  },
+  {
+    "id": "intake-eintr-refresh",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "if errno == syscall.EINTR {\n\t\t\tcontinue",
+    "replace": "if errno == syscall.EINTR {\n\t\t\tdeadline = time.Now().Add(budget)\n\t\t\tcontinue",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeOriginalBudget/eintr$"
+    },
+    "row": "Thread-directed EINTR cannot refresh the deadline",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "intake original budget exceeded"
+  },
+  {
+    "id": "intake-pipe-exact-cap",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "if len(result)+count > 131072 {",
+    "replace": "if len(result)+count >= 131072 {",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestCLIStdin/pipe-cap$"
+    },
+    "row": "Accept a valid maximum-sized piped request",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "exact-cap pipe refused before config"
+  },
+  {
+    "id": "intake-device-fallback",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "queryErr != syscall.ENOTTY && queryErr != syscall.EINVAL",
+    "replace": "queryErr != 0",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeDeviceFallback$"
+    },
+    "row": "Read devices that do not implement FIONREAD using the bounded fallback",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "device intake fallback:"
+  },
+  {
+    "id": "intake-transient-flags",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "count, e := syscall.Read(fd, buf[:size])",
+    "replace": "_ = syscall.SetNonblock(fd, true)\n\t\tcount, e := syscall.Read(fd, buf[:size])\n\t\t_ = syscall.SetNonblock(fd, false)",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeNeverSetsFlags$"
+    },
+    "row": "Forbid transient shared flag toggles between observations",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "intake mutates shared descriptor flags"
   }
 ]

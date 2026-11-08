@@ -14,8 +14,12 @@ The [demo cut](spec/demo-launch.md) is **not production and not a conforming dis
 Its fake-child tests exercise dispatcher behavior only; real-account execution
 requires separate qualification. The production binaries remain capacity-only.
 The demo reads the helper's closed three-account `demo-roster/1` schema and
-binds it to the protected caller, service and executor configuration. Unpersisted
-output loss closes admission; client intake preserves shared stdin flags even
+binds it to the protected caller, service and executor configuration. Before
+starting the daemon, confirm that the helper accepts the roster on the current
+boot: the dispatcher checks boot ID and runtime flags for shape only, so a helper
+refusal at first launch spends that account's generation and latches admission. Unpersisted
+output loss closes admission in memory, and durably when the latch can be written;
+client intake preserves shared stdin flags even
 when terminated by a signal. These source changes still require Linux execution
 and deployment qualification.
 [`internal/frame`](internal/frame/) reads and writes a four-byte unsigned

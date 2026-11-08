@@ -325,6 +325,31 @@ func TestChildStdinDeadline(t *testing.T) {
 	}
 }
 
+// The actual startChild call site passes a five-second stdin deadline, capped
+// by the operation deadline. A fixed clock and observation at SetWriteDeadline
+// avoid a scheduler-dependent 5-vs-6-second measurement. Fixture children only;
+// TestChildStdinDeadline separately exercises a real blocked pipe.
+func TestChildStdinDeadlineCallsite(t *testing.T) {
+	for _, seconds := range []int{2, 40} {
+		h := fixture(t, "good")
+		now := time.Now()
+		var observed time.Time
+		out := &capture{limit: 16384, stdinNow: func() time.Time { return now }, stdinDeadline: func(d time.Time) { observed = d }}
+		ch, err := startChild(h.e.ctx, h.e.run, managerPath, []byte(`{}`), now.Add(time.Duration(seconds)*time.Second), out, &capture{limit: 16384})
+		if ch != nil {
+			waitChild(t, ch, time.Now().Add(30*time.Second))
+		}
+		must(t, err)
+		want := 5 * time.Second
+		if seconds == 2 {
+			want = 2 * time.Second
+		}
+		if observed.Sub(now) != want {
+			t.Fatalf("child stdin callsite deadline changed: got %s want %s", observed.Sub(now), want)
+		}
+	}
+}
+
 // Each writable ancestor bit is refused on initial pinning, with no recheck to
 // mask a missing predicate. The same path with mode 0700 is accepted.
 func TestAncestorInitialBits(t *testing.T) {

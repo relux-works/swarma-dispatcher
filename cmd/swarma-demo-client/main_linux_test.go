@@ -31,7 +31,7 @@ func TestCLIStdin(t *testing.T) {
 	if stdinBudget != 5*time.Second {
 		t.Fatalf("CLI stdin deadline changed: %s", stdinBudget)
 	}
-	for _, variant := range []string{"pipe", "file", "too-large", "stalled", "invalid"} {
+	for _, variant := range []string{"pipe", "pipe-cap", "file", "too-large", "stalled", "invalid"} {
 		t.Run(variant, func(t *testing.T) {
 			exe, err := os.Executable()
 			if err != nil {
@@ -43,6 +43,9 @@ func TestCLIStdin(t *testing.T) {
 			// A relative config deterministically returns config_invalid after intake.
 			c.Env = []string{"DEMO_CLI_CHILD=1", "DEMO_CLI_CONFIG=relative", "GORACE=atexit_sleep_ms=0"}
 			payload := []byte(`{"op":"demo.status","account":"demo"}`)
+			if variant == "pipe-cap" {
+				payload = append(payload, bytes.Repeat([]byte{' '}, 131072-len(payload))...)
+			}
 			if variant == "too-large" {
 				payload = bytes.Repeat([]byte{'x'}, 131073)
 			}
@@ -94,7 +97,14 @@ func TestCLIStdin(t *testing.T) {
 				expected = "request_invalid"
 			}
 			if !strings.Contains(string(out), expected) {
+				if variant == "pipe-cap" {
+					t.Fatalf("exact-cap pipe refused before config: %q", out)
+				}
 				t.Fatalf("stage=%s output=%q err=%v", variant, out, err)
+			}
+			// 2 s scheduling/startup margin under race, still below the 10 s plant.
+			if variant == "stalled" && elapsed > 7*time.Second {
+				t.Fatal("CLI intake budget exceeded", elapsed)
 			}
 			if variant == "stalled" && elapsed < 5*time.Second {
 				t.Fatal("deadline not five seconds", elapsed)

@@ -49,6 +49,9 @@ type capture struct {
 	lossPersistErr    error
 	onLossUnpersisted func()
 	writeFile         func([]byte) (int, error)
+	// Nil in production; tests pin the actual stdin deadline at its call site.
+	stdinNow      func() time.Time
+	stdinDeadline func(time.Time)
 }
 
 func (c *capture) write(b []byte) {
@@ -204,7 +207,14 @@ func startChild(ctx context.Context, run runner, path string, payload []byte, de
 			}
 		}
 	}()
-	intake := childIntakeDeadline(time.Now(), deadline)
+	now := time.Now
+	if out.stdinNow != nil {
+		now = out.stdinNow
+	}
+	intake := childIntakeDeadline(now(), deadline)
+	if out.stdinDeadline != nil {
+		out.stdinDeadline(intake)
+	}
 	err = inW.SetWriteDeadline(intake)
 	if err == nil {
 		var n int

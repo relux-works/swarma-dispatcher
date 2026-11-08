@@ -48,7 +48,7 @@ func intake(input *os.File, budget time.Duration) ([]byte, error) {
 	defer syscall.Close(fd)
 	deadline := time.Now().Add(budget)
 	var result []byte
-	var buf [32768]byte
+	var buf [131073]byte
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -75,7 +75,21 @@ func intake(input *os.File, budget time.Duration) ([]byte, error) {
 		if p.Revents&32 != 0 {
 			return nil, syscall.EBADF
 		}
-		count, e := syscall.Read(fd, buf[:])
+		// Read only queued bytes: readiness alone does not bound a blocking
+		// socket/terminal read (SO_RCVLOWAT and VMIN/VTIME still apply).
+		var available int32
+		_, _, queryErr := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCINQ, uintptr(unsafe.Pointer(&available)))
+		size := 32768 // bounded fallback for devices without FIONREAD
+		if queryErr == 0 {
+			size = max(1, int(available)) // one byte observes EOF
+		} else if queryErr != syscall.ENOTTY && queryErr != syscall.EINVAL {
+			if queryErr == syscall.EINTR {
+				continue
+			}
+			return nil, queryErr
+		}
+		size = min(size, 131073-len(result))
+		count, e := syscall.Read(fd, buf[:size])
 		if e == syscall.EINTR || e == syscall.EAGAIN {
 			continue
 		}

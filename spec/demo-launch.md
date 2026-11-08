@@ -17,7 +17,7 @@ contracts, not a promotion of this cut.
 | `spec/m0-launch.md` committed-start A | Not implemented; marker is a stand-in, not a claim of A |
 | §§3.1–3.4 grants, M0 protected policy | None; the caller is a pinned peer UID, which is not authority |
 | Demo launch call contract §6, evidence loss | An intact `.lost` records loss without closing admission. A torn loss record closes admission at startup. An unpersisted loss closes admission immediately in memory and attempts a durable latch, retried on requests. |
-| Demo launch call contract §6, lost reply | A lost stop reply does not add a latch; see the stop-reply behavior under [Recovery and continuation](#torn-records-and-restart-continuation). |
+| Demo launch call contract §6, lost reply | A lost stop reply does not add a latch; see the stop-reply behavior under [Torn records and restart continuation](#torn-records-and-restart-continuation). |
 | Demo launch call contract §6 and demo acceptance AC14, crash/reboot | If every attempt has a durable stopped record and no latch exists, restart permits the next generation. The demo does not latch every crash. |
 | Deployment qualification | TestEntrypointBoundaryWiring is an identifier gate only. The positive Daemon path and token-preserving edits to the runtime check result, startup caller pin result and client runtime check require a disposable VM run. Endpoint device/inode and the protected roster parse result have separate non-root behavioral witnesses. |
 | Capacity reservation | None; sequential by construction |
@@ -64,7 +64,8 @@ dispatcher,executor,runtime,accounts`. The dispatcher follows the helper schema
 with two differences: `source_revision` is any 40 lowercase hex characters,
 without pinning a helper revision; `operator` is `{name,uid,gid}` with an account
 name and integer IDs, binding `uid` to protected `caller.uid` instead of a
-compiled operator identity.
+compiled operator identity. `operator.gid` is any JSON integer and is unused by
+the dispatcher.
 
 `boot_id` is a lowercase UUID. `dispatcher` has exactly
 `name,uid,gid,principal,generation`: name and principal are
@@ -75,7 +76,9 @@ either frozen executor ID above, its corresponding
 equal protected `executor`. `runtime` has exactly four booleans: `admitted`,
 `inventory_qualified`, `creation_exclusion_qualified`, `interpreter_qualified`.
 These are shape-checked only; neither boot ID nor runtime booleans establish
-qualification in this dispatcher.
+qualification in this dispatcher. Before starting the daemon, confirm that the
+helper accepts the roster on the current boot; otherwise the first launch
+spends that account's generation and latches admission.
 
 There are exactly three account rows, named `swarma-demo-01`, `swarma-demo-02`,
 `swarma-demo-03`, each once. Each has exactly `name,uid,gid,generation,
@@ -91,7 +94,8 @@ IDs and paths have no configuration override. Any mismatch returns
 generation are retained. Accounts are precreated; this code never creates or
 looks them up.
 
-An inert complete example (placeholder digests and generations, no enrollment):
+An inert complete example (placeholder digests and generations, no enrollment;
+the helper refuses this example on purpose):
 
 ```json
 {
@@ -314,7 +318,9 @@ first reason retained in memory. Status reports
 combined with a failed latch can leave no evidence at all: restart can reopen
 admission in that case. No launcher was called. A second, narrow case is a failed
 launch reply detected after a concurrent stop already verified timely absence:
-if the launch_reply_lost latch also fails, restart can reopen. In both cases no
+if the launch_reply_lost latch also fails, restart can reopen. A third case is
+output loss after a timely stop, when both `.lost` and `closed` cannot be written:
+the loss closes admission only in memory, and restart can reopen. In all three cases no
 agent child remains (none was launched, or absence was verified); no generation
 effect is duplicated. A retained attempt or closed stopped fact otherwise carries the
 restart obligation even when the latch cannot be saved. Stop temporarily excludes forward admission before
@@ -366,8 +372,8 @@ Restart does not wait out an earlier helper. The helper **must safely handle a
 same-effect `exec.stop` while an earlier invocation remains alive**, including
 identical request IDs. An intact stop intent binds the request ID and grace to
 that generation: a different ID or grace returns `stop_conflict`. The dispatcher
-also rejects the generation's launch ID as a stop ID, or a stop ID already used
-for another account, with `request_id_conflict`. The helper instead checks its
+also rejects the generation's launch ID as a stop ID with `request_id_conflict`,
+and a stop ID already used for another account with `stop_conflict`. The helper instead checks its
 generation-scoped record and reports `request_id_conflict` for changed request
 bytes. These existing scope differences are not changed by the shared ID format;
 IDs do not authorize new effects or changed arguments. A helper descendant must close inherited

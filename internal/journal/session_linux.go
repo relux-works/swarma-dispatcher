@@ -567,6 +567,10 @@ func (r *Recovery) ReadInput(name string, digest [32]byte) ([]byte, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
+	if r.Budget.failed {
+		r.err = failure(ConsumerFailure, "budget exceeded", nil)
+		return nil, r.err
+	}
 	b, err := r.s.readInputBudget(name, digest, r.Budget)
 	r.err = err
 	return b, err

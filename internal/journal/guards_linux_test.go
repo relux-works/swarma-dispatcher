@@ -84,7 +84,8 @@ func TestGuardEintrResetAfterProgress(t *testing.T) {
 		if tc.ok && (err != nil || i != len(tc.script)) {
 			t.Fatalf("FINDING: EINTR counter not reset after progress: err=%v calls=%d", err, i)
 		}
-		if !tc.ok && (ClassOf(err) != StorageWriteFailure || i != len(tc.script)) {
+		_, poisoned := guardErr(err)
+		if !tc.ok && (ClassOf(err) != StorageWriteFailure || !poisoned || i != len(tc.script)) {
 			t.Fatalf("four consecutive EINTRs: err=%v calls=%d", err, i)
 		}
 	}
@@ -201,37 +202,90 @@ func TestGuardRecoveryReadErrorSticky(t *testing.T) {
 	}
 }
 
-// Claim (recovery doc in session_linux.go; spec :228-232): a failed recovery
-// operation inside a consumer callback does not release ownership before the
-// callback returns: a contender in the same callback still sees
-// ownership-contended. Control plant: O-teardown-in-callback.
+// Claims (228-232): ownership outlives rename/name failures in ReplaceRecord,
+// missing/digest/exact-charge failures in ReadInput, and already-failed budget
+// refusals in both operations. Each path has a successful recovery neighbor.
 func TestGuardNoReleaseInsideCallback(t *testing.T) {
-	c, e := fixture(t, true)
-	s := start(t, c, e)
-	must(t, s.Close())
-	control, err := e.enter(c, nil, consumerFuncs{consume: func(_ uint64, p []byte, r *Recovery) error { return r.ReplaceRecord("control", p) }}, false)
-	must(t, err)
-	must(t, control.Close())
-	before := disk(t, c)
-	e.calls.rename = func(int, string, int, string) error { return syscall.EIO }
-	inside := Class("")
-	got, err := e.enter(c, nil, consumerFuncs{consume: func(_ uint64, p []byte, r *Recovery) error {
-		_ = r.ReplaceRecord("cache", p) // fails: rename EIO
-		e2 := &engine{calls: nativeCalls}
-		e2.calls.statfs = e.calls.statfs
-		other, cerr := e2.enter(c, nil, consumerFuncs{}, false)
-		if other != nil {
-			_ = other.Close()
-		}
-		inside = ClassOf(cerr)
-		return nil
-	}}, false)
-	wantClass(t, err, StorageWriteFailure)
-	if got != nil || !bytes.Equal(before, disk(t, c)) {
-		t.Fatal("CALLBACK-OWNERSHIP: failure published or changed history")
-	}
-	if inside != OwnershipContended {
-		t.Fatalf("FINDING: ownership released inside the consumer callback: contender class=%q", inside)
+	for _, kind := range []string{"rename", "replace-name", "read-missing", "read-digest", "read-budget", "replace-budget", "read-failed-budget"} {
+		t.Run(kind, func(t *testing.T) {
+			c, e := fixture(t, true)
+			s := start(t, c, e)
+			must(t, s.CreateInput("arg", []byte("abc")))
+			must(t, s.Close())
+			control, err := e.enter(c, nil, consumerFuncs{consume: func(_ uint64, p []byte, r *Recovery) error {
+				if strings.HasPrefix(kind, "read-") {
+					b, err := r.ReadInput("arg", sha256.Sum256([]byte("abc")))
+					if err == nil {
+						must(t, r.Budget.Release(uint64(len(b))))
+					}
+					return err
+				}
+				return r.ReplaceRecord("control", p)
+			}}, false)
+			must(t, err)
+			must(t, control.Close())
+			before := disk(t, c)
+			if kind == "rename" {
+				e.calls.rename = func(int, string, int, string) error { return syscall.EIO }
+			}
+			want := ConsumerFailure
+			switch kind {
+			case "rename":
+				want = StorageWriteFailure
+			case "replace-name":
+				want = InvalidState
+			case "read-missing":
+				want = MissingState
+			case "read-digest":
+				want = Corruption
+			}
+			inside := Class("")
+			var opErr error
+			got, err := e.enter(c, nil, consumerFuncs{consume: func(_ uint64, p []byte, r *Recovery) error {
+				switch kind {
+				case "rename":
+					opErr = r.ReplaceRecord("cache", p)
+				case "replace-name":
+					opErr = r.ReplaceRecord("../escape", p)
+				case "read-missing":
+					_, opErr = r.ReadInput("missing", [32]byte{})
+				case "read-digest":
+					_, opErr = r.ReadInput("arg", [32]byte{})
+				case "read-budget":
+					must(t, r.Budget.Charge(r.Budget.limit))
+					_, opErr = r.ReadInput("arg", sha256.Sum256([]byte("abc")))
+				case "replace-budget":
+					wantClass(t, r.Budget.Charge(^uint64(0)), ConsumerFailure)
+					opErr = r.ReplaceRecord("cache", p)
+				case "read-failed-budget":
+					wantClass(t, r.Budget.Charge(^uint64(0)), ConsumerFailure)
+					_, opErr = r.ReadInput("arg", sha256.Sum256([]byte("abc")))
+				}
+				e2 := &engine{calls: nativeCalls}
+				e2.calls.statfs = e.calls.statfs
+				type entry struct {
+					s   *Session
+					err error
+				}
+				done := make(chan entry, 1)
+				go func() { x, err := e2.enter(c, nil, consumerFuncs{}, false); done <- entry{x, err} }()
+				other := guardReceive(t, done, "CALLBACK-OWNERSHIP contender")
+				inside = ClassOf(other.err)
+				if other.s != nil {
+					_ = other.s.Close()
+				}
+				return nil
+			}}, false)
+			if got != nil {
+				_ = got.Close()
+			}
+			if inside != OwnershipContended {
+				t.Fatalf("ownership released inside the consumer callback: %s contender=%s", kind, inside)
+			}
+			if ClassOf(opErr) != want || ClassOf(err) != want || got != nil || !bytes.Equal(before, disk(t, c)) {
+				t.Fatalf("CALLBACK-OWNERSHIP: %s op=%v entry=%v session=%v", kind, opErr, err, got != nil)
+			}
+		})
 	}
 }
 
@@ -606,27 +660,42 @@ func TestGuardReadInputNames(t *testing.T) {
 	}
 }
 
-// Claims (54-55): non-clean and dot root paths refuse before ANY open. Clean
-// real roots proceed; a symlink with a slash/dot suffix cannot bypass nofollow.
+// Claim (54-55; doc 7): non-clean paths and dot finals refuse before opens on
+// both entries. Clean initialization/recovery controls use the same tree.
 func TestGuardRootPaths(t *testing.T) {
-	c, e := fixture(t, true)
-	s := start(t, c, e)
-	must(t, s.Close())
-	link := filepath.Join(t.TempDir(), "link")
-	must(t, os.Symlink(c.Directory, link))
-	for _, path := range []string{link + "/", link + "/.", link + "/./", c.Directory + "/", c.Directory + "/.", ".", "..", c.Directory + "/.."} {
-		cc := c
-		cc.Directory = path
-		opens := 0
-		o := e.calls.open
-		e.calls.open = func(d int, n string, f int, m uint32) (int, error) { opens++; return o(d, n, f, m) }
-		got, err := e.enter(cc, nil, consumerFuncs{}, false)
-		e.calls.open = o
-		if got != nil {
-			_ = got.Close()
+	for _, init := range []bool{true, false} {
+		c, e := fixture(t, true)
+		control := start(t, c, e)
+		must(t, control.Close())
+		control, err := e.enter(c, nil, consumerFuncs{}, false)
+		must(t, err)
+		must(t, control.Close())
+		if init {
+			must(t, os.Remove(filepath.Join(c.Directory, "journal")))
 		}
-		if ClassOf(err) != InvalidState || opens != 0 {
-			t.Fatalf("ROOT-PATH: class=%s opens=%d path=%q", ClassOf(err), opens, path)
+		link := filepath.Join(t.TempDir(), "link")
+		must(t, os.Symlink(c.Directory, link))
+		paths := []string{link + "/", link + "/.", link + "/./", c.Directory + "/", c.Directory + "/.", ".", "..", c.Directory + "/..", c.Directory + "//inputs", c.Directory + "/./inputs"}
+		for _, path := range paths {
+			cc := c
+			cc.Directory = path
+			opens := 0
+			op := e.calls.open
+			e.calls.open = func(d int, n string, f int, m uint32) (int, error) { opens++; return op(d, n, f, m) }
+			var got *Session
+			var err error
+			if init {
+				got, err = e.enter(cc, []byte{'a'}, nil, true)
+			} else {
+				got, err = e.enter(cc, nil, consumerFuncs{}, false)
+			}
+			e.calls.open = op
+			if got != nil {
+				_ = got.Close()
+			}
+			if ClassOf(err) != InvalidState || opens != 0 {
+				t.Fatalf("ROOT-PATH: init=%v path=%q class=%s opens=%d", init, path, ClassOf(err), opens)
+			}
 		}
 	}
 }
@@ -674,52 +743,79 @@ func TestGuardNonregularEntries(t *testing.T) {
 	}
 }
 
-// Claim (106-110): neither descendant may alias root. Stat substitution models
-// a bind alias without mount privilege; different dev OR inode remains valid.
+// Claim (57-59,105-110): either descendant alias is refused before journal
+// open/create or callbacks on both entries. Distinct dev OR inode pairs proceed.
+// The seam models identity only; this is not a mount qualification.
 func TestGuardRootAliases(t *testing.T) {
 	for _, name := range []string{"records", "inputs"} {
-		for _, variant := range []string{"equal", "different-dev", "different-ino"} {
-			t.Run(name+"-"+variant, func(t *testing.T) {
-				c, e := fixture(t, true)
-				var root syscall.Stat_t
-				must(t, syscall.Stat(c.Directory, &root))
-				target := -1
-				o := e.calls.open
-				e.calls.open = func(d int, n string, f int, m uint32) (int, error) {
-					fd, err := o(d, n, f, m)
-					if n == name {
-						target = fd
+		for _, init := range []bool{true, false} {
+			for _, variant := range []string{"equal", "different-dev", "different-ino"} {
+				t.Run(fmt.Sprintf("%s/%v/%s", name, init, variant), func(t *testing.T) {
+					c, e := fixture(t, true)
+					var before []byte
+					if !init {
+						s := start(t, c, e)
+						must(t, s.Close())
+						before = disk(t, c)
 					}
-					return fd, err
-				}
-				st := e.calls.stat
-				e.calls.stat = func(fd int, x *syscall.Stat_t) error {
-					err := st(fd, x)
-					if fd == target {
-						x.Dev = root.Dev
-						x.Ino = root.Ino
-						if variant == "different-dev" {
-							x.Dev++
+					var root syscall.Stat_t
+					must(t, syscall.Stat(c.Directory, &root))
+					target := -1
+					journals := 0
+					op := e.calls.open
+					e.calls.open = func(d int, n string, f int, m uint32) (int, error) {
+						if n == "journal" {
+							journals++
 						}
-						if variant == "different-ino" {
-							x.Ino ^= uint64(1) << 63
+						fd, err := op(d, n, f, m)
+						if n == name {
+							target = fd
 						}
+						return fd, err
 					}
-					return err
-				}
-				s, err := e.enter(c, []byte{'a'}, nil, true)
-				if variant == "equal" {
+					st := e.calls.stat
+					e.calls.stat = func(fd int, x *syscall.Stat_t) error {
+						err := st(fd, x)
+						if fd == target {
+							x.Dev = root.Dev
+							x.Ino = root.Ino
+							if variant == "different-dev" {
+								x.Dev++
+							}
+							if variant == "different-ino" {
+								x.Ino ^= uint64(1) << 63
+							}
+						}
+						return err
+					}
+					consumed := 0
+					var s *Session
+					var err error
+					if init {
+						s, err = e.enter(c, []byte{'a'}, nil, true)
+					} else {
+						s, err = e.enter(c, nil, consumerFuncs{consume: func(_ uint64, _ []byte, _ *Recovery) error { consumed++; return nil }}, false)
+					}
 					if s != nil {
 						_ = s.Close()
 					}
-					if ClassOf(err) != InvalidState || s != nil {
-						t.Fatalf("ROOT-ALIAS: %s accepted root identity", name)
+					if variant == "equal" {
+						_, statErr := os.Stat(filepath.Join(c.Directory, "journal"))
+						created := init && !os.IsNotExist(statErr)
+						if ClassOf(err) != InvalidState || s != nil || journals != 0 || consumed != 0 || created {
+							t.Fatalf("ROOT-ALIAS: %s init=%v class=%s session=%v journal-opens=%d consumed=%d created=%v", name, init, ClassOf(err), s != nil, journals, consumed, created)
+						}
+						if !init && !bytes.Equal(before, disk(t, c)) {
+							t.Fatal("ROOT-ALIAS: history changed")
+						}
+					} else {
+						must(t, err)
+						if s == nil || journals != 1 || (!init && consumed != 1) {
+							t.Fatal("ROOT-ALIAS control")
+						}
 					}
-				} else {
-					must(t, err)
-					must(t, s.Close())
-				}
-			})
+				})
+			}
 		}
 	}
 }
@@ -835,7 +931,7 @@ func TestGuardXFSType(t *testing.T) {
 // releases its first owner on timeout, so a blocking plant reports an assertion.
 func TestGuardFlockNonblocking(t *testing.T) {
 	c, e := fixture(t, true)
-	e.calls.flock = syscall.Flock
+	e.calls.flock = nativeCalls.flock
 	s, err := e.enter(c, []byte{'a'}, nil, true)
 	must(t, err)
 	type result struct {

@@ -34,6 +34,7 @@ func (c consumerFuncs) Finish(r *Recovery) error {
 }
 func fixture(t *testing.T, mechanism bool) (Config, *engine) {
 	t.Helper()
+	verifyNativeFlock(t)
 	d := t.TempDir()
 	must(t, os.Chmod(d, 0700))
 	for _, n := range []string{"records", "inputs"} {
@@ -48,7 +49,7 @@ func fixture(t *testing.T, mechanism bool) (Config, *engine) {
 			t.Error("FLOCK-BLOCK: acquisition omitted nonblocking flag")
 			return syscall.EWOULDBLOCK
 		}
-		return syscall.Flock(fd, how)
+		return nativeCalls.flock(fd, how)
 	}
 	if mechanism {
 		// Fault-mechanism tests deliberately substitute only the type result. They

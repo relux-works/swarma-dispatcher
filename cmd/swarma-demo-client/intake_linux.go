@@ -3,71 +3,91 @@
 package main
 
 import (
-	"errors"
 	"io"
 	"os"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
-// Rewrap a duplicate only after making a blocking inherited pipe nonblocking;
-// os.NewFile then registers it with the runtime poller. No reader goroutine can
-// survive a deadline. The duplicate shares the caller's open description, so
-// its original status flags must be restored before the duplicate closes.
-func intake(input *os.File, budget time.Duration) (result []byte, resultErr error) {
+// Poll the inherited blocking description without changing its flags. Closing a
+// duplicate cannot restore flags after a signal, so even temporary F_SETFL is
+// forbidden. As with ordinary stdin, the caller must not concurrently consume
+// this stream. Regular files retain the bounded synchronous read path.
+func intake(input *os.File, budget time.Duration) ([]byte, error) {
 	info, err := input.Stat()
 	if err != nil {
 		return nil, err
 	}
-	reader := input
-	if !info.Mode().IsRegular() {
-		var fd int
-		raw, e := input.SyscallConn()
-		if e != nil {
-			return nil, e
-		}
-		e = raw.Control(func(n uintptr) {
-			r, _, x := syscall.Syscall(syscall.SYS_FCNTL, n, syscall.F_DUPFD_CLOEXEC, 0)
-			if x != 0 {
-				err = x
-			} else {
-				fd = int(r)
-			}
-		})
-		if e != nil {
-			return nil, e
-		}
+	if info.Mode().IsRegular() {
+		b, err := io.ReadAll(io.LimitReader(input, 131073))
 		if err != nil {
 			return nil, err
 		}
-		flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_GETFL, 0)
-		if errno != 0 {
-			syscall.Close(fd)
-			return nil, errno
+		if len(b) > 131072 {
+			return nil, errIntakeLimit
 		}
-		if err = syscall.SetNonblock(fd, true); err != nil {
-			syscall.Close(fd)
-			return nil, err
-		}
-		reader = os.NewFile(uintptr(fd), "bounded stdin")
-		defer reader.Close()
-		defer func() {
-			_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_SETFL, flags)
-			if errno != 0 {
-				result = nil
-				resultErr = errors.Join(resultErr, errno)
-			}
-		}()
-		if err = reader.SetReadDeadline(time.Now().Add(budget)); err != nil {
-			return nil, err
-		}
+		return b, nil
 	}
-	b, err := io.ReadAll(io.LimitReader(reader, 131073))
+	var fd int
+	raw, err := input.SyscallConn()
 	if err != nil {
 		return nil, err
 	}
-	if len(b) > 131072 {
-		return nil, errIntakeLimit
+	var dupErr syscall.Errno
+	err = raw.Control(func(n uintptr) {
+		r, _, e := syscall.Syscall(syscall.SYS_FCNTL, n, syscall.F_DUPFD_CLOEXEC, 0)
+		fd, dupErr = int(r), e
+	})
+	if err != nil {
+		return nil, err
 	}
-	return b, nil
+	if dupErr != 0 {
+		return nil, dupErr
+	}
+	defer syscall.Close(fd)
+	deadline := time.Now().Add(budget)
+	var result []byte
+	var buf [32768]byte
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, os.ErrDeadlineExceeded
+		}
+		// ppoll is poll(2) with a timespec timeout; available on Linux amd64
+		// and arm64. EINTR always recomputes the original remaining budget.
+		p := struct {
+			FD      int32
+			Events  int16
+			Revents int16
+		}{FD: int32(fd), Events: 1}
+		ts := syscall.NsecToTimespec(remaining.Nanoseconds())
+		n, _, errno := syscall.Syscall6(syscall.SYS_PPOLL, uintptr(unsafe.Pointer(&p)), 1, uintptr(unsafe.Pointer(&ts)), 0, 0, 0)
+		if errno == syscall.EINTR {
+			continue
+		}
+		if errno != 0 {
+			return nil, errno
+		}
+		if n == 0 {
+			return nil, os.ErrDeadlineExceeded
+		}
+		if p.Revents&32 != 0 {
+			return nil, syscall.EBADF
+		}
+		count, e := syscall.Read(fd, buf[:])
+		if e == syscall.EINTR || e == syscall.EAGAIN {
+			continue
+		}
+		if e != nil {
+			return nil, e
+		}
+		if count == 0 {
+			return result, nil
+		}
+		if len(result)+count > 131072 {
+			return nil, errIntakeLimit
+		}
+		result = append(result, buf[:count]...)
+	}
 }

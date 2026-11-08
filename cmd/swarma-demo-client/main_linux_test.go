@@ -27,6 +27,10 @@ func TestCLIChild(t *testing.T) {
 	os.Exit(0)
 }
 func TestCLIStdin(t *testing.T) {
+	// Assert the actual entrypoint budget without relying on runner scheduling.
+	if stdinBudget != 5*time.Second {
+		t.Fatalf("CLI stdin deadline changed: %s", stdinBudget)
+	}
 	for _, variant := range []string{"pipe", "file", "too-large", "stalled", "invalid"} {
 		t.Run(variant, func(t *testing.T) {
 			exe, err := os.Executable()

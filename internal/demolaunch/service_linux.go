@@ -513,11 +513,11 @@ func loadServerInputs(configPath string, read func(string, uint32, uint32, int) 
 	if err != nil {
 		return serverConfig{}, nil, err
 	}
-	b, err = read(rosterPath, 0644, 0, 16384)
+	b, err = read(rosterPath, 0644, 0, rosterLimit)
 	if err != nil {
 		return serverConfig{}, nil, err
 	}
-	roster, err := parseRoster(b, c.ServiceAccount)
+	roster, err := parseRoster(b, c)
 	return c, roster, err
 }
 

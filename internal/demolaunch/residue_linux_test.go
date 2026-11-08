@@ -404,14 +404,14 @@ func TestHelperErrorFormats(t *testing.T) {
 }
 
 // A case-folded alias is accepted by typed JSON decoding but must not satisfy
-// the roster's exact member set. This does not change or reconcile its schema.
+// the roster account's exact member set, beside a valid complete roster.
 func TestRosterExactCase(t *testing.T) {
 	for _, wrong := range []bool{false, true} {
 		b := rosterFixture(30000)
 		if wrong {
 			b = bytes.Replace(b, []byte(`"uid"`), []byte(`"UID"`), 1)
 		}
-		_, err := parseRoster(b, "demo-service")
+		_, err := parseRoster(b, rosterConfig())
 		if wrong {
 			if !errors.Is(err, ErrConfig) {
 				t.Fatalf("roster member case accepted: %v", err)

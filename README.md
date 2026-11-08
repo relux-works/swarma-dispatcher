@@ -13,6 +13,11 @@ The one-shot executor is `curator-run` from `curator-agent-launcher`, in a versi
 The [demo cut](spec/demo-launch.md) is **not production and not a conforming dispatcher**.
 Its fake-child tests exercise dispatcher behavior only; real-account execution
 requires separate qualification. The production binaries remain capacity-only.
+The demo reads the helper's closed three-account `demo-roster/1` schema and
+binds it to the protected caller, service and executor configuration. Unpersisted
+output loss closes admission; client intake preserves shared stdin flags even
+when terminated by a signal. These source changes still require Linux execution
+and deployment qualification.
 [`internal/frame`](internal/frame/) reads and writes a four-byte unsigned
 big-endian length followed by 1–131072 payload bytes, per
 [§8.3](spec/dispatcher.md#83-socket-dispatch1) and the closed

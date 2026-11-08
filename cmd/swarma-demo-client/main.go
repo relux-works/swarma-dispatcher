@@ -8,12 +8,14 @@ import (
 	"time"
 )
 
+const stdinBudget = 5 * time.Second
+
 func main() {
 	if len(os.Args) != 4 || os.Args[1] != "--config" || (os.Args[3] != "launch" && os.Args[3] != "stop" && os.Args[3] != "status") {
 		fmt.Fprintln(os.Stderr, "demo, not production: swarma-demo-client --config /absolute/client.json launch|stop|status < request.json")
 		os.Exit(1)
 	}
-	b, err := intake(os.Stdin, 5*time.Second)
+	b, err := intake(os.Stdin, stdinBudget)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "request intake refused:", err)
 		os.Exit(1)

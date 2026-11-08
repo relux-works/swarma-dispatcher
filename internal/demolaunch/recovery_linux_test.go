@@ -295,6 +295,18 @@ func TestStopActiveBeforeChild(t *testing.T) {
 // A child that never reads cannot hold stdin beyond five seconds. The fixture
 // releases it later; dispatcher shutdown does not signal it.
 func TestChildStdinDeadline(t *testing.T) {
+	// Literal deadline arithmetic catches a six-second budget without reducing
+	// the real-child scheduling margin under race instrumentation.
+	now := time.Now()
+	for _, seconds := range []int{2, 40} {
+		want := 5 * time.Second
+		if seconds == 2 {
+			want = 2 * time.Second
+		}
+		if got := childIntakeDeadline(now, now.Add(time.Duration(seconds)*time.Second)); got.Sub(now) != want {
+			t.Fatalf("stdin elapsed deadline changed: %s", got.Sub(now))
+		}
+	}
 	h := fixture(t, "never-read")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

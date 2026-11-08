@@ -24,7 +24,9 @@ command or a qualified deployment.
 Every valid capacity exchange returns `capacity:hold`; negotiation success does
 not open admission. The separate [demo launch cut](../../../spec/demo-launch.md)
 has source implementations and fake-child tests; it is not production, not a
-conforming dispatcher, and not a qualified deployment. Production commands do
+conforming dispatcher, and not a qualified deployment. The demo requires the helper's closed three-account
+`demo-roster/1` document, bound to protected caller/service/executor configuration;
+its runtime flags are shape-only inputs, not qualification evidence. Production commands do
 not offer launch. There is no plugin registration API or configuration-based
 plugin loader. Do not translate proposed operations
 into assumed commands or treat schema-valid M0 specimens as authorized requests.

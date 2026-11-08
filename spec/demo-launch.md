@@ -16,9 +16,10 @@ contracts, not a promotion of this cut.
 | §4.5 effect IDs and journal; `spec/journal.md` | No journal; no replay or reconciliation |
 | `spec/m0-launch.md` committed-start A | Not implemented; marker is a stand-in, not a claim of A |
 | §§3.1–3.4 grants, M0 protected policy | None; the caller is a pinned peer UID, which is not authority |
-| Demo launch call contract §6, evidence loss | An intact `.lost` records loss without closing admission. A torn loss record closes admission at startup. |
+| Demo launch call contract §6, evidence loss | An intact `.lost` records loss without closing admission. A torn loss record closes admission at startup. An unpersisted loss closes admission immediately in memory and attempts a durable latch, retried on requests. |
+| Demo launch call contract §6, lost reply | A lost stop reply does not add a latch; see the stop-reply behavior under [Recovery and continuation](#torn-records-and-restart-continuation). |
 | Demo launch call contract §6 and demo acceptance AC14, crash/reboot | If every attempt has a durable stopped record and no latch exists, restart permits the next generation. The demo does not latch every crash. |
-| Deployment qualification | TestEntrypointBoundaryWiring is an identifier gate only. The positive Daemon path and token-preserving edits to the runtime check result, startup caller pin result, roster parse result and client runtime check require a disposable VM run. Endpoint device/inode has a separate non-root behavioral witness. |
+| Deployment qualification | TestEntrypointBoundaryWiring is an identifier gate only. The positive Daemon path and token-preserving edits to the runtime check result, startup caller pin result and client runtime check require a disposable VM run. Endpoint device/inode and the protected roster parse result have separate non-root behavioral witnesses. |
 | Capacity reservation | None; sequential by construction |
 | R-WATCH, NETBIND, R-TRANSFER | Excluded; workspace preparation belongs to the operator |
 
@@ -50,17 +51,64 @@ The client must not belong to the private service group. Both belong to the
 connection group. Non-reuse of operator/service UIDs remains a deployment duty.
 
 Server config additionally requires `service_account` (account name), `executor`
-(approved ID, not a path), `receipt_root` (absolute) and `state_dir` (absolute).
+(`swarma-demo-executor` or `swarma-demo-codex-executor`, not a path),
+`receipt_root` (absolute) and `state_dir` (absolute).
 Server/client byte caps are 16384/4096. JSON objects have exact case-sensitive
 members, no duplicate keys, no null fields, depth at most eight and no trailing
 document. Ordinary JSON whitespace/key ordering is accepted in this demo.
 
-The fixed `/etc/swarma-demo/roster.json`, root:root `0644`, has exactly
-`{"accounts":[{"name":"demo-01","uid":30000,"gid":30000,"generation":"0123456789abcdef0123456789abcdef","owner":"demo-service"}]}`.
-This is an inert shape, not an enrollment. There are 1..20 unique names, UIDs and
-generations; UID is 30000..30019 inclusive, GID equals UID, generation is 32
-lowercase hex, and owner equals protected `service_account`. Any mismatch refuses
-startup. Accounts are precreated; this code never creates or looks them up.
+The fixed `/etc/swarma-demo/roster.json`, root:root `0644`, is the helper's
+`swarma-user-manager demo-roster/1` document, at most 48 KiB. Every object is
+closed. Top-level members are exactly `format,source_revision,boot_id,operator,
+dispatcher,executor,runtime,accounts`. The dispatcher follows the helper schema
+with two differences: `source_revision` is any 40 lowercase hex characters,
+without pinning a helper revision; `operator` is `{name,uid,gid}` with an account
+name and integer IDs, binding `uid` to protected `caller.uid` instead of a
+compiled operator identity.
+
+`boot_id` is a lowercase UUID. `dispatcher` has exactly
+`name,uid,gid,principal,generation`: name and principal are
+`swarma-demo-dispatcher`, UID and GID are 1101. Protected `service_account` and
+`service_uid` must match principal and UID. `executor` has exactly `id,path,sha256`:
+either frozen executor ID above, its corresponding
+`/usr/local/libexec/swarma/<id>` path, and a 64-lowercase-hex digest. Its ID must
+equal protected `executor`. `runtime` has exactly four booleans: `admitted`,
+`inventory_qualified`, `creation_exclusion_qualified`, `interpreter_qualified`.
+These are shape-checked only; neither boot ID nor runtime booleans establish
+qualification in this dispatcher.
+
+There are exactly three account rows, named `swarma-demo-01`, `swarma-demo-02`,
+`swarma-demo-03`, each once. Each has exactly `name,uid,gid,generation,
+owning_dispatcher,home,workspace,copy_digest`. UIDs are unique in 30000..30019,
+GID equals UID, owner equals the dispatcher principal, home is
+`/srv/swarma-demo/home/<name>`, workspace is `/srv/swarma-demo/work/<name>`, and
+copy digest is 64 lowercase hex. All generations, including the dispatcher's,
+are unique 32 lowercase hex characters and never all zero. Dispatcher name is
+neither an account nor operator name; dispatcher UID differs from operator UID;
+neither dispatcher UID/GID nor operator UID is in 30000..30019. Frozen names,
+IDs and paths have no configuration override. Any mismatch returns
+`config_invalid` before startup effects. Only account name, UID, GID and
+generation are retained. Accounts are precreated; this code never creates or
+looks them up.
+
+An inert complete example (placeholder digests and generations, no enrollment):
+
+```json
+{
+  "format": "swarma-user-manager demo-roster/1",
+  "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "boot_id": "12345678-1234-1234-1234-123456789abc",
+  "operator": {"name":"operator","uid":1000,"gid":1000},
+  "dispatcher": {"name":"swarma-demo-dispatcher","uid":1101,"gid":1101,"principal":"swarma-demo-dispatcher","generation":"dddddddddddddddddddddddddddddddd"},
+  "executor": {"id":"swarma-demo-executor","path":"/usr/local/libexec/swarma/swarma-demo-executor","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "runtime": {"admitted":false,"inventory_qualified":false,"creation_exclusion_qualified":false,"interpreter_qualified":false},
+  "accounts": [
+    {"name":"swarma-demo-01","uid":30000,"gid":30000,"generation":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","owning_dispatcher":"swarma-demo-dispatcher","home":"/srv/swarma-demo/home/swarma-demo-01","workspace":"/srv/swarma-demo/work/swarma-demo-01","copy_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"name":"swarma-demo-02","uid":30001,"gid":30001,"generation":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","owning_dispatcher":"swarma-demo-dispatcher","home":"/srv/swarma-demo/home/swarma-demo-02","workspace":"/srv/swarma-demo/work/swarma-demo-02","copy_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"name":"swarma-demo-03","uid":30002,"gid":30002,"generation":"cccccccccccccccccccccccccccccccc","owning_dispatcher":"swarma-demo-dispatcher","home":"/srv/swarma-demo/home/swarma-demo-03","workspace":"/srv/swarma-demo/work/swarma-demo-03","copy_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  ]
+}
+```
 
 `state_dir` already exists, service-owned `0700`. Its protected ancestors and
 leaf are checked without repair. The fixed endpoint directory
@@ -96,7 +144,8 @@ Operation forms (objects below are separate examples):
 {"op":"demo.status","account":"demo-01"}
 ```
 
-IDs are 1..64 ASCII `[A-Za-z0-9._:-]` bytes; account names match
+Request IDs match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, including in persisted
+attempt and stop intent records; account names match
 `[a-z][a-z0-9-]{0,31}`. Launch requires standard canonical base64, encoded at most
 64 KiB, decoded at most 48 KiB, including an empty plan. Decoded bytes are never
 parsed. Stop grace is optional, defaults to 10, integer 1..30. No caller-selected
@@ -105,7 +154,9 @@ UID, path, argv, environment or grant is accepted. Unknown operations, including
 
 Client syntax is `swarma-demo-client --config /absolute/client.json launch|stop|status`
 with the corresponding complete operation object redirected on stdin. Intake is
-at most one frame's payload, with a five-second deadline for pipes. An ordinary
+at most one frame's payload, with a five-second deadline for pipes. Polling never
+changes the inherited open description's flags, including on SIGINT/SIGTERM.
+Stdin has one consumer; concurrent readers are unsupported. An ordinary
 redirected regular file is read with the byte bound on the trusted local filesystem.
 The client prints one JSON reply. Local/protocol errors exit 1; a received reply
 exits 0 even for refusal/unknown/unresolved. Inspect `state`, never infer absence
@@ -148,9 +199,12 @@ may receive EPIPE. `demo.status.output_loss` reports
 `stdout:output_lost` or `stderr:output_lost`, including after restart. If the
 evidence itself cannot be saved/read, live status reports `loss_unpersisted` or
 `evidence_unavailable` for that stream; persistence cannot be promised on failed
-storage. Logs never reopen for writing. Pipes use bounded polling waits; child
+storage. Failure to create `.lost` closes admission with `loss_unpersisted`
+immediately in memory, attempts the durable latch, and retries that latch on
+subsequent requests. Live status retains `loss_unpersisted` for the stream.
+Logs never reopen for writing. Pipes use bounded polling waits; child
 exit is reaped using nonblocking wait. There is at most one drainer pair per
-occupied child slot, bounded by the 20-account roster. Within one daemon process, a new generation also
+occupied child slot, bounded by the three-account roster. Within one daemon process, a new generation also
 waits for the prior sudo handle and pipes to finish. Restart loses custody of
 those handles and pipes: a valid stopped fact can permit a later generation
 without waiting for the old launcher process. An unstopped attempt still closes
@@ -310,8 +364,13 @@ status and other accounts' stops remain available.
 
 Restart does not wait out an earlier helper. The helper **must safely handle a
 same-effect `exec.stop` while an earlier invocation remains alive**, including
-identical request IDs. Request-ID scope across generations is deferred to the roster follow-up; IDs do not authorize
-new effects or changed arguments. A helper descendant must close inherited
+identical request IDs. An intact stop intent binds the request ID and grace to
+that generation: a different ID or grace returns `stop_conflict`. The dispatcher
+also rejects the generation's launch ID as a stop ID, or a stop ID already used
+for another account, with `request_id_conflict`. The helper instead checks its
+generation-scoped record and reports `request_id_conflict` for changed request
+bytes. These existing scope differences are not changed by the shared ID format;
+IDs do not authorize new effects or changed arguments. A helper descendant must close inherited
 stdout/stderr: retaining a pipe produces `stop_timeout`, followed in-process by
 `stop_in_flight` until the pipe closes. These are requirements for the separate
 helper owner, not behavior qualified by the fake child.

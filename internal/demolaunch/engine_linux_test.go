@@ -276,7 +276,7 @@ func fixture(t *testing.T, mode string) *harness {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	accounts := []account{{"demo", 30000, 30000, gen, "demo-service"}, {"second", 30019, 30019, gen2, "demo-service"}}
+	accounts := []account{{"demo", 30000, 30000, gen}, {"second", 30019, 30019, gen2}}
 	e, err := testEngine(t, ctx, store, accounts, serverConfig{Executor: "demo-executor"})
 	if err != nil {
 		cancel()

@@ -211,14 +211,31 @@ func TestProtectedReadsAndEntrypoints(t *testing.T) {
 // roster path/modes/caps are asserted before mapping it to a current-UID fixture.
 // Intended witness for removal of roster protection and frozen-path substitution.
 func TestServerProtectedInputWiring(t *testing.T) {
-	for _, variant := range []string{"valid", "config-mode", "roster-mode", "roster-symlink"} {
+	for _, variant := range []string{"valid", "config-mode", "roster-mode", "roster-symlink", "roster-uid", "roster-owner", "executor-mismatch", "service-mismatch", "service-uid", "operator-uid"} {
 		t.Run(variant, func(t *testing.T) {
 			root := fixtureDir(t)
 			config := filepath.Join(root, "config")
 			roster := filepath.Join(root, "roster")
-			must(t, os.WriteFile(config, marshal(cfgFixture()), 0440))
+			cfg := cfgFixture()
+			doc := rosterDocument(30000)
+			switch variant {
+			case "roster-uid":
+				doc["accounts"].([]map[string]any)[0]["uid"] = 30020
+			case "roster-owner":
+				doc["accounts"].([]map[string]any)[0]["owning_dispatcher"] = "foreign"
+			case "executor-mismatch":
+				cfg["executor"] = "swarma-demo-codex-executor"
+			case "service-mismatch":
+				cfg["service_account"] = "foreign"
+			case "service-uid":
+				cfg["service_uid"] = 1102
+			case "operator-uid":
+				cfg["caller"].(map[string]any)["uid"] = 1002
+			}
+			configBytes, rosterBytes := marshal(cfg), marshal(doc)
+			must(t, os.WriteFile(config, configBytes, 0440))
 			must(t, os.Chmod(config, 0440))
-			must(t, os.WriteFile(roster, rosterFixture(30000), 0644))
+			must(t, os.WriteFile(roster, rosterBytes, 0644))
 			must(t, os.Chmod(roster, 0644))
 			if variant == "config-mode" {
 				must(t, os.Chmod(config, 0644))
@@ -238,7 +255,7 @@ func TestServerProtectedInputWiring(t *testing.T) {
 						t.Fatal("config binding", name, mode, gid, limit)
 					}
 				} else {
-					if calls != 2 || name != "/etc/swarma-demo/roster.json" || mode != 0644 || gid != 0 || limit != 16384 {
+					if calls != 2 || name != "/etc/swarma-demo/roster.json" || mode != 0644 || gid != 0 || limit != 49152 {
 						t.Fatal("roster binding", name, mode, gid, limit)
 					}
 					name = roster
@@ -248,13 +265,20 @@ func TestServerProtectedInputWiring(t *testing.T) {
 			c, a, err := loadServerInputs(config, read)
 			if variant == "valid" {
 				must(t, err)
-				if calls != 2 || c.Executor != "demo-executor" || len(a) != 1 {
+				if calls != 2 || c.Executor != "swarma-demo-executor" || len(a) != 3 {
 					t.Fatal(c, a, calls)
 				}
 			} else {
 				if !errors.Is(err, ErrConfig) || a != nil {
-					t.Fatal(a, err)
+					t.Fatalf("invalid protected roster accepted: %s %v %v", variant, a, err)
 				}
+			}
+			cb, x := os.ReadFile(config)
+			must(t, x)
+			rb, x := os.ReadFile(roster)
+			must(t, x)
+			if !bytes.Equal(cb, configBytes) || !bytes.Equal(rb, rosterBytes) {
+				t.Fatal("protected input changed")
 			}
 		})
 	}

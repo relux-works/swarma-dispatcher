@@ -140,8 +140,8 @@ func TestLateVerdictLatch(t *testing.T) {
 	}
 }
 
-// Both sides use the same pin function; the path seam changes only its location.
-// A replacement inode with correct UID/GID/mode must fail, as must a wrong device.
+// The pin predicate rejects a replacement inode with correct UID/GID/mode and
+// a wrong device. The path seam changes only the fixture location.
 func TestEndpointPinIdentity(t *testing.T) {
 	root := fixtureDir(t)
 	name := filepath.Join(root, "endpoint")
@@ -153,7 +153,7 @@ func TestEndpointPinIdentity(t *testing.T) {
 	id, err := identity(f)
 	must(t, err)
 	c := commonConfig{ServiceUID: uint32(os.Geteuid()), ServiceGID: uint32(os.Getegid()), EndpointDev: id.dev, EndpointIno: id.ino}
-	for _, side := range []string{"daemon", "client"} {
+	{
 		d, err := endpointPinIn(c, name)
 		must(t, err)
 		d.close()
@@ -164,19 +164,19 @@ func TestEndpointPinIdentity(t *testing.T) {
 			d.close()
 		}
 		if !errors.Is(err, ErrIdentity) || d != nil {
-			t.Fatalf("endpoint pin accepted wrong device: %s %v", side, err)
+			t.Fatalf("endpoint pin accepted wrong device: %v", err)
 		}
 	}
 	must(t, os.Rename(name, name+"-old"))
 	must(t, os.Mkdir(name, 0711))
 	must(t, os.Chmod(name, 0711))
-	for _, side := range []string{"daemon", "client"} {
+	{
 		d, err := endpointPinIn(c, name)
 		if d != nil {
 			d.close()
 		}
 		if !errors.Is(err, ErrIdentity) || d != nil {
-			t.Fatalf("endpoint pin accepted replacement: %s %v", side, err)
+			t.Fatalf("endpoint pin accepted replacement: %v", err)
 		}
 	}
 }

@@ -38,6 +38,13 @@ var generationID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 var digestID = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var executionID = regexp.MustCompile(`^EX-[0-9a-f]{32}$`)
 
+var requestID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+func validRequestID(s string) bool { return requestID.MatchString(s) }
+func validGeneration(s string) bool {
+	return generationID.MatchString(s) && s != "00000000000000000000000000000000"
+}
+
 func validID(s string) bool     { return identifier.MatchString(s) }
 func validNumber(v uint32) bool { return v > 0 && v < 4294967295 }
 func unmanaged(v uint32) bool   { return validNumber(v) && (v < 30000 || v > 59999) }
@@ -173,7 +180,7 @@ func parseRequest(b []byte) (request, error) {
 	}
 	switch r.Op {
 	case "demo.launch":
-		if len(m) != 4 || m["plan"] == nil || !validID(r.RequestID) || len(r.Plan) > 65536 {
+		if len(m) != 4 || m["plan"] == nil || !validRequestID(r.RequestID) || len(r.Plan) > 65536 {
 			return request{}, ErrInvalid
 		}
 		decoded, e := base64.StdEncoding.Strict().DecodeString(r.Plan)
@@ -181,7 +188,7 @@ func parseRequest(b []byte) (request, error) {
 			return request{}, ErrInvalid
 		}
 	case "demo.stop":
-		if m["plan"] != nil || !validID(r.RequestID) {
+		if m["plan"] != nil || !validRequestID(r.RequestID) {
 			return request{}, ErrInvalid
 		}
 		if m["grace_seconds"] == nil {

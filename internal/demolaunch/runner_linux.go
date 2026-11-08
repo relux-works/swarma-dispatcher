@@ -37,17 +37,18 @@ type child struct {
 	stderr     *capture
 }
 type capture struct {
-	mu             sync.Mutex
-	data           []byte
-	limit          int
-	overflow       bool
-	err            error
-	file           *os.File
-	onTruncate     func() error
-	onLoss         func() error
-	lossRecorded   bool
-	lossPersistErr error
-	writeFile      func([]byte) (int, error)
+	mu                sync.Mutex
+	data              []byte
+	limit             int
+	overflow          bool
+	err               error
+	file              *os.File
+	onTruncate        func() error
+	onLoss            func() error
+	lossRecorded      bool
+	lossPersistErr    error
+	onLossUnpersisted func()
+	writeFile         func([]byte) (int, error)
 }
 
 func (c *capture) write(b []byte) {
@@ -203,10 +204,7 @@ func startChild(ctx context.Context, run runner, path string, payload []byte, de
 			}
 		}
 	}()
-	intake := time.Now().Add(5 * time.Second)
-	if deadline.Before(intake) {
-		intake = deadline
-	}
+	intake := childIntakeDeadline(time.Now(), deadline)
 	err = inW.SetWriteDeadline(intake)
 	if err == nil {
 		var n int
@@ -217,6 +215,14 @@ func startChild(ctx context.Context, run runner, path string, payload []byte, de
 	}
 	err = errors.Join(err, inW.Close())
 	return ch, err
+}
+
+func childIntakeDeadline(now, deadline time.Time) time.Time {
+	intake := now.Add(5 * time.Second)
+	if deadline.Before(intake) {
+		intake = deadline
+	}
+	return intake
 }
 func (e *engine) logCapture(generation, stream string) (*capture, error) {
 	name := "output-" + generation + "-" + stream
@@ -236,7 +242,7 @@ func (e *engine) logCapture(generation, stream string) (*capture, error) {
 		f.Close()
 		return nil, err
 	}
-	return &capture{file: f, limit: logCap, onTruncate: func() error { return e.store.create(name+".truncated", []byte("true")) }, onLoss: func() error { return e.store.create(name+".lost", []byte(`"output_lost"`)) }}, nil
+	return &capture{file: f, limit: logCap, onTruncate: func() error { return e.store.create(name+".truncated", []byte("true")) }, onLoss: func() error { return e.store.create(name+".lost", []byte(`"output_lost"`)) }, onLossUnpersisted: func() { e.mu.Lock(); defer e.mu.Unlock(); _ = e.closeAdmission("loss_unpersisted") }}, nil
 }
 
 // capture.mu is held; persist at most once, continue draining on every failure.
@@ -245,5 +251,12 @@ func (c *capture) recordLoss() {
 		c.lossRecorded = true
 		c.lossPersistErr = c.onLoss()
 		c.err = errors.Join(c.err, c.lossPersistErr)
+		if c.lossPersistErr != nil && c.onLossUnpersisted != nil {
+			// Never acquire engine.mu while holding capture.mu: status takes
+			// those locks in the opposite order. Publish capture loss first.
+			c.mu.Unlock()
+			c.onLossUnpersisted()
+			c.mu.Lock()
+		}
 	}
 }

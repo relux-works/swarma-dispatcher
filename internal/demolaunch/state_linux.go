@@ -116,7 +116,7 @@ func (s *stateStore) names() ([]string, error) {
 }
 func parseAttempt(b []byte) (attempt, error) {
 	var a attempt
-	if _, e := object(b, 4096, "request_id request_digest execution_id time", ""); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {
+	if _, e := object(b, 4096, "request_id request_digest execution_id time", ""); e != nil || typed(b, &a) != nil || !validRequestID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {
 		return attempt{}, ErrInvalid
 	}
 	if _, e := time.Parse(time.RFC3339Nano, a.Time); e != nil {
@@ -126,7 +126,7 @@ func parseAttempt(b []byte) (attempt, error) {
 }
 func parseIntent(b []byte) (stopIntent, error) {
 	var s stopIntent
-	if _, e := object(b, 4096, "request_id execution_id grace_seconds time", ""); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {
+	if _, e := object(b, 4096, "request_id execution_id grace_seconds time", ""); e != nil || typed(b, &s) != nil || !validRequestID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {
 		return stopIntent{}, ErrInvalid
 	}
 	if _, e := time.Parse(time.RFC3339Nano, s.Time); e != nil {
@@ -248,7 +248,7 @@ func (e *engine) load() error {
 			// A torn completion is never an absence fact.
 		} else if err == nil {
 			var record stoppedRecord
-			if _, x := object(b, 4096, "execution_id timing closed code", ""); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != "" && record.Code != "latch_uncertain") || (record.Timing != "timely" && record.Timing != "missed" && record.Timing != "unknown") {
+			if _, x := object(b, 4096, "execution_id timing closed code", ""); x != nil || typed(b, &record) != nil || !executionID.MatchString(record.ExecutionID) || record.ExecutionID != at.ExecutionID || (record.Code != "" && record.Code != "latch_uncertain") || (record.Timing != "timely" && record.Timing != "missed" && record.Timing != "unknown") {
 				return ErrInvalid
 			}
 			if (e.tornIntents[name] && (record.Timing == "timely" || !record.Closed)) || ((record.Timing != "timely" || record.Code != "") && !record.Closed) {

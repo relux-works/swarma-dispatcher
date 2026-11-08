@@ -60,19 +60,39 @@ func TestRequestContract(t *testing.T) {
 	}
 }
 func cfgFixture() map[string]any {
-	return map[string]any{"v": 1, "service_uid": 900, "service_gid": 900, "connect_gid": 901, "endpoint_dev": 1, "endpoint_ino": 2, "caller": map[string]any{"uid": 1000, "dev": 1, "ino": 3, "dir": "/home/operator"}, "service_account": "demo-service", "executor": "demo-executor", "receipt_root": "/var/lib/receipts", "state_dir": "/var/lib/demo"}
+	return map[string]any{"v": 1, "service_uid": 1101, "service_gid": 900, "connect_gid": 901, "endpoint_dev": 1, "endpoint_ino": 2, "caller": map[string]any{"uid": 1000, "dev": 1, "ino": 3, "dir": "/home/operator"}, "service_account": "swarma-demo-dispatcher", "executor": "swarma-demo-executor", "receipt_root": "/var/lib/receipts", "state_dir": "/var/lib/demo"}
 }
 func rosterFixture(uid int) []byte {
-	return []byte(`{"accounts":[{"name":"demo","uid":` + jsonNumber(uid) + `,"gid":` + jsonNumber(uid) + `,"generation":"0123456789abcdef0123456789abcdef","owner":"demo-service"}]}`)
+	return marshal(rosterDocument(uid))
+}
+func rosterConfig() serverConfig { c, _ := parseServer(marshal(cfgFixture())); return c }
+func rosterDocument(uid int) map[string]any {
+	rows := []map[string]any{}
+	for i, n := range []string{"swarma-demo-01", "swarma-demo-02", "swarma-demo-03"} {
+		u := 30000 + i
+		g := strings.Repeat(string("abc"[i]), 32)
+		if i == 0 {
+			u = uid
+			g = "0123456789abcdef0123456789abcdef"
+		}
+		rows = append(rows, map[string]any{"name": n, "uid": u, "gid": u, "generation": g, "owning_dispatcher": "swarma-demo-dispatcher", "home": "/srv/swarma-demo/home/" + n, "workspace": "/srv/swarma-demo/work/" + n, "copy_digest": strings.Repeat("a", 64)})
+	}
+	return map[string]any{
+		"format": "swarma-user-manager demo-roster/1", "source_revision": strings.Repeat("a", 40), "boot_id": "12345678-1234-1234-1234-123456789abc",
+		"operator":   map[string]any{"name": "operator", "uid": 1000, "gid": 1000},
+		"dispatcher": map[string]any{"name": "swarma-demo-dispatcher", "principal": "swarma-demo-dispatcher", "uid": 1101, "gid": 1101, "generation": strings.Repeat("d", 32)},
+		"executor":   map[string]any{"id": "swarma-demo-executor", "path": "/usr/local/libexec/swarma/swarma-demo-executor", "sha256": strings.Repeat("b", 64)},
+		"runtime":    map[string]any{"admitted": false, "inventory_qualified": false, "creation_exclusion_qualified": false, "interpreter_qualified": false}, "accounts": rows,
+	}
 }
 func jsonNumber(n int) string { b, _ := json.Marshal(n); return string(b) }
 
 // Both inclusive roster bounds are valid controls; config roles remain unmanaged.
 func TestConfigRosterBounds(t *testing.T) {
 	for _, uid := range []int{30000, 30019, 29999, 30020} {
-		a, e := parseRoster(rosterFixture(uid), "demo-service")
+		a, e := parseRoster(rosterFixture(uid), rosterConfig())
 		if uid == 30000 || uid == 30019 {
-			if e != nil || len(a) != 1 {
+			if e != nil || len(a) != 3 {
 				t.Fatal("configuration bounds assertion", uid, e)
 			}
 		} else if !errors.Is(e, ErrConfig) || a != nil {
@@ -100,7 +120,7 @@ func TestConfigRosterBounds(t *testing.T) {
 		func(c map[string]any) { c["connect_gid"] = c["service_gid"] },
 		func(c map[string]any) { c["executor"] = "/bin/sh" }, func(c map[string]any) { c["state_dir"] = "relative" }, func(c map[string]any) { c["receipt_root"] = "/a/../b" },
 		func(c map[string]any) { c["service_account"] = "../x" }, func(c map[string]any) { c["runner"] = "anything" }, func(c map[string]any) { delete(c, "executor") },
-		func(c map[string]any) { c["caller"].(map[string]any)["UID"] = 1000 }, func(c map[string]any) { c["caller"].(map[string]any)["uid"] = 900 },
+		func(c map[string]any) { c["caller"].(map[string]any)["UID"] = 1000 }, func(c map[string]any) { c["caller"].(map[string]any)["uid"] = 1101 },
 	} {
 		c := cfgFixture()
 		mutate(c)
@@ -110,13 +130,13 @@ func TestConfigRosterBounds(t *testing.T) {
 	}
 	for _, b := range []string{
 		strings.Replace(string(rosterFixture(30000)), `"gid":30000`, `"gid":30001`, 1),
-		strings.Replace(string(rosterFixture(30000)), `"owner":"demo-service"`, `"owner":"foreign"`, 1),
+		strings.Replace(string(rosterFixture(30000)), `"owning_dispatcher":"swarma-demo-dispatcher"`, `"owning_dispatcher":"foreign"`, 1),
 		strings.Replace(string(rosterFixture(30000)), `0123456789abcdef0123456789abcdef`, `0123456789ABCDEF0123456789abcdef`, 1),
 		strings.Replace(string(rosterFixture(30000)), `"uid":30000`, `"uid":30000,"uid":30000`, 1),
 		strings.Replace(string(rosterFixture(30000)), `"uid":30000`, `"uid":30000,"path":"x"`, 1),
 		string(rosterFixture(30000)) + `{}`,
 	} {
-		if _, e := parseRoster([]byte(b), "demo-service"); !errors.Is(e, ErrConfig) {
+		if _, e := parseRoster([]byte(b), rosterConfig()); !errors.Is(e, ErrConfig) {
 			t.Fatal("configuration bounds assertion", b, e)
 		}
 	}
@@ -143,16 +163,13 @@ func TestCanonicalPlan(t *testing.T) {
 	}
 }
 
-// A complete 20-row roster is the positive bound; individual duplicated name,
-// UID or generation must refuse, as must an empty or 21-row roster. The 21st
-// row also necessarily exceeds the UID domain, a documented redundant guard.
+// Exactly three frozen names are admitted; duplicate identities and any other
+// row count refuse. These pure parser fixtures do not qualify deployed files.
 func TestRosterUniquenessAndCount(t *testing.T) {
-	var rows []map[string]any
-	for i := 0; i < 20; i++ {
-		rows = append(rows, map[string]any{"name": "demo-" + jsonNumber(i), "uid": 30000 + i, "gid": 30000 + i, "generation": strings.Repeat("0", 30) + string("0123456789abcdef"[i/16]) + string("0123456789abcdef"[i%16]), "owner": "demo-service"})
-	}
-	encode := func() []byte { return marshal(map[string]any{"accounts": rows}) }
-	if a, err := parseRoster(encode(), "demo-service"); err != nil || len(a) != 20 {
+	doc := rosterDocument(30000)
+	rows := doc["accounts"].([]map[string]any)
+	encode := func() []byte { doc["accounts"] = rows; return marshal(doc) }
+	if a, err := parseRoster(encode(), rosterConfig()); err != nil || len(a) != 3 {
 		t.Fatal(len(a), err)
 	}
 	for _, key := range []string{"name", "uid", "generation"} {
@@ -161,18 +178,29 @@ func TestRosterUniquenessAndCount(t *testing.T) {
 		if key == "uid" {
 			rows[1]["gid"] = rows[0]["uid"]
 		}
-		if a, err := parseRoster(encode(), "demo-service"); a != nil || !errors.Is(err, ErrConfig) {
-			t.Fatal(key, a, err)
+		if key == "name" {
+			rows[1]["home"] = rows[0]["home"]
+			rows[1]["workspace"] = rows[0]["workspace"]
+		}
+		if a, err := parseRoster(encode(), rosterConfig()); a != nil || !errors.Is(err, ErrConfig) {
+			t.Fatal("roster uniqueness accepted:", key, a, err)
 		}
 		rows[1][key] = old
 		rows[1]["gid"] = 30001
+		rows[1]["home"] = "/srv/swarma-demo/home/swarma-demo-02"
+		rows[1]["workspace"] = "/srv/swarma-demo/work/swarma-demo-02"
 	}
+	rows = rows[:2]
+	if a, err := parseRoster(encode(), rosterConfig()); a != nil || !errors.Is(err, ErrConfig) {
+		t.Fatal("roster count accepted:", a, err)
+	}
+	rows = rosterDocument(30000)["accounts"].([]map[string]any)
 	rows = append(rows, rows[0])
-	if a, err := parseRoster(encode(), "demo-service"); a != nil || !errors.Is(err, ErrConfig) {
+	if a, err := parseRoster(encode(), rosterConfig()); a != nil || !errors.Is(err, ErrConfig) {
 		t.Fatal(a, err)
 	}
 	rows = rows[:0]
-	if a, err := parseRoster(encode(), "demo-service"); a != nil || !errors.Is(err, ErrConfig) {
+	if a, err := parseRoster(encode(), rosterConfig()); a != nil || !errors.Is(err, ErrConfig) {
 		t.Fatal(a, err)
 	}
 }
@@ -205,7 +233,7 @@ func TestClientConfig(t *testing.T) {
 func TestFormatBoundaries(t *testing.T) {
 	for _, n := range []int{31, 32, 33} {
 		b := strings.Replace(string(rosterFixture(30000)), "0123456789abcdef0123456789abcdef", strings.Repeat("a", n), 1)
-		_, err := parseRoster([]byte(b), "demo-service")
+		_, err := parseRoster([]byte(b), rosterConfig())
 		if n == 32 && err != nil || n != 32 && !errors.Is(err, ErrConfig) {
 			t.Fatal("format boundary assertion", "generation", n, err)
 		}

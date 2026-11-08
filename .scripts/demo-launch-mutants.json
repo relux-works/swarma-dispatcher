@@ -205,8 +205,8 @@
   {
     "id": "S1-H01",
     "file": "internal/demolaunch/runner_linux.go",
-    "find": "\t}()\n\tintake := time.Now().Add(5 * time.Second)\n\tif deadline.Before(intake) {\n",
-    "replace": "\t}()\n\tintake := time.Now().Add(50 * time.Second)\n\tif deadline.Before(intake) {\n",
+    "find": "intake := now.Add(5 * time.Second)",
+    "replace": "intake := now.Add(50 * time.Second)",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestChildStdinDeadline$"
@@ -218,8 +218,8 @@
   {
     "id": "S1-H02",
     "file": "internal/demolaunch/runner_linux.go",
-    "find": "\t}\n\terr = inW.SetWriteDeadline(intake)\n\tif err == nil {\n",
-    "replace": "\t}\n\t_ = intake\n err = nil\n\tif err == nil {\n",
+    "find": "err = inW.SetWriteDeadline(intake)",
+    "replace": "_ = intake\n\terr = nil",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestChildStdinDeadline$"
@@ -231,8 +231,8 @@
   {
     "id": "S1-H03",
     "file": "internal/demolaunch/runner_linux.go",
-    "find": "\t}()\n\tintake := time.Now().Add(5 * time.Second)\n\tif deadline.Before(intake) {\n\t\tintake = deadline\n\t}\n\terr = inW.SetWriteDeadline(intake)\n\tif err == nil {\n",
-    "replace": "\t}()\n\tintake := time.Now().Add(50 * time.Second)\n\tif deadline.Before(intake) {\n\t\tintake = deadline\n\t}\n\t_ = intake\n err = nil\n\tif err == nil {\n",
+    "find": "intake := childIntakeDeadline(time.Now(), deadline)\n\terr = inW.SetWriteDeadline(intake)",
+    "replace": "intake := time.Now().Add(50 * time.Second)\n\t_ = intake\n\terr = nil",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestChildStdinDeadline$"
@@ -725,8 +725,8 @@
   {
     "id": "S1-A25",
     "file": "internal/demolaunch/state_linux.go",
-    "find": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
-    "replace": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || false || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
+    "find": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validRequestID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
+    "replace": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validRequestID(a.RequestID) || false || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestParseableStateFields$"
@@ -738,8 +738,8 @@
   {
     "id": "S1-A26",
     "file": "internal/demolaunch/state_linux.go",
-    "find": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
-    "replace": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validID(a.RequestID) || !digestID.MatchString(a.Digest) || false {\n\t\treturn attempt{}, ErrInvalid\n",
+    "find": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validRequestID(a.RequestID) || !digestID.MatchString(a.Digest) || !executionID.MatchString(a.ExecutionID) {\n\t\treturn attempt{}, ErrInvalid\n",
+    "replace": "\tvar a attempt\n\tif _, e := object(b, 4096, \"request_id request_digest execution_id time\", \"\"); e != nil || typed(b, &a) != nil || !validRequestID(a.RequestID) || !digestID.MatchString(a.Digest) || false {\n\t\treturn attempt{}, ErrInvalid\n",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestParseableStateFields$"
@@ -764,7 +764,7 @@
   {
     "id": "S1-A28",
     "file": "internal/demolaunch/state_linux.go",
-    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validRequestID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
     "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || false || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
     "kills": {
       "package": "./internal/demolaunch",
@@ -777,8 +777,8 @@
   {
     "id": "S1-A29",
     "file": "internal/demolaunch/state_linux.go",
-    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
-    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || false || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validRequestID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validRequestID(s.RequestID) || false || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestParseableStateFields$"
@@ -790,8 +790,8 @@
   {
     "id": "S1-A30",
     "file": "internal/demolaunch/state_linux.go",
-    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
-    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || false {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "find": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validRequestID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || s.Grace < 1 || s.Grace > 30 {\n\t\treturn stopIntent{}, ErrInvalid\n",
+    "replace": "\tvar s stopIntent\n\tif _, e := object(b, 4096, \"request_id execution_id grace_seconds time\", \"\"); e != nil || typed(b, &s) != nil || !validRequestID(s.RequestID) || !executionID.MatchString(s.ExecutionID) || false {\n\t\treturn stopIntent{}, ErrInvalid\n",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestParseableStateFields$"
@@ -829,8 +829,8 @@
   {
     "id": "S1-A33",
     "file": "internal/demolaunch/state_linux.go",
-    "find": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
-    "replace": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || false || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
+    "find": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || !executionID.MatchString(record.ExecutionID) || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
+    "replace": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || !executionID.MatchString(record.ExecutionID) || false || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestParseableStateFields$"
@@ -842,8 +842,8 @@
   {
     "id": "S1-A34b",
     "file": "internal/demolaunch/state_linux.go",
-    "find": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
-    "replace": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || false {\n\t\t\t\treturn ErrInvalid\n",
+    "find": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || !executionID.MatchString(record.ExecutionID) || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || (record.Timing != \"timely\" && record.Timing != \"missed\" && record.Timing != \"unknown\") {\n\t\t\t\treturn ErrInvalid\n",
+    "replace": "\t\t\tvar record stoppedRecord\n\t\t\tif _, x := object(b, 4096, \"execution_id timing closed code\", \"\"); x != nil || typed(b, &record) != nil || !executionID.MatchString(record.ExecutionID) || record.ExecutionID != at.ExecutionID || (record.Code != \"\" && record.Code != \"latch_uncertain\") || false {\n\t\t\t\treturn ErrInvalid\n",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestParseableStateFields$"
@@ -933,8 +933,8 @@
   {
     "id": "S2-P44F",
     "file": "internal/demolaunch/protocol.go",
-    "find": "\nvar identifier = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)\nvar accountName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)\n",
-    "replace": "\nvar identifier = regexp.MustCompile(`^[A-Za-z0-9._:-]{0,65}$`)\nvar accountName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)\n",
+    "find": "var requestID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)",
+    "replace": "var requestID = regexp.MustCompile(`^[A-Za-z0-9._-]{0,65}$`)",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestFormatBoundaries$"
@@ -946,8 +946,8 @@
   {
     "id": "S2-P29",
     "file": "internal/demolaunch/protocol.go",
-    "find": "\tcase \"demo.launch\":\n\t\tif len(m) != 4 || m[\"plan\"] == nil || !validID(r.RequestID) || len(r.Plan) > 65536 {\n\t\t\treturn request{}, ErrInvalid\n",
-    "replace": "\tcase \"demo.launch\":\n\t\tif  !validID(r.RequestID) || len(r.Plan) > 65536 {\n\t\t\treturn request{}, ErrInvalid\n",
+    "find": "\tcase \"demo.launch\":\n\t\tif len(m) != 4 || m[\"plan\"] == nil || !validRequestID(r.RequestID) || len(r.Plan) > 65536 {\n\t\t\treturn request{}, ErrInvalid\n",
+    "replace": "\tcase \"demo.launch\":\n\t\tif  !validRequestID(r.RequestID) || len(r.Plan) > 65536 {\n\t\t\treturn request{}, ErrInvalid\n",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestFormatBoundaries$"
@@ -959,8 +959,8 @@
   {
     "id": "S2-P30",
     "file": "internal/demolaunch/protocol.go",
-    "find": "\tcase \"demo.stop\":\n\t\tif m[\"plan\"] != nil || !validID(r.RequestID) {\n\t\t\treturn request{}, ErrInvalid\n",
-    "replace": "\tcase \"demo.stop\":\n\t\tif !validID(r.RequestID) {\n\t\t\treturn request{}, ErrInvalid\n",
+    "find": "\tcase \"demo.stop\":\n\t\tif m[\"plan\"] != nil || !validRequestID(r.RequestID) {\n\t\t\treturn request{}, ErrInvalid\n",
+    "replace": "\tcase \"demo.stop\":\n\t\tif !validRequestID(r.RequestID) {\n\t\t\treturn request{}, ErrInvalid\n",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestFormatBoundaries$"
@@ -2242,11 +2242,16 @@
   },
   {
     "file": "internal/demolaunch/service_linux.go",
-    "find": "\troster, err := parseRoster(b, c.ServiceAccount)\n\treturn c, roster, err",
-    "replace": "\troster, err := parseRoster(b, c.ServiceAccount)\n\t_ = err\n\treturn c, roster, nil",
+    "find": "\troster, err := parseRoster(b, c)\n\treturn c, roster, err",
+    "replace": "\troster, err := parseRoster(b, c)\n\t_ = err\n\treturn c, roster, nil",
     "id": "daemon-roster-result",
     "row": "loadServerInputs roster parse result",
-    "accepted_residue": "loadServerInputs roster parse result: TestEntrypointBoundaryWiring checks identifiers only; token-preserving edits and the positive Daemon path require disposable VM deployment qualification, not the non-root fixture suite."
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServerProtectedInputWiring$"
+    },
+    "expect": "invalid protected roster accepted:",
+    "qualification": "Requires execution on an isolated Linux host."
   },
   {
     "file": "internal/demolaunch/service_linux.go",
@@ -2259,14 +2264,14 @@
   {
     "id": "client-intake-restore-flags",
     "file": "cmd/swarma-demo-client/intake_linux.go",
-    "find": "_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_SETFL, flags)",
-    "replace": "errno := syscall.Errno(0)\n\t\t\t_ = flags",
-    "row": "Client restores shared stdin flags",
+    "find": "defer syscall.Close(fd)",
+    "replace": "defer syscall.Close(fd)\n\t_ = syscall.SetNonblock(fd, true)",
+    "row": "Client never mutates shared stdin flags (including signal termination)",
     "kills": {
       "package": "./cmd/swarma-demo-client",
-      "run": "^TestIntakeRestoresFlags$"
+      "run": "^TestIntake(RestoresFlags|SignalFlags)$"
     },
-    "expect": "intake changed shared flags:",
+    "expect": "(intake|signal intake) changed shared flags:",
     "qualification": "Requires execution on an isolated Linux host."
   },
   {
@@ -2280,6 +2285,760 @@
       "run": "^TestLatchRetryReason$"
     },
     "expect": "latch retry lost original reason:",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-format",
+    "file": "internal/demolaunch/config.go",
+    "find": "format != \"swarma-user-manager demo-roster/1\"",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-format",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-revision",
+    "file": "internal/demolaunch/config.go",
+    "find": "!regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(revision)",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-revision",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-boot",
+    "file": "internal/demolaunch/config.go",
+    "find": "!regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`).MatchString(boot)",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-boot",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-operator-name",
+    "file": "internal/demolaunch/config.go",
+    "find": "!accountName.MatchString(operator.Name)",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-operator-name",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-operator-uid-integer",
+    "file": "internal/demolaunch/config.go",
+    "find": "!jsonInteger(mustMember(m[\"operator\"], \"uid\"))",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-operator-uid-integer",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-operator-gid-integer",
+    "file": "internal/demolaunch/config.go",
+    "find": "!jsonInteger(mustMember(m[\"operator\"], \"gid\"))",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-operator-gid-integer",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-dispatcher-name",
+    "file": "internal/demolaunch/config.go",
+    "find": "dispatcher.Name != dispatcherName",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-dispatcher-name",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-dispatcher-principal",
+    "file": "internal/demolaunch/config.go",
+    "find": "dispatcher.Principal != dispatcherName",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-dispatcher-principal",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-dispatcher-uid",
+    "file": "internal/demolaunch/config.go",
+    "find": "dispatcher.UID != dispatcherUID",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-dispatcher-uid",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-dispatcher-gid",
+    "file": "internal/demolaunch/config.go",
+    "find": "dispatcher.GID != dispatcherUID",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-dispatcher-gid",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-dispatcher-generation",
+    "file": "internal/demolaunch/config.go",
+    "find": "!validGeneration(dispatcher.Generation)",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-dispatcher-generation",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-disjoint-name",
+    "file": "internal/demolaunch/config.go",
+    "find": "dispatcher.Name == operator.Name",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-disjoint-name",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-disjoint-uid",
+    "file": "internal/demolaunch/config.go",
+    "find": "operator.UID.String() == jsonNumberUID(dispatcher.UID)",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-disjoint-uid",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-disjoint-range",
+    "file": "internal/demolaunch/config.go",
+    "find": "operatorUID >= 30000 && operatorUID <= 30019",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-disjoint-range",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-executor-id",
+    "file": "internal/demolaunch/config.go",
+    "find": "executorPath(executor.ID) == \"\"",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-executor-id",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-executor-path",
+    "file": "internal/demolaunch/config.go",
+    "find": "executor.Path != executorPath(executor.ID)",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-executor-path",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-executor-digest",
+    "file": "internal/demolaunch/config.go",
+    "find": "!digestID.MatchString(executor.SHA256)",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-executor-digest",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-runtime-booleans",
+    "file": "internal/demolaunch/config.go",
+    "find": "typed(b, &v) != nil",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-runtime-booleans",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-account-names",
+    "file": "internal/demolaunch/config.go",
+    "find": "(a.Name != \"swarma-demo-01\" && a.Name != \"swarma-demo-02\" && a.Name != \"swarma-demo-03\")",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-account-names",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-account-uid-min",
+    "file": "internal/demolaunch/config.go",
+    "find": "a.UID < 30000",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-account-uid-min",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-account-uid-max",
+    "file": "internal/demolaunch/config.go",
+    "find": "a.UID > 30019",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-account-uid-max",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-account-gid",
+    "file": "internal/demolaunch/config.go",
+    "find": "a.GID != a.UID",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-account-gid",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-account-generation",
+    "file": "internal/demolaunch/config.go",
+    "find": "!validGeneration(a.Generation)",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-account-generation",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-account-owner",
+    "file": "internal/demolaunch/config.go",
+    "find": "a.Owner != dispatcher.Principal",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-account-owner",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-account-home",
+    "file": "internal/demolaunch/config.go",
+    "find": "a.Home != \"/srv/swarma-demo/home/\"+a.Name",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-account-home",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-account-workspace",
+    "file": "internal/demolaunch/config.go",
+    "find": "a.Workspace != \"/srv/swarma-demo/work/\"+a.Name",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-account-workspace",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-account-digest",
+    "file": "internal/demolaunch/config.go",
+    "find": "!digestID.MatchString(a.CopyDigest)",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-account-digest",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-unique-name",
+    "file": "internal/demolaunch/config.go",
+    "find": " || names[a.Name]",
+    "replace": "",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterUniquenessAndCount$"
+    },
+    "expect": "roster uniqueness accepted:",
+    "row": "roster-unique-name",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-unique-uid",
+    "file": "internal/demolaunch/config.go",
+    "find": " || uids[a.UID]",
+    "replace": "",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterUniquenessAndCount$"
+    },
+    "expect": "roster uniqueness accepted:",
+    "row": "roster-unique-uid",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-unique-generation",
+    "file": "internal/demolaunch/config.go",
+    "find": " || gens[a.Generation]",
+    "replace": "",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterUniquenessAndCount$"
+    },
+    "expect": "roster uniqueness accepted:",
+    "row": "roster-unique-generation",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-count",
+    "file": "internal/demolaunch/config.go",
+    "find": "len(raw) != 3",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterUniquenessAndCount$"
+    },
+    "expect": "roster count accepted:",
+    "row": "roster-count",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-dispatcher-generation-distinct",
+    "file": "internal/demolaunch/config.go",
+    "find": "map[string]bool{dispatcher.Generation: true}",
+    "replace": "map[string]bool{}",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-dispatcher-generation-distinct",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-binding-caller",
+    "file": "internal/demolaunch/config.go",
+    "find": "operator.UID.String() != jsonNumberUID(c.Caller.UID)",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServerProtectedInputWiring$"
+    },
+    "expect": "invalid protected roster accepted:",
+    "row": "roster-binding-caller",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-binding-service-name",
+    "file": "internal/demolaunch/config.go",
+    "find": "c.ServiceAccount != dispatcher.Principal",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServerProtectedInputWiring$"
+    },
+    "expect": "invalid protected roster accepted:",
+    "row": "roster-binding-service-name",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-binding-service-uid",
+    "file": "internal/demolaunch/config.go",
+    "find": "c.ServiceUID != dispatcher.UID",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServerProtectedInputWiring$"
+    },
+    "expect": "invalid protected roster accepted:",
+    "row": "roster-binding-service-uid",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-binding-executor",
+    "file": "internal/demolaunch/config.go",
+    "find": "c.Executor != executor.ID",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestServerProtectedInputWiring$"
+    },
+    "expect": "invalid protected roster accepted:",
+    "row": "roster-binding-executor",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "config-executor-id",
+    "file": "internal/demolaunch/config.go",
+    "find": "executorPath(c.Executor) == \"\"",
+    "replace": "false",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestConfigExecutorIDs$"
+    },
+    "expect": "executor config accepted:",
+    "row": "config-executor-id",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-cap",
+    "file": "internal/demolaunch/config.go",
+    "find": "const rosterLimit = 48 * 1024",
+    "replace": "const rosterLimit = 16 * 1024",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster cap control refused:",
+    "row": "roster-cap",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-top-members",
+    "file": "internal/demolaunch/config.go",
+    "find": "\"format source_revision boot_id operator dispatcher executor runtime accounts\", \"\"",
+    "replace": "\"format source_revision boot_id operator dispatcher executor runtime accounts\", \"extra\"",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-top-members",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-closed-operator",
+    "file": "internal/demolaunch/config.go",
+    "find": "\"name uid gid\", \"\"",
+    "replace": "\"uid gid\", \"name NAME\"",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-closed-operator",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-closed-dispatcher",
+    "file": "internal/demolaunch/config.go",
+    "find": "\"name uid gid principal generation\", \"\"",
+    "replace": "\"name gid principal generation\", \"uid UID\"",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-closed-dispatcher",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-closed-executor",
+    "file": "internal/demolaunch/config.go",
+    "find": "\"id path sha256\", \"\"",
+    "replace": "\"id path\", \"sha256 SHA256\"",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-closed-executor",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-closed-runtime",
+    "file": "internal/demolaunch/config.go",
+    "find": "\"admitted inventory_qualified creation_exclusion_qualified interpreter_qualified\", \"\"",
+    "replace": "\"admitted inventory_qualified creation_exclusion_qualified interpreter_qualified\", \"extra\"",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "roster-closed-runtime",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "request-id-grammar",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`",
+    "replace": "`^[A-Za-z0-9._:-]{1,64}$`",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRequestIDGrammar$"
+    },
+    "expect": "request ID grammar accepted:",
+    "row": "request-id-grammar",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "request-id-launch",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "!validRequestID(r.RequestID) || len(r.Plan)",
+    "replace": "!validID(r.RequestID) || len(r.Plan)",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRequestIDGrammar$"
+    },
+    "expect": "request ID grammar accepted:",
+    "row": "request-id-launch",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "request-id-stop",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "m[\"plan\"] != nil || !validRequestID(r.RequestID)",
+    "replace": "m[\"plan\"] != nil || !validID(r.RequestID)",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRequestIDGrammar$"
+    },
+    "expect": "request ID grammar accepted:",
+    "row": "request-id-stop",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "request-id-attempt",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "!validRequestID(a.RequestID)",
+    "replace": "!validID(a.RequestID)",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestDurableRequestIDGrammar$"
+    },
+    "expect": "durable request ID accepted:",
+    "row": "request-id-attempt",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "request-id-intent",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "!validRequestID(s.RequestID)",
+    "replace": "!validID(s.RequestID)",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestDurableRequestIDGrammar$"
+    },
+    "expect": "durable request ID accepted:",
+    "row": "request-id-intent",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "generation-nonzero",
+    "file": "internal/demolaunch/protocol.go",
+    "find": " && s != \"00000000000000000000000000000000\"",
+    "replace": "",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "expect": "roster schema accepted:",
+    "row": "generation-nonzero",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "stopped-execution-format",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "!executionID.MatchString(record.ExecutionID) || ",
+    "replace": "",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStoppedRecordIdentity$"
+    },
+    "expect": "stopped record accepted:",
+    "row": "stopped-execution-format",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "stopped-closed-member",
+    "file": "internal/demolaunch/state_linux.go",
+    "find": "\"execution_id timing closed code\", \"\"",
+    "replace": "\"execution_id timing code\", \"closed\"",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestStoppedRecordIdentity$"
+    },
+    "expect": "stopped record accepted:",
+    "row": "stopped-closed-member",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "loss-unpersisted-latch",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "_ = e.closeAdmission(\"loss_unpersisted\")",
+    "replace": "// latch omitted",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestUnpersistedLossLatch$"
+    },
+    "expect": "unpersisted loss latch missing:",
+    "row": "loss-unpersisted-latch",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "child-stdin-six-seconds",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "intake := now.Add(5 * time.Second)",
+    "replace": "intake := now.Add(6 * time.Second)",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadline$"
+    },
+    "expect": "stdin elapsed deadline changed:",
+    "row": "child-stdin-six-seconds",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "client-stdin-ten-seconds",
+    "file": "cmd/swarma-demo-client/main.go",
+    "find": "const stdinBudget = 5 * time.Second",
+    "replace": "const stdinBudget = 10 * time.Second",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestCLIStdin$"
+    },
+    "expect": "CLI stdin deadline changed:",
+    "row": "client-stdin-ten-seconds",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "config-id-upper-bound",
+    "file": "internal/demolaunch/protocol.go",
+    "find": "v > 0 && v < 4294967295",
+    "replace": "v > 0",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestConfigIDUpperBound$"
+    },
+    "expect": "ID upper bound accepted:",
+    "row": "config-id-upper-bound",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-cap-upper",
+    "file": "internal/demolaunch/config.go",
+    "find": "const rosterLimit = 48 * 1024",
+    "replace": "const rosterLimit = 64 * 1024",
+    "expect": "roster cap accepted:",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "row": "roster-cap-upper",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-runtime-inert",
+    "file": "internal/demolaunch/config.go",
+    "find": "if typed(b, &v) != nil {",
+    "replace": "if typed(b, &v) != nil || !v {",
+    "expect": "roster control refused:",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "row": "roster-runtime-inert",
+    "qualification": "Requires execution on an isolated Linux host."
+  },
+  {
+    "id": "roster-revision-unpinned",
+    "file": "internal/demolaunch/config.go",
+    "find": "!regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(revision)",
+    "replace": "(!regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(revision) || revision != \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\")",
+    "expect": "roster control refused:",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestRosterSchema$"
+    },
+    "row": "roster-revision-unpinned",
     "qualification": "Requires execution on an isolated Linux host."
   }
 ]

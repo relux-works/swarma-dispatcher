@@ -2460,7 +2460,7 @@
     "id": "roster-disjoint-range",
     "file": "internal/demolaunch/config.go",
     "find": "operatorUID >= 30000 && operatorUID <= 30019",
-    "replace": "false",
+    "replace": "operatorUID >= 30000 && operatorUID <= 30019 && false",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestRosterSchema$"
@@ -2512,7 +2512,7 @@
     "id": "roster-runtime-booleans",
     "file": "internal/demolaunch/config.go",
     "find": "typed(b, &v) != nil",
-    "replace": "false",
+    "replace": "typed(b, &v) != nil && false",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestRosterSchema$"
@@ -2954,7 +2954,7 @@
     "id": "loss-unpersisted-latch",
     "file": "internal/demolaunch/runner_linux.go",
     "find": "_ = e.closeAdmission(\"loss_unpersisted\")",
-    "replace": "// latch omitted",
+    "replace": "_ = error(nil)",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestUnpersistedLossLatch$"

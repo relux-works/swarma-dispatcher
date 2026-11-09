@@ -211,6 +211,11 @@ go build -o .temp/swarma-demo-client ./cmd/swarma-demo-client
 .temp/swarma-demo-client --config /absolute/demo-client.json status < status-request.json
 ```
 
+The demo client's stdin intake preserves shared descriptor flags. Socket reads
+use per-call nonblocking receive; pipes and terminals retain bounded polling.
+A terminal hangup refuses with `input/output error` (EIO), not a clean EOF.
+Only actual regular files use the synchronous redirected-file path.
+
 The client prints one JSON result with no automatic retry. `receipt-seen` proves
 only receipt observation; `unknown` and `unresolved` retain uncertainty. A client
 exit of zero means a reply was received, not absence or readiness. Daemon errors

@@ -218,8 +218,8 @@
   {
     "id": "S1-H02",
     "file": "internal/demolaunch/runner_linux.go",
-    "find": "err = inW.SetWriteDeadline(intake)",
-    "replace": "_ = intake\n\terr = nil",
+    "find": "err = apply(inW, intake)",
+    "replace": "_ = intake\n\t_ = apply\n\terr = nil",
     "kills": {
       "package": "./internal/demolaunch",
       "run": "^TestChildStdinDeadline$"
@@ -231,7 +231,7 @@
   {
     "id": "S1-H03",
     "file": "internal/demolaunch/runner_linux.go",
-    "find": "intake := childIntakeDeadline(now(), deadline)\n\tif out.stdinDeadline != nil {\n\t\tout.stdinDeadline(intake)\n\t}\n\terr = inW.SetWriteDeadline(intake)",
+    "find": "intake := childIntakeDeadline(now(), deadline)\n\tapply := (*os.File).SetWriteDeadline\n\tif out.stdinDeadline != nil {\n\t\tapply = out.stdinDeadline\n\t}\n\terr = apply(inW, intake)",
     "replace": "intake := now().Add(50 * time.Second)\n\t_ = intake\n\terr = nil",
     "kills": {
       "package": "./internal/demolaunch",
@@ -3096,8 +3096,8 @@
   {
     "id": "intake-socket-read-bound",
     "file": "cmd/swarma-demo-client/intake_linux.go",
-    "find": "count, e := syscall.Read(fd, buf[:size])",
-    "replace": "_ = size\n\t\tcount, e := syscall.Read(fd, buf[:32768])",
+    "find": "count, _, e = syscall.Recvfrom(fd, buf[:size], syscall.MSG_DONTWAIT)",
+    "replace": "_ = size\n\t\t\tcount, e = syscall.Read(fd, buf[:32768])",
     "kills": {
       "package": "./cmd/swarma-demo-client",
       "run": "^TestIntakeSocketReadBound$"
@@ -3109,8 +3109,8 @@
   {
     "id": "intake-pipe-consumption",
     "file": "cmd/swarma-demo-client/intake_linux.go",
-    "find": "count, e := syscall.Read(fd, buf[:size])",
-    "replace": "_ = size\n\t\tcount, e := syscall.Read(fd, buf[:32768])",
+    "find": "count, e = syscall.Read(fd, buf[:size])",
+    "replace": "_ = size\n\t\tcount, e = syscall.Read(fd, buf[:32768])",
     "kills": {
       "package": "./cmd/swarma-demo-client",
       "run": "^TestIntakePipeConsumption$"
@@ -3122,8 +3122,8 @@
   {
     "id": "intake-pty-read-bound",
     "file": "cmd/swarma-demo-client/intake_linux.go",
-    "find": "count, e := syscall.Read(fd, buf[:size])",
-    "replace": "_ = size\n\t\tcount, e := syscall.Read(fd, buf[:32768])",
+    "find": "count, e = syscall.Read(fd, buf[:size])",
+    "replace": "_ = size\n\t\tcount, e = syscall.Read(fd, buf[:32768])",
     "kills": {
       "package": "./cmd/swarma-demo-client",
       "run": "^TestIntakePTYTrickle$"
@@ -3226,8 +3226,8 @@
   {
     "id": "intake-transient-flags",
     "file": "cmd/swarma-demo-client/intake_linux.go",
-    "find": "count, e := syscall.Read(fd, buf[:size])",
-    "replace": "_ = syscall.SetNonblock(fd, true)\n\t\tcount, e := syscall.Read(fd, buf[:size])\n\t\t_ = syscall.SetNonblock(fd, false)",
+    "find": "count, e = syscall.Read(fd, buf[:size])",
+    "replace": "_ = syscall.SetNonblock(fd, true)\n\t\tcount, e = syscall.Read(fd, buf[:size])\n\t\t_ = syscall.SetNonblock(fd, false)",
     "kills": {
       "package": "./cmd/swarma-demo-client",
       "run": "^TestIntakeNeverSetsFlags$"
@@ -3235,5 +3235,108 @@
     "row": "Forbid transient shared flag toggles between observations",
     "qualification": "Requires execution on an isolated Linux host.",
     "expect": "intake mutates shared descriptor flags"
+  },
+  {
+    "id": "intake-socket-urgent",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "count, _, e = syscall.Recvfrom(fd, buf[:size], syscall.MSG_DONTWAIT)",
+    "replace": "count, e = syscall.Read(fd, buf[:size])",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeSocketUrgent$"
+    },
+    "row": "Urgent bytes cannot block socket intake beyond its original budget",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "socket urgent intake exceeded budget"
+  },
+  {
+    "id": "intake-anonymous-regular",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "stat.Mode&syscall.S_IFMT == syscall.S_IFREG",
+    "replace": "info.Mode().IsRegular()",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeAnonymousDescriptor$"
+    },
+    "row": "Only real regular files take the untimed read path",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "anonymous stdin entered untimed path"
+  },
+  {
+    "id": "R2-I10-B1-numeric-flags",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "count, e = syscall.Read(fd, buf[:size])",
+    "replace": "fl, _, _ := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), 3, 0)\n\t\t\tsyscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), 4, fl|0x800)\n\t\t\tcount, e = syscall.Read(fd, buf[:size])\n\t\t\tsyscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), 4, fl)",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeNeverSetsFlags$"
+    },
+    "row": "R2-I10 / B1: numeric transient descriptor flag mutation",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "intake mutates shared descriptor flags"
+  },
+  {
+    "id": "R2-I11-B2-helper-flags",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "count, e = syscall.Read(fd, buf[:size])",
+    "replace": "toggleBlocking(fd, true)\n\t\t\tcount, e = syscall.Read(fd, buf[:size])\n\t\t\ttoggleBlocking(fd, false)",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeNeverSetsFlags$"
+    },
+    "row": "R2-I11 / B2: transient flag helper in another package source file",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "intake mutates shared descriptor flags",
+    "edits": [
+      {
+        "file": "cmd/swarma-demo-client/main.go",
+        "find": "\t\"os\"\n\t\"time\"\n)",
+        "replace": "\t\"os\"\n\t\"syscall\"\n\t\"time\"\n)"
+      },
+      {
+        "file": "cmd/swarma-demo-client/main.go",
+        "find": "var errIntakeLimit = errors.New(\"request_too_large\")",
+        "replace": "var errIntakeLimit = errors.New(\"request_too_large\")\n\nfunc toggleBlocking(fd int, on bool) { _ = syscall.SetNonblock(fd, on) }"
+      }
+    ]
+  },
+  {
+    "id": "R2-S02-B4-production-clock",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "now := time.Now\n",
+    "replace": "now := func() time.Time { return time.Now().Add(time.Second) }\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadlineCallsite$"
+    },
+    "row": "R2-S02 / B4: production clock skew must not be hidden by a test clock",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "child stdin production deadline changed"
+  },
+  {
+    "id": "R2-S03-B3b-applied-deadline",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "err = apply(inW, intake)",
+    "replace": "applied := intake\n\tif widened := intake.Add(time.Second); widened.Before(deadline) { applied = widened }\n\terr = apply(inW, applied)",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadlineCallsite$"
+    },
+    "row": "R2-S03 / B3b: applied leg widened while retaining the operation cap",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "child stdin callsite deadline changed"
+  },
+  {
+    "id": "R2-L03-latch-scope",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "onLossUnpersisted: func() { e.mu.Lock(); defer e.mu.Unlock(); _ = e.closeAdmission(\"loss_unpersisted\") }",
+    "replace": "onLossUnpersisted: func() { e.mu.Lock(); closed := e.latchWritten; e.mu.Unlock(); if !closed { _ = e.closeAdmission(\"loss_unpersisted\") } }",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestLossLatchWriteLockScope$"
+    },
+    "row": "R2-L03: engine lock must cover the latch write, not just callback entry",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "loss latch write outside engine lock"
   }
 ]

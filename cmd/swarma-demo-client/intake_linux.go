@@ -13,13 +13,18 @@ import (
 // Poll the inherited blocking description without changing its flags. Closing a
 // duplicate cannot restore flags after a signal, so even temporary F_SETFL is
 // forbidden. As with ordinary stdin, the caller must not concurrently consume
-// this stream. Regular files retain the bounded synchronous read path.
+// this stream. Only S_IFREG files take the bounded synchronous read path.
+// A terminal hangup is refused with EIO rather than treated as a clean EOF.
 func intake(input *os.File, budget time.Duration) ([]byte, error) {
 	info, err := input.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode().IsRegular() {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil, syscall.EINVAL
+	}
+	if stat.Mode&syscall.S_IFMT == syscall.S_IFREG {
 		b, err := io.ReadAll(io.LimitReader(input, 131073))
 		if err != nil {
 			return nil, err
@@ -89,7 +94,15 @@ func intake(input *os.File, budget time.Duration) ([]byte, error) {
 			return nil, queryErr
 		}
 		size = min(size, 131073-len(result))
-		count, e := syscall.Read(fd, buf[:size])
+		var count int
+		var e error
+		if stat.Mode&syscall.S_IFMT == syscall.S_IFSOCK {
+			// TIOCINQ can include urgent bytes that a normal read skips.
+			// Per-call nonblocking receive preserves the shared flags.
+			count, _, e = syscall.Recvfrom(fd, buf[:size], syscall.MSG_DONTWAIT)
+		} else {
+			count, e = syscall.Read(fd, buf[:size])
+		}
 		if e == syscall.EINTR || e == syscall.EAGAIN {
 			continue
 		}

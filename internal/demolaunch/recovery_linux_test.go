@@ -325,21 +325,37 @@ func TestChildStdinDeadline(t *testing.T) {
 	}
 }
 
-// The actual startChild call site passes a five-second stdin deadline, capped
-// by the operation deadline. A fixed clock and observation at SetWriteDeadline
-// avoid a scheduler-dependent 5-vs-6-second measurement. Fixture children only;
-// TestChildStdinDeadline separately exercises a real blocked pipe.
+// Intercept the actual deadline-setting call and forward the identical value to
+// os.File.SetWriteDeadline. Fixed-clock cases pin the leg and operation cap;
+// the nil-clock case brackets the applied value using real observation instants
+// so a production-only offset is not masked. This observes the API argument,
+// not kernel timing; TestChildStdinDeadline exercises the real blocked pipe.
 func TestChildStdinDeadlineCallsite(t *testing.T) {
-	for _, seconds := range []int{2, 40} {
+	for _, seconds := range []int{2, 40, 0} {
 		h := fixture(t, "good")
 		now := time.Now()
 		var observed time.Time
-		out := &capture{limit: 16384, stdinNow: func() time.Time { return now }, stdinDeadline: func(d time.Time) { observed = d }}
-		ch, err := startChild(h.e.ctx, h.e.run, managerPath, []byte(`{}`), now.Add(time.Duration(seconds)*time.Second), out, &capture{limit: 16384})
+		var appliedAt time.Time
+		out := &capture{limit: 16384, stdinNow: func() time.Time { return now }, stdinDeadline: func(f *os.File, d time.Time) error {
+			observed, appliedAt = d, time.Now()
+			return f.SetWriteDeadline(d)
+		}}
+		limit := seconds
+		if seconds == 0 {
+			out.stdinNow = nil
+			limit = 40
+		}
+		ch, err := startChild(h.e.ctx, h.e.run, managerPath, []byte(`{}`), now.Add(time.Duration(limit)*time.Second), out, &capture{limit: 16384})
 		if ch != nil {
 			waitChild(t, ch, time.Now().Add(30*time.Second))
 		}
 		must(t, err)
+		if seconds == 0 {
+			if observed.Before(now.Add(5*time.Second)) || observed.After(appliedAt.Add(5*time.Second)) {
+				t.Fatalf("child stdin production deadline changed: applied=%s start=%s observed-at=%s", observed, now, appliedAt)
+			}
+			continue
+		}
 		want := 5 * time.Second
 		if seconds == 2 {
 			want = 2 * time.Second

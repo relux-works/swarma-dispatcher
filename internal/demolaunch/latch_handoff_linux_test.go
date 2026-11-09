@@ -162,3 +162,45 @@ func TestLossLatchImmediateDurable(t *testing.T) {
 		})
 	}
 }
+
+// Probe inside closeAdmission's exclusive create, after closed/reason writes
+// and before latchWritten. With no other engine user, a failed TryLock proves
+// the callback still owns the lock at persistence, not just at callback entry.
+// This forced interleaving complements the existing entry/order witnesses; it
+// does not instrument every instruction. Intact .lost is the no-latch control.
+func TestLossLatchWriteLockScope(t *testing.T) {
+	for _, persisted := range []bool{true, false} {
+		t.Run(map[bool]string{true: "persisted", false: "unpersisted"}[persisted], func(t *testing.T) {
+			h, c := latchCapture(t)
+			if !persisted {
+				c.onLoss = func() error { return syscall.ENOSPC }
+			}
+			calls, unlocked := 0, false
+			fields := false
+			h.e.store.createFault = func(name string) error {
+				if name != "closed" {
+					return nil
+				}
+				calls++
+				if h.e.mu.TryLock() {
+					unlocked = true
+					h.e.mu.Unlock()
+				}
+				fields = h.e.closed && h.e.latchReason == "loss_unpersisted" && !h.e.latchWritten
+				return nil
+			}
+			c.write([]byte("loss"))
+			h.e.store.createFault = nil
+			if persisted {
+				if calls != 0 || h.e.closed {
+					t.Fatal("persisted loss scope control latched")
+				}
+			} else if calls != 1 || unlocked || !fields || !h.e.latchWritten {
+				t.Fatalf("loss latch write outside engine lock: calls=%d unlocked=%v fields=%v written=%v", calls, unlocked, fields, h.e.latchWritten)
+			}
+			if h.calls.Load() != 0 {
+				t.Fatal("latch scope invoked launcher")
+			}
+		})
+	}
+}

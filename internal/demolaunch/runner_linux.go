@@ -51,7 +51,7 @@ type capture struct {
 	writeFile         func([]byte) (int, error)
 	// Nil in production; tests pin the actual stdin deadline at its call site.
 	stdinNow      func() time.Time
-	stdinDeadline func(time.Time)
+	stdinDeadline func(*os.File, time.Time) error
 }
 
 func (c *capture) write(b []byte) {
@@ -212,10 +212,11 @@ func startChild(ctx context.Context, run runner, path string, payload []byte, de
 		now = out.stdinNow
 	}
 	intake := childIntakeDeadline(now(), deadline)
+	apply := (*os.File).SetWriteDeadline
 	if out.stdinDeadline != nil {
-		out.stdinDeadline(intake)
+		apply = out.stdinDeadline
 	}
-	err = inW.SetWriteDeadline(intake)
+	err = apply(inW, intake)
 	if err == nil {
 		var n int
 		n, err = inW.Write(payload)

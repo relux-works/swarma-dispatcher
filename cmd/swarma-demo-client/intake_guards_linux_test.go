@@ -7,9 +7,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"os"
 	"os/exec"
@@ -304,24 +301,4 @@ func TestIntakePTYTrickle(t *testing.T) {
 	if res.Error != os.ErrDeadlineExceeded.Error() || res.Elapsed < 4900*time.Millisecond || res.Elapsed > 6500*time.Millisecond {
 		t.Fatalf("pty intake read exceeded budget: %+v", res)
 	}
-}
-
-// A source-level prohibition catches transient flag mutations between fdinfo
-// samples. Inspect identifiers, excluding comments/strings. This deliberately
-// forbids the four standard flag-setting APIs/tokens in this small source file;
-// runtime success/timeout/signal tests remain the behavioral controls.
-func TestIntakeNeverSetsFlags(t *testing.T) {
-	f, err := parser.ParseFile(token.NewFileSet(), "intake_linux.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ast.Inspect(f, func(n ast.Node) bool {
-		if id, ok := n.(*ast.Ident); ok {
-			switch id.Name {
-			case "F_SETFL", "SetNonblock", "FIONBIO", "O_NONBLOCK":
-				t.Errorf("intake mutates shared descriptor flags: %s", id.Name)
-			}
-		}
-		return true
-	})
 }

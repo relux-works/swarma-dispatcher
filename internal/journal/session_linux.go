@@ -258,6 +258,20 @@ func (s *Session) consume(fn func() error) error {
 	return fn()
 }
 
+// joinFailure preserves the first class and promotes poison from every input
+// before errors.As can hide a later poisoned Error behind the first cause.
+func joinFailure(first error, rest ...error) error {
+	causes := append([]error{first}, rest...)
+	joined := errors.Join(causes...)
+	for _, cause := range causes {
+		var je *Error
+		if errors.As(cause, &je) && je.Poisoned {
+			return poison(joined)
+		}
+	}
+	return joined
+}
+
 // fail defers all teardown while a consumer runs (spec 106-110, 228-232).
 // enter joins the recorded failure after callback quiescence. close is never
 // retried; Linux releases the descriptor even when reporting most close errors.
@@ -279,7 +293,9 @@ func (s *Session) fail(err error) error {
 		}
 		return err
 	}
-	err = errors.Join(s.callbackFailure, err)
+	if s.callbackFailure != nil {
+		err = joinFailure(s.callbackFailure, err)
+	}
 	if s.state.Closed {
 		return err
 	}
@@ -565,7 +581,7 @@ type Recovery struct {
 
 func (r *Recovery) result(err error) error {
 	if r.s.callbackFailure != nil {
-		return errors.Join(r.s.callbackFailure, r.err, err)
+		return joinFailure(r.s.callbackFailure, r.err, err)
 	}
 	if r.err != nil {
 		return r.err

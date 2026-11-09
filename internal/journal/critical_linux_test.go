@@ -12,11 +12,11 @@ import (
 	"testing"
 )
 
-// The source-shape control pins continuous locking across the seam-free state
-// update as well as the I/O helpers: no Unlock in the append helper chain, and
-// exactly one deferred Unlock in Append. This deliberately requires review if
-// the locking structure changes. It catches even an unobservable immediate
-// unlock/relock; the runtime control below checks actual journal/state agreement.
+// The source-shape control counts direct s.mu.Unlock calls only in Append,
+// append, drift, fullWrite and syncFD: one deferred call in Append, none in the
+// other four. This deliberately requires review if that structure changes.
+// The runtime spinner below and TestSessionQueuedAheadOfClose provide
+// scheduling-dependent coverage of indirect unlock forms.
 func TestAppendCriticalSection(t *testing.T) {
 	b, err := recoverySource.ReadFile("session_linux.go")
 	must(t, err)

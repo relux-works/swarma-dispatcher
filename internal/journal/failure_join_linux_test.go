@@ -5,6 +5,7 @@ package journal
 import (
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -37,6 +38,54 @@ func TestFailureJoinDisposition(t *testing.T) {
 			}
 		}
 	}
+	// Nested causes are placed in either argument. Depth two adds a unary
+	// wrapper inside the join, so both Unwrap forms must be traversed.
+	for _, depth := range []int{1, 2} {
+		for _, nestedFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("nested/depth-%d/first-%v", depth, nestedFirst), func(t *testing.T) {
+				plain := failure(InvalidState, "protection", nil)
+				var branch error = poison(failure(StorageWriteFailure, "close", ErrSyncFailure))
+				if depth == 2 {
+					branch = fmt.Errorf("context: %w", branch)
+				}
+				nested := errors.Join(plain, branch)
+				var first, incoming error = failure(MissingState, "earlier", nil), nested
+				want := MissingState
+				if nestedFirst {
+					first, incoming = nested, first
+					want = InvalidState
+				}
+				s := &Session{e: &engine{}, lock: -1, callbackFailure: first}
+				r := &Recovery{s: s, err: incoming}
+				check := func(label string, err error) {
+					var je *Error
+					if ClassOf(err) != want || !errors.As(err, &je) || !je.Poisoned || !errors.Is(err, ErrSyncFailure) {
+						t.Errorf("NESTED-JOIN: %s lost class, poison or sentinel: %v", label, err)
+					}
+				}
+				check("result", r.result(nil))
+				check("fail", s.fail(incoming))
+				check("terminal", s.terminal)
+				if !s.State().Poisoned || !s.State().Closed {
+					t.Error("NESTED-JOIN: terminal state unpoisoned")
+				}
+				// No callback record: exercise the quiescent tail independently of joinFailure.
+				direct := &Session{e: &engine{}, lock: -1}
+				err := direct.fail(nested)
+				var je *Error
+				if !errors.As(err, &je) || !je.Poisoned || !direct.State().Poisoned || direct.terminal != err {
+					t.Error("NESTED-TAIL: nested poison lost")
+				}
+				// Observe the recorder before the later join can rescue its poison bit.
+				recording := &Session{e: &engine{}, lock: -1, callbackRunning: true}
+				ret := recording.fail(nested)
+				if ret != nested || !recording.state.Poisoned || recording.state.Closed || recording.terminal != nil {
+					t.Error("NESTED-RECORDER: nested poison lost or teardown occurred")
+				}
+			})
+		}
+	}
+
 }
 
 // Outside callbacks, a cleanly classified Session refusal retains its concrete

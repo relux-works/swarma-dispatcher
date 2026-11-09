@@ -48,7 +48,7 @@ func (m *fixtureMonitor) before(v seamEvent) error {
 	active := m.callbacks[v.fd] > 0 && m.locks[v.fd]
 	hook := m.hook
 	m.mu.Unlock()
-	if active && (v.kind == "close" || (v.kind == "flock" && v.flags&syscall.LOCK_UN != 0)) {
+	if active && (v.kind == "close" || (v.kind == "flock" && v.flags&(syscall.LOCK_UN|syscall.LOCK_SH) != 0)) {
 		m.mu.Lock()
 		m.ownershipHits++
 		m.mu.Unlock()

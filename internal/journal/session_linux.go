@@ -258,14 +258,33 @@ func (s *Session) consume(fn func() error) error {
 	return fn()
 }
 
+// hasPoison walks every branch of an error tree without a fixed depth limit.
+// Class selection remains the first-match rule in poison, independently of this
+// aggregate disposition (spec 215, 219-221).
+func hasPoison(err error) bool {
+	if je, ok := err.(*Error); ok && je != nil && je.Poisoned {
+		return true
+	}
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, child := range e.Unwrap() {
+			if hasPoison(child) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		return hasPoison(e.Unwrap())
+	}
+	return false
+}
+
 // joinFailure preserves the first class and promotes poison from every input
 // before errors.As can hide a later poisoned Error behind the first cause.
 func joinFailure(first error, rest ...error) error {
 	causes := append([]error{first}, rest...)
 	joined := errors.Join(causes...)
 	for _, cause := range causes {
-		var je *Error
-		if errors.As(cause, &je) && je.Poisoned {
+		if hasPoison(cause) {
 			return poison(joined)
 		}
 	}
@@ -287,8 +306,7 @@ func (s *Session) fail(err error) error {
 		} else if errors.Is(err, ErrSyncFailure) && !errors.Is(s.callbackFailure, ErrSyncFailure) {
 			s.callbackFailure = errors.Join(s.callbackFailure, ErrSyncFailure)
 		}
-		var je *Error
-		if errors.As(err, &je) && je.Poisoned {
+		if hasPoison(err) {
 			s.state.Poisoned = true
 		}
 		return err
@@ -316,8 +334,7 @@ func (s *Session) fail(err error) error {
 			s.state.Poisoned = true
 		}
 	}
-	var je *Error
-	if errors.As(err, &je) && je.Poisoned {
+	if hasPoison(err) {
 		s.state.Poisoned = true
 	}
 	if s.state.Poisoned && err != nil {

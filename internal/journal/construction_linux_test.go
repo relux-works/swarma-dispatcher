@@ -255,7 +255,7 @@ func TestSessionQueuedAheadOfClose(t *testing.T) {
 // panic unwinding also clears the mark before deferred entry teardown.
 func TestCallbackFailureGuard(t *testing.T) {
 	for _, phase := range []string{"Consume", "Finish"} {
-		for _, kind := range []string{"control", "errno", "logical", "return-error", "repeated", "panic"} {
+		for _, kind := range []string{"control", "errno", "logical", "nil", "return-error", "repeated", "panic"} {
 			t.Run(phase+"/"+kind, func(t *testing.T) {
 				c, e, s := sweepSetup(t)
 				must(t, s.Close())
@@ -275,18 +275,34 @@ func TestCallbackFailureGuard(t *testing.T) {
 					case "logical", "return-error", "repeated", "panic":
 						_, cause = r.s.readInput("../journal", [32]byte{})
 					}
-					if cause != nil {
-						_ = r.s.fail(cause)
+					checkReturn := func(arg error) error {
+						ret := r.s.fail(arg)
+						wantClass, wantPoison := StorageWriteFailure, true
+						if arg != nil {
+							wantClass = ClassOf(arg)
+							var je *Error
+							wantPoison = errors.As(arg, &je) && je.Poisoned
+						}
+						var je *Error
+						if ret == nil || ClassOf(ret) != wantClass || !errors.As(ret, &je) || je.Poisoned != wantPoison || (arg != nil && ret != arg) {
+							t.Errorf("CALLBACK-RETURN: class, poison or identity changed: arg=%v ret=%v", arg, ret)
+						}
+						return ret
+					}
+					if kind == "nil" {
+						cause = checkReturn(nil)
+					} else if cause != nil {
+						checkReturn(cause)
 					}
 					if kind == "repeated" {
 						for i := 0; i < 8; i++ {
-							_ = r.s.fail(failure(MissingState, "later", nil))
+							checkReturn(failure(MissingState, "later", nil))
 						}
 						if r.s.callbackFailure != cause {
 							t.Error("CALLBACK-RECORD: first cause replaced or grew")
 						}
-						_ = r.s.fail(poison(failure(StorageWriteFailure, "later sync", ErrSyncFailure)))
-						_ = r.s.fail(poison(failure(StorageWriteFailure, "repeated sync", ErrSyncFailure)))
+						checkReturn(poison(failure(StorageWriteFailure, "later sync", ErrSyncFailure)))
+						checkReturn(poison(failure(StorageWriteFailure, "repeated sync", ErrSyncFailure)))
 					}
 					if len(r.s.owned) != before || r.s.lock != lock || r.s.state.Closed || r.s.terminal != nil {
 						t.Errorf("CALLBACK-GUARD: %s teardown before callback return", phase)
@@ -327,7 +343,7 @@ func TestCallbackFailureGuard(t *testing.T) {
 						t.Error("CALLBACK-RECORD: later sync sentinel lost")
 					}
 					var je *Error
-					if !errors.As(err, &je) || je.Poisoned != (kind == "errno" || kind == "repeated") {
+					if !errors.As(err, &je) || je.Poisoned != (kind == "errno" || kind == "repeated" || kind == "nil") {
 						t.Errorf("CALLBACK-RECORD: poison changed: %v", err)
 					}
 				}

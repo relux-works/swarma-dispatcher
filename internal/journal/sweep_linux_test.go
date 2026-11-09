@@ -239,7 +239,7 @@ func sweepWaiting(t *testing.T, id uint64, done <-chan error) (bool, error) {
 		n := runtime.Stack(buf, true)
 		prefix := fmt.Sprintf("goroutine %d [", id)
 		for _, stack := range strings.Split(string(buf[:n]), "\n\n") {
-			if strings.HasPrefix(stack, prefix) && strings.Contains(stack, "Mutex") && strings.Contains(stack, "Lock") {
+			if strings.HasPrefix(stack, prefix) && strings.Contains(strings.SplitN(stack, "\n", 2)[0], "[sync.Mutex.Lock") {
 				return true, nil
 			}
 		}

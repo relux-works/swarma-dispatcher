@@ -225,9 +225,10 @@ func boundedFlock(t *testing.T, call func() error) error {
 	}
 }
 
-// Controls exercise the outer adapters, including nondelegating inner seams.
-// Violations are captured locally; disabling either monitor loses its witness.
+// Controls exercise real callback wiring and locked/unlocked calls of every
+// descriptor seam, including inheritance; predicate controls also pin close.
 func TestFixtureMonitorControls(t *testing.T) {
+	t.Run("wiring", testFixtureMonitorWiring)
 	for _, kind := range []string{"close", "unlock", "sync"} {
 		t.Run(kind, func(t *testing.T) {
 			c, e := fixture(t, true)

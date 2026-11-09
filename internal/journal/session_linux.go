@@ -30,6 +30,8 @@ type Session struct {
 	counter                              uint64
 	state                                State
 	terminal                             error
+	callbackRunning                      bool
+	callbackFailure                      error
 }
 
 // Initialize commits first as sequence one before returning a usable Session.
@@ -156,11 +158,11 @@ func (e *engine) enter(c Config, first []byte, consumer Consumer, initializing b
 		r := &Recovery{s: s, Budget: &Budget{limit: c.ConsumerBudget}, active: true}
 		defer func() { r.active = false }()
 		next, walkErr := walk(read, st.Size, func(seq uint64, p []byte) error {
-			ce := consumer.Consume(seq, p, r)
+			ce := s.consume(func() error { return consumer.Consume(seq, p, r) })
 			return r.result(ce)
 		})
 		if walkErr == nil {
-			walkErr = r.result(consumer.Finish(r))
+			walkErr = r.result(s.consume(func() error { return consumer.Finish(r) }))
 		}
 		r.active = false
 		if walkErr != nil {
@@ -248,9 +250,36 @@ func (s *Session) closeFD(fd int) error {
 	return nil
 }
 
-// fail is called only after synchronous I/O/callback quiescence. close is never
+// consume marks exactly the callback's dynamic extent, including panic unwinding.
+// A helper may call fail, but ownership survives until enter regains control.
+func (s *Session) consume(fn func() error) error {
+	s.callbackRunning = true
+	defer func() { s.callbackRunning = false }()
+	return fn()
+}
+
+// fail defers all teardown while a consumer runs (spec 106-110, 228-232).
+// enter joins the recorded failure after callback quiescence. close is never
 // retried; Linux releases the descriptor even when reporting most close errors.
 func (s *Session) fail(err error) error {
+	if s.callbackRunning {
+		if err == nil {
+			err = poison(nil)
+		}
+		// Retain the first cause with bounded storage even if a helper repeats
+		// failure. A later sync failure must still carry the exit sentinel.
+		if s.callbackFailure == nil {
+			s.callbackFailure = err
+		} else if errors.Is(err, ErrSyncFailure) && !errors.Is(s.callbackFailure, ErrSyncFailure) {
+			s.callbackFailure = errors.Join(s.callbackFailure, ErrSyncFailure)
+		}
+		var je *Error
+		if errors.As(err, &je) && je.Poisoned {
+			s.state.Poisoned = true
+		}
+		return err
+	}
+	err = errors.Join(s.callbackFailure, err)
 	if s.state.Closed {
 		return err
 	}
@@ -525,7 +554,8 @@ func (s *Session) ReadInput(name string, digest [32]byte) ([]byte, error) {
 }
 
 // Recovery is a temporary local-only capability. Its operations latch failures
-// and defer teardown until the consumer returns, so ownership outlives callbacks.
+// and Session.fail structurally defers teardown until the consumer returns,
+// so ownership outlives callbacks even when a helper requests failure teardown.
 type Recovery struct {
 	s                    *Session
 	Budget               *Budget
@@ -534,6 +564,9 @@ type Recovery struct {
 }
 
 func (r *Recovery) result(err error) error {
+	if r.s.callbackFailure != nil {
+		return errors.Join(r.s.callbackFailure, r.err, err)
+	}
 	if r.err != nil {
 		return r.err
 	}

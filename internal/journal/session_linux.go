@@ -261,9 +261,15 @@ func (s *Session) consume(fn func() error) error {
 // hasPoison walks every branch of an error tree without a fixed depth limit.
 // Class selection remains the first-match rule in poison, independently of this
 // aggregate disposition (spec 215, 219-221).
+// Production wrappers form acyclic trees. Consumer-supplied cycles are unsupported:
+// this recursive walk can exhaust the stack; ClassOf/errors.Is also cannot safely
+// traverse such cycles. This helper does not validate arbitrary consumer graphs.
 func hasPoison(err error) bool {
-	if je, ok := err.(*Error); ok && je != nil && je.Poisoned {
-		return true
+	if je, ok := err.(*Error); ok {
+		if je == nil {
+			return false
+		}
+		return je.Poisoned || hasPoison(je.Cause)
 	}
 	switch e := err.(type) {
 	case interface{ Unwrap() []error }:
@@ -337,6 +343,10 @@ func (s *Session) fail(err error) error {
 	if hasPoison(err) {
 		s.state.Poisoned = true
 	}
+	// PJ8 equivalence of a plain callback join depends on this whole-tree
+	// re-wrap and on Closed with a callback record remaining unreachable from
+	// production callers. Revisit that equivalence if either condition changes;
+	// Recovery.result still needs joinFailure promotion before reaching this tail.
 	if s.state.Poisoned && err != nil {
 		err = poison(err)
 	}

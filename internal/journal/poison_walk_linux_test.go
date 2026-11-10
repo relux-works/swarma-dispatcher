@@ -108,38 +108,49 @@ func TestReplaceRecordDoubleFault(t *testing.T) {
 }
 
 // A shared-lock conversion during either callback is reported, without actually
-// changing the fixture lock. The same adapter call outside a callback is silent.
+// changing the fixture lock, in blocking and nonblocking forms. The same
+// adapter call outside a callback is the paired silent control; no real
+// blocking conversion is attempted by this fixture witness.
 func TestOwnershipMonitorSharedConversion(t *testing.T) {
-	for _, phase := range []string{"Consume", "Finish"} {
-		t.Run(phase, func(t *testing.T) {
-			c, e, s := sweepSetup(t)
-			must(t, s.Close())
-			flock := e.calls.flock
-			e.calls.flock = func(fd, how int) error {
-				if how&syscall.LOCK_SH != 0 {
-					return nil
+	for _, mode := range []struct {
+		name      string
+		flags     int
+		assertion string
+	}{
+		{"nonblocking", syscall.LOCK_SH | syscall.LOCK_NB, "LOCK-SH-CONTROL:"},
+		{"blocking", syscall.LOCK_SH, "LOCK-SH-BLOCKING:"},
+	} {
+		for _, phase := range []string{"Consume", "Finish"} {
+			t.Run(mode.name+"/"+phase, func(t *testing.T) {
+				c, e, s := sweepSetup(t)
+				must(t, s.Close())
+				flock := e.calls.flock
+				e.calls.flock = func(fd, how int) error {
+					if how&syscall.LOCK_SH != 0 {
+						return nil
+					}
+					return flock(fd, how)
 				}
-				return flock(fd, how)
-			}
-			hits := 0
-			e.monitor.report = func(string, ...any) { hits++ }
-			callback := func(r *Recovery) error { return r.s.e.calls.flock(r.s.lock, syscall.LOCK_SH|syscall.LOCK_NB) }
-			cons := consumerFuncs{consume: func(_ uint64, _ []byte, r *Recovery) error { return callback(r) }}
-			if phase == "Finish" {
-				cons = consumerFuncs{finish: callback}
-			}
-			got, err := e.enter(c, nil, cons, false)
-			must(t, err)
-			inside := hits
-			got.mu.Lock()
-			must(t, got.e.calls.flock(got.lock, syscall.LOCK_SH|syscall.LOCK_NB))
-			got.mu.Unlock()
-			e.monitor.report = t.Errorf
-			e.calls.flock = flock
-			must(t, got.Close())
-			if inside != 1 || hits != 1 {
-				t.Errorf("LOCK-SH-CONTROL: callback conversion missed or inactive callback reported: %d/%d", inside, hits)
-			}
-		})
+				hits := 0
+				e.monitor.report = func(string, ...any) { hits++ }
+				callback := func(r *Recovery) error { return r.s.e.calls.flock(r.s.lock, mode.flags) }
+				cons := consumerFuncs{consume: func(_ uint64, _ []byte, r *Recovery) error { return callback(r) }}
+				if phase == "Finish" {
+					cons = consumerFuncs{finish: callback}
+				}
+				got, err := e.enter(c, nil, cons, false)
+				must(t, err)
+				inside := hits
+				got.mu.Lock()
+				must(t, got.e.calls.flock(got.lock, mode.flags))
+				got.mu.Unlock()
+				e.monitor.report = t.Errorf
+				e.calls.flock = flock
+				must(t, got.Close())
+				if inside != 1 || hits != 1 {
+					t.Errorf("%s callback conversion missed or inactive callback reported: %d/%d", mode.assertion, inside, hits)
+				}
+			})
+		}
 	}
 }

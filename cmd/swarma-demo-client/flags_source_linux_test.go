@@ -97,6 +97,12 @@ func flagSyscallViolation(f *ast.File) string {
 		case *ast.Ident:
 			name = fun.Name
 		}
+		// SyscallConn obtains an os.File raw connection; it is not a trap
+		// invocation. Exempt only the zero-argument selector spelling, while
+		// continuing to inspect its receiver and any surrounding callbacks.
+		if _, selector := call.Fun.(*ast.SelectorExpr); selector && name == "SyscallConn" && len(call.Args) == 0 {
+			return true
+		}
 		if !strings.Contains(name, "Syscall") {
 			return true
 		}
@@ -130,6 +136,26 @@ func flagSyscallViolation(f *ast.File) string {
 // as named ones; direct duplication is the positive control. These are syntax
 // inputs only, never executed or type-checked as product code.
 func TestFlagSyscallPolicy(t *testing.T) {
+	// Pin the unchanged production spelling that previously matched the raw
+	// syscall recognizer. The paired refusal ensures this exemption does not
+	// hide a forbidden call inside the receiver expression.
+	for _, tc := range []struct {
+		name, source, want string
+	}{
+		{"production-connection", "raw, err := input.SyscallConn()", ""},
+		{"connection-receiver", "raw, err := syscall.AllThreadsSyscall(syscall.SYS_FCNTL, fd, 4, 0).SyscallConn()", "raw descriptor command is not an allowed constant"},
+		{"connection-arguments", "input.SyscallConn(trap, fd, command)", "non-constant or unknown syscall number"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := parser.ParseFile(token.NewFileSet(), "fixture.go", "package main; func f() { "+tc.source+" }", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := flagSyscallViolation(f); got != tc.want {
+				t.Fatalf("flag syscall connection policy mismatch: %s: got %q want %q", tc.name, got, tc.want)
+			}
+		})
+	}
 	for _, tc := range []struct {
 		command string
 		allowed bool

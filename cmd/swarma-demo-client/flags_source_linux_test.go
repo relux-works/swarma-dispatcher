@@ -13,11 +13,13 @@ import (
 	"testing"
 )
 
-// Inspect every non-test Go file, including helpers and inactive platform files.
+// Inspect every non-test Go file in this package, including inactive platform files.
 // Raw fcntl is permitted only for constant F_DUPFD_CLOEXEC; ioctl only for the
 // read-only TIOCINQ query. Numeric expressions are evaluated, not token-matched.
 // This source policy covers direct Go syscall calls and named flag APIs, not
-// assembly, generated-at-runtime code, external dependencies or function aliases.
+// assembly, cgo, generated-at-runtime code, function aliases, or calls inside
+// other packages (including net and internal/demolaunch). Selector constants
+// are resolved by name, not type identity; misleading selectors are a blind spot.
 // Runtime success/refusal/signal tests complement this deliberately narrow policy.
 func TestIntakeNeverSetsFlags(t *testing.T) {
 	files, err := os.ReadDir(".")
@@ -41,7 +43,8 @@ func TestIntakeNeverSetsFlags(t *testing.T) {
 func flagSyscallViolation(f *ast.File) string {
 	known := map[string]int64{
 		"SYS_FCNTL": int64(syscall.SYS_FCNTL), "SYS_IOCTL": int64(syscall.SYS_IOCTL),
-		"SYS_PPOLL": int64(syscall.SYS_PPOLL), "F_DUPFD_CLOEXEC": int64(syscall.F_DUPFD_CLOEXEC),
+		"SYS_GETPID": int64(syscall.SYS_GETPID),
+		"SYS_PPOLL":  int64(syscall.SYS_PPOLL), "F_DUPFD_CLOEXEC": int64(syscall.F_DUPFD_CLOEXEC),
 		"F_SETFL": int64(syscall.F_SETFL), "F_SETFD": int64(syscall.F_SETFD),
 		"TIOCINQ": int64(syscall.TIOCINQ), "FIONBIO": 0x5421,
 	}
@@ -94,7 +97,7 @@ func flagSyscallViolation(f *ast.File) string {
 		case *ast.Ident:
 			name = fun.Name
 		}
-		if name != "Syscall" && name != "Syscall6" && name != "RawSyscall" && name != "RawSyscall6" {
+		if !strings.Contains(name, "Syscall") {
 			return true
 		}
 		if len(call.Args) < 3 {
@@ -141,5 +144,35 @@ func TestFlagSyscallPolicy(t *testing.T) {
 		if (flagSyscallViolation(f) == "") != tc.allowed {
 			t.Fatalf("flag syscall policy mismatch: %s", tc.command)
 		}
+	}
+}
+
+// Each refusal branch has its own assertion and an adjacent allowed control.
+// These parsed fixtures are never executed: unknown entry points fail closed.
+func TestFlagSyscallPolicyBranches(t *testing.T) {
+	for _, tc := range []struct{ name, good, bad, reason, assertion string }{
+		{"ioctl", "syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCINQ, 0)", "syscall.Syscall(syscall.SYS_IOCTL, fd, 0x5421, 0)", "raw descriptor command is not an allowed constant", "flag policy ioctl refusal changed"},
+		{"ioctl-expression", "syscall.RawSyscall(syscall.SYS_IOCTL, fd, syscall.TIOCINQ, 0)", "syscall.RawSyscall(syscall.SYS_IOCTL, fd, syscall.TIOCINQ+6, 0)", "raw descriptor command is not an allowed constant", "flag policy ioctl expression refusal changed"},
+		{"trap", "syscall.Syscall6(syscall.SYS_PPOLL, 0, 0, 0, 0, 0, 0)", "syscall.Syscall6(syscall.SYS_GETPID, 0, 0, 0, 0, 0, 0)", "raw syscall is outside the intake allowlist", "flag policy trap allowlist changed"},
+		{"unknown-trap", "syscall.RawSyscall6(syscall.SYS_PPOLL, 0, 0, 0, 0, 0, 0)", "syscall.RawSyscall6(trap, 0, 0, 0, 0, 0, 0)", "non-constant or unknown syscall number", "flag policy unknown trap accepted"},
+		{"allthreads", "syscall.AllThreadsSyscall(syscall.SYS_FCNTL, fd, 1030, 0)", "syscall.AllThreadsSyscall(syscall.SYS_FCNTL, fd, 4, 0)", "raw descriptor command is not an allowed constant", "flag policy allthreads mutation accepted"},
+		{"allthreads6", "syscall.AllThreadsSyscall6(syscall.SYS_FCNTL, fd, 1030, 0, 0, 0, 0)", "syscall.AllThreadsSyscall6(syscall.SYS_FCNTL, fd, 4, 0, 0, 0, 0)", "raw descriptor command is not an allowed constant", "flag policy allthreads6 mutation accepted"},
+		{"unknown-entry", "syscall.FutureSyscall(syscall.SYS_PPOLL, 0, 0)", "syscall.FutureSyscall(trap, 0, 0)", "non-constant or unknown syscall number", "flag policy unknown entry accepted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parse := func(call string) *ast.File {
+				f, err := parser.ParseFile(token.NewFileSet(), "fixture.go", "package main; func f() { "+call+" }", 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return f
+			}
+			if got := flagSyscallViolation(parse(tc.good)); got != "" {
+				t.Fatalf("flag policy allowed control refused: %s", got)
+			}
+			if got := flagSyscallViolation(parse(tc.bad)); got != tc.reason {
+				t.Fatalf("%s: got %q want %q", tc.assertion, got, tc.reason)
+			}
+		})
 	}
 }

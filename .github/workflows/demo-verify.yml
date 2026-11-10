@@ -1,0 +1,118 @@
+# Scratch verification of one exact head on a disposable runner. Never landed.
+name: Demo launch verification (scratch)
+on:
+  push:
+    branches: ['verify/**']
+permissions:
+  contents: read
+env:
+  GOTOOLCHAIN: local
+  GOMAXPROCS: '2'
+jobs:
+  race:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - name: Plain suite
+        run: go test -v -p 1 -count=1 -timeout=20m ./...
+      - name: Race, full suite
+        if: always()
+        run: go test -v -race -p 1 -count=1 -timeout=30m ./...
+      - name: Race, demo package repeated
+        if: always()
+        run: go test -race -p 1 -count=5 -timeout=60m ./internal/demolaunch/ ./cmd/swarma-demo-client/
+      - name: Plain, demo package repeated
+        if: always()
+        run: go test -p 1 -count=3 -timeout=40m ./internal/demolaunch/ ./cmd/swarma-demo-client/
+      - name: Demo packages under umask 0077
+        if: always()
+        run: |
+          umask 0077
+          go test -p 1 -count=1 -timeout=20m ./internal/demolaunch/ ./cmd/swarma-demo-client/ ./cmd/swarma-demo-dispatcher/
+  enospc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - name: Mount a small tmpfs
+        run: |
+          sudo mkdir -p /mnt/demo-enospc
+          sudo mount -t tmpfs -o "size=2m,mode=0700,uid=$(id -u),gid=$(id -g)" tmpfs /mnt/demo-enospc
+          df -h /mnt/demo-enospc
+      - name: Real disk-full test, must run and pass, never skip
+        env:
+          DEMOLAUNCH_ENOSPC_DIR: /mnt/demo-enospc
+        run: |
+          set -o pipefail
+          go test -v -p 1 -count=1 -timeout=10m -run '^TestDiskFullStopRecovery$' ./internal/demolaunch/ | tee "$RUNNER_TEMP/enospc.log"
+          grep -q '^--- PASS: TestDiskFullStopRecovery' "$RUNNER_TEMP/enospc.log"
+  mutants:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - name: Runner unit tests
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .scripts -p test_demo_launch_mutants.py -v
+      - name: Runner refuses without no-new-privs and without the fake
+        if: always()
+        run: |
+          set +e
+          python3 .scripts/demo-launch-mutants.py --disposable --scratch-root "$HOME" --logs "$HOME/refusal-logs" > "$RUNNER_TEMP/refusal-nnp.log" 2>&1
+          a=$?
+          setpriv --no-new-privs python3 .scripts/demo-launch-mutants.py --disposable --scratch-root "$HOME" --logs "$HOME/refusal-logs" > "$RUNNER_TEMP/refusal-fake.log" 2>&1
+          b=$?
+          cat "$RUNNER_TEMP/refusal-nnp.log" "$RUNNER_TEMP/refusal-fake.log"
+          test "$a" -ne 0 && grep -q 'NoNewPrivs: 1 is required' "$RUNNER_TEMP/refusal-nnp.log" && test "$b" -ne 0 && grep -q 'fake-sudo and --fake-log are required' "$RUNNER_TEMP/refusal-fake.log"
+      - name: Mutation manifest, fake sudo in a private mount namespace
+        if: always()
+        env:
+          FAKE: ${{ github.workspace }}/.scripts/demo-fake-sudo
+        run: |
+          set -euo pipefail
+          export FAKE LOG="$HOME/fake-sudo.jsonl" ME="$(id -u)" MYGID="$(id -g)" GOBIN_PATH="$PATH"
+          : > "$LOG"
+          ls -l /usr/bin/sudo* /bin/sudo /usr/local/bin/sudo 2>/dev/null || true
+          sudo --preserve-env=FAKE,LOG,ME,MYGID,GOBIN_PATH,HOME,GOTOOLCHAIN,GOMAXPROCS unshare --mount --propagation private -- /bin/bash -c '
+            set -euo pipefail
+            for p in /usr/bin/sudo /usr/bin/sudo-rs /usr/bin/sudo.ws /usr/local/bin/sudo /usr/sbin/sudo; do
+              if [ -e "$p" ]; then
+                r=$(readlink -f "$p")
+                mount --bind "$FAKE" "$r"
+                [ "$r" = "$p" ] || mount --bind "$FAKE" "$p"
+              fi
+            done
+            stat -L -c "%n %d:%i" /usr/bin/sudo /bin/sudo "$FAKE"
+            exec setpriv --no-new-privs --reuid="$ME" --regid="$MYGID" --init-groups env PATH="$GOBIN_PATH" HOME="$HOME" GOTOOLCHAIN="$GOTOOLCHAIN" GOMAXPROCS="$GOMAXPROCS" \
+              python3 .scripts/demo-launch-mutants.py --disposable --fake-sudo "$FAKE" --fake-log "$LOG" --scratch-root "$HOME" --logs "$HOME/demo-mutant-logs"'
+      - name: Fake sudo call log
+        if: always()
+        run: |
+          wc -l "$HOME/fake-sudo.jsonl" || true
+          cat "$HOME/fake-sudo.jsonl" || true
+          cp "$HOME/fake-sudo.jsonl" "$HOME/demo-mutant-logs/" || true
+      - name: Upload per-plant logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-mutant-logs
+          path: ~/demo-mutant-logs
+          retention-days: 14

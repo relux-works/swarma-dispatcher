@@ -295,8 +295,8 @@ func TestStopActiveBeforeChild(t *testing.T) {
 // A child that never reads cannot hold stdin beyond five seconds. The fixture
 // releases it later; dispatcher shutdown does not signal it.
 func TestChildStdinDeadline(t *testing.T) {
-	// Literal deadline arithmetic catches a six-second budget without reducing
-	// the real-child scheduling margin under race instrumentation.
+	// Arithmetic controls pin both the shorter operation cap and five-second leg.
+	// The real pipe below also catches widening in the default setter or a later set.
 	now := time.Now()
 	for _, seconds := range []int{2, 40} {
 		want := 5 * time.Second
@@ -316,7 +316,7 @@ func TestChildStdinDeadline(t *testing.T) {
 	ch, err := startChild(ctx, h.e.run, managerPath, bytes.Repeat([]byte{'x'}, 1<<20), time.Now().Add(40*time.Second), &capture{limit: 16384}, &capture{limit: 16384})
 	elapsed := time.Since(started)
 	// A scheduled release bounds mutants that remove the intake deadline too.
-	if !errors.Is(err, os.ErrDeadlineExceeded) || elapsed < 4*time.Second || elapsed > 8*time.Second {
+	if !errors.Is(err, os.ErrDeadlineExceeded) || elapsed < 4*time.Second || elapsed > 5900*time.Millisecond {
 		t.Errorf("stdin elapsed %s: %v", elapsed, err)
 	}
 	must(t, os.WriteFile(filepath.Join(h.root, "release-stop"), nil, 0600))
@@ -325,11 +325,12 @@ func TestChildStdinDeadline(t *testing.T) {
 	}
 }
 
-// Intercept the actual deadline-setting call and forward the identical value to
+// Replace the setter through the test seam and forward the identical value to
 // os.File.SetWriteDeadline. Fixed-clock cases pin the leg and operation cap;
 // the nil-clock case brackets the applied value using real observation instants
 // so a production-only offset is not masked. This observes the API argument,
-// not kernel timing; TestChildStdinDeadline exercises the real blocked pipe.
+// not the production setter or later calls. TestChildStdinDeadline alone covers
+// the default setter and effective deadline on the real blocked pipe.
 func TestChildStdinDeadlineCallsite(t *testing.T) {
 	for _, seconds := range []int{2, 40, 0} {
 		h := fixture(t, "good")

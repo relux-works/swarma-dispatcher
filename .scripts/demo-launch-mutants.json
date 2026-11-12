@@ -3338,5 +3338,174 @@
     "row": "R2-L03: engine lock must cover the latch write, not just callback entry",
     "qualification": "Requires execution on an isolated Linux host.",
     "expect": "loss latch write outside engine lock"
+  },
+  {
+    "id": "SK-05-netfileconn-min",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "\t\"io\"\n\t\"os\"\n\t\"syscall\"\n\t\"time\"\n\t\"unsafe\"\n)",
+    "replace": "\t\"io\"\n\t\"net\"\n\t\"os\"\n\t\"syscall\"\n\t\"time\"\n\t\"unsafe\"\n)",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeNoFlagWrites$"
+    },
+    "row": "net.FileConn on socket stdin, closed at once: shared description left O_NONBLOCK; reads unchanged",
+    "qualification": "Requires execution on an isolated Linux host. Runtime flag witness requires linux/amd64 with seccomp TSYNC.",
+    "edits": [
+      {
+        "file": "cmd/swarma-demo-client/intake_linux.go",
+        "find": "\tdefer syscall.Close(fd)\n",
+        "replace": "\tdefer syscall.Close(fd)\n\tif stat.Mode&syscall.S_IFMT == syscall.S_IFSOCK {\n\t\tif c, cerr := net.FileConn(input); cerr == nil {\n\t\t\tc.Close()\n\t\t}\n\t}\n"
+      }
+    ],
+    "expect": "intake issued forbidden flag write"
+  },
+  {
+    "id": "SK-06-netfileconn-refactor",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "\t\"io\"\n\t\"os\"\n\t\"syscall\"\n\t\"time\"\n\t\"unsafe\"\n)",
+    "replace": "\t\"errors\"\n\t\"io\"\n\t\"net\"\n\t\"os\"\n\t\"syscall\"\n\t\"time\"\n\t\"unsafe\"\n)",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeNoFlagWrites$"
+    },
+    "row": "socket branch rewritten on the runtime poller: net.FileConn + SetReadDeadline + LimitReader",
+    "qualification": "Requires execution on an isolated Linux host. Runtime flag witness requires linux/amd64 with seccomp TSYNC.",
+    "edits": [
+      {
+        "file": "cmd/swarma-demo-client/intake_linux.go",
+        "find": "\tvar fd int\n\traw, err := input.SyscallConn()\n",
+        "replace": "\tif stat.Mode&syscall.S_IFMT == syscall.S_IFSOCK {\n\t\t// Sockets get a real read deadline from the runtime poller.\n\t\tconn, err := net.FileConn(input)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tdefer conn.Close()\n\t\tif err := conn.SetReadDeadline(time.Now().Add(budget)); err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tb, err := io.ReadAll(io.LimitReader(conn, 131073))\n\t\tif errors.Is(err, os.ErrDeadlineExceeded) {\n\t\t\treturn nil, os.ErrDeadlineExceeded\n\t\t}\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tif len(b) > 131072 {\n\t\t\treturn nil, errIntakeLimit\n\t\t}\n\t\treturn b, nil\n\t}\n\tvar fd int\n\traw, err := input.SyscallConn()\n"
+      }
+    ],
+    "expect": "intake issued forbidden flag write"
+  },
+  {
+    "id": "SD-01-default-setter-widened",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\tapply := (*os.File).SetWriteDeadline\n",
+    "replace": "\tapply := func(f *os.File, d time.Time) error {\n\t\tif time.Until(d) > 4*time.Second {\n\t\t\td = d.Add(time.Second)\n\t\t}\n\t\treturn f.SetWriteDeadline(d)\n\t}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadline$"
+    },
+    "row": "production default setter widens the five-second leg by 1 s (cap leg untouched); R3-S1 default-setter witness",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "stdin elapsed"
+  },
+  {
+    "id": "SD-02-prod-only-branch",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\tif out.stdinDeadline != nil {\n\t\tapply = out.stdinDeadline\n\t}\n",
+    "replace": "\tif out.stdinDeadline != nil {\n\t\tapply = out.stdinDeadline\n\t} else if w := intake.Add(time.Second); w.Before(deadline) {\n\t\tintake = w\n\t}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadline$"
+    },
+    "row": "widen the leg only when the test setter is absent (production-only branch), cap kept",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "stdin elapsed"
+  },
+  {
+    "id": "SD-06-second-set",
+    "file": "internal/demolaunch/runner_linux.go",
+    "find": "\terr = apply(inW, intake)\n",
+    "replace": "\terr = apply(inW, intake)\n\tif w := intake.Add(time.Second); err == nil && w.Before(deadline) {\n\t\terr = inW.SetWriteDeadline(w)\n\t}\n",
+    "kills": {
+      "package": "./internal/demolaunch",
+      "run": "^TestChildStdinDeadline$"
+    },
+    "row": "after the seam call, a second direct SetWriteDeadline widens the leg, cap kept; R3-S2 second-set witness",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "stdin elapsed"
+  },
+  {
+    "id": "AP-02-module-helper",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "\t\"io\"\n\t\"os\"\n\t\"syscall\"\n\t\"time\"\n\t\"unsafe\"\n)",
+    "replace": "\t\"github.com/relux-works/swarma-dispatcher/internal/demolaunch\"\n\t\"io\"\n\t\"os\"\n\t\"syscall\"\n\t\"time\"\n\t\"unsafe\"\n)",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeNoFlagWrites$"
+    },
+    "row": "transient toggle through an exported helper added to internal/demolaunch (imported in-module package)",
+    "qualification": "Requires execution on an isolated Linux host. Runtime flag witness requires linux/amd64 with seccomp TSYNC.",
+    "edits": [
+      {
+        "file": "cmd/swarma-demo-client/intake_linux.go",
+        "find": "\t\t\tcount, e = syscall.Read(fd, buf[:size])\n",
+        "replace": "\t\t\t_ = demolaunch.SetDescriptorBlocking(fd, false)\n\t\t\tcount, e = syscall.Read(fd, buf[:size])\n\t\t\t_ = demolaunch.SetDescriptorBlocking(fd, true)\n"
+      },
+      {
+        "file": "internal/demolaunch/runner_linux.go",
+        "find": "func childIntakeDeadline(",
+        "replace": "func SetDescriptorBlocking(fd int, blocking bool) error { return syscall.SetNonblock(fd, !blocking) }\n\nfunc childIntakeDeadline("
+      }
+    ],
+    "expect": "intake issued forbidden flag write"
+  },
+  {
+    "id": "PM-01-ioctl-any-constant",
+    "file": "cmd/swarma-demo-client/flags_source_linux_test.go",
+    "find": "\t\t\t\tallowed = int64(syscall.TIOCINQ)\n",
+    "replace": "\t\t\t\tallowed = cmd\n",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestFlagSyscallPolicyBranches$/^ioctl$"
+    },
+    "row": "policy accepts any constant ioctl command (TIOCINQ allowlist dropped)",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "flag policy ioctl refusal changed"
+  },
+  {
+    "id": "PM-03-trap-allowlist-off",
+    "file": "cmd/swarma-demo-client/flags_source_linux_test.go",
+    "find": "} else if trap != int64(syscall.SYS_PPOLL) {",
+    "replace": "} else if false {",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestFlagSyscallPolicyBranches$/^trap$"
+    },
+    "row": "policy accepts any constant raw syscall besides fcntl/ioctl",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "flag policy trap allowlist changed"
+  },
+  {
+    "id": "PM-04-unknown-trap-allowed",
+    "file": "cmd/swarma-demo-client/flags_source_linux_test.go",
+    "find": "\t\t\treason = \"non-constant or unknown syscall number\"\n\t\t\treturn false\n",
+    "replace": "\t\t\treturn true\n",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestFlagSyscallPolicyBranches$/^unknown-trap$"
+    },
+    "row": "policy skips calls whose syscall number it cannot evaluate",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "flag policy unknown trap accepted"
+  },
+  {
+    "id": "R3-A1-allthreads-numeric-toggle",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "\t\t\tcount, e = syscall.Read(fd, buf[:size])\n",
+    "replace": "\t\t\tfl, _, _ := syscall.AllThreadsSyscall(syscall.SYS_FCNTL, uintptr(fd), 3, 0)\n\t\t\tsyscall.AllThreadsSyscall(syscall.SYS_FCNTL, uintptr(fd), 4, fl|0x800)\n\t\t\tcount, e = syscall.Read(fd, buf[:size])\n\t\t\tsyscall.AllThreadsSyscall(syscall.SYS_FCNTL, uintptr(fd), 4, fl)\n",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeNeverSetsFlags$"
+    },
+    "row": "AST policy: exported direct raw-syscall entry point outside the four checked names",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "intake mutates shared descriptor flags"
+  },
+  {
+    "id": "R3-N6-eagain-refreshes-budget",
+    "file": "cmd/swarma-demo-client/intake_linux.go",
+    "find": "\t\tif e == syscall.EINTR || e == syscall.EAGAIN {\n\t\t\tcontinue\n",
+    "replace": "\t\tif e == syscall.EINTR || e == syscall.EAGAIN {\n\t\t\tif e == syscall.EAGAIN {\n\t\t\t\tdeadline = time.Now().Add(budget)\n\t\t\t}\n\t\t\tcontinue\n",
+    "kills": {
+      "package": "./cmd/swarma-demo-client",
+      "run": "^TestIntakeSocketUrgent$/^late-urgent$"
+    },
+    "row": "socket branch: EAGAIN (now reachable on blocking sockets) refreshes the five-second budget",
+    "qualification": "Requires execution on an isolated Linux host.",
+    "expect": "socket late urgent refreshed budget"
   }
 ]

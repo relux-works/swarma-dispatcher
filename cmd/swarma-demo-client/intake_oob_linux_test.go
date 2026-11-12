@@ -16,7 +16,7 @@ import (
 // only private socketpairs; an unsupported MSG_OOB is a failure, not a skip.
 func TestIntakeSocketUrgent(t *testing.T) {
 	const request = `{"op":"demo.status","account":"demo"}`
-	for _, variant := range []string{"normal", "urgent-only", "request-urgent"} {
+	for _, variant := range []string{"normal", "urgent-only", "request-urgent", "late-urgent"} {
 		t.Run(variant, func(t *testing.T) {
 			fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 			if err != nil {
@@ -25,7 +25,7 @@ func TestIntakeSocketUrgent(t *testing.T) {
 			r, w := os.NewFile(uintptr(fds[0]), "reader"), os.NewFile(uintptr(fds[1]), "writer")
 			defer r.Close()
 			defer w.Close()
-			if variant != "urgent-only" {
+			if variant != "urgent-only" && variant != "late-urgent" {
 				if _, err := w.Write([]byte(request)); err != nil {
 					t.Fatal(err)
 				}
@@ -34,15 +34,31 @@ func TestIntakeSocketUrgent(t *testing.T) {
 				if err := syscall.Shutdown(fds[1], syscall.SHUT_WR); err != nil {
 					t.Fatal(err)
 				}
-			} else if err := syscall.Sendto(fds[1], []byte("!"), syscall.MSG_OOB, nil); err != nil {
-				t.Fatal("urgent-data fixture unavailable:", err)
+			} else if variant != "late-urgent" {
+				if err := syscall.Sendto(fds[1], []byte("!"), syscall.MSG_OOB, nil); err != nil {
+					t.Fatal("urgent-data fixture unavailable:", err)
+				}
 			}
-			result := guardedIntake(t, r, nil)
+			// The child readiness callback runs immediately before intake. A late
+			// urgent byte must not buy another five seconds after EAGAIN.
+			var during func(int, int)
+			if variant == "late-urgent" {
+				during = func(_, _ int) {
+					time.Sleep(3 * time.Second)
+					if err := syscall.Sendto(fds[1], []byte("!"), syscall.MSG_OOB, nil); err != nil {
+						t.Fatal("late urgent fixture failed:", err)
+					}
+				}
+			}
+			result := guardedIntake(t, r, during)
 			if variant == "normal" {
 				if result.Error != "" || result.Size != len(request) {
 					t.Fatalf("socket request control refused: %+v", result)
 				}
 			} else if result.Error != os.ErrDeadlineExceeded.Error() || result.Size != 0 || result.Elapsed < 4900*time.Millisecond || result.Elapsed > 6500*time.Millisecond {
+				if variant == "late-urgent" {
+					t.Fatalf("socket late urgent refreshed budget: %+v", result)
+				}
 				t.Fatalf("socket urgent intake exceeded budget: %+v", result)
 			}
 		})

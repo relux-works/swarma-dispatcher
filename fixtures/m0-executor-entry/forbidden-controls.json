@@ -322,5 +322,17 @@
     "change": "Deliver prompt twice or restart the runner after unknown original start",
     "obligation": "argv/stdin; original clocks/stop/replay",
     "expected": "Reject replay; one exact prompt then EOF per original execution, retain original claim and unknown effect/debt"
+  },
+  {
+    "id": "runner-variant-selection",
+    "change": "Choose the runner command from entry, environment or argv content, or fall back from run-claude to run-codex",
+    "obligation": "argv/stdin; qualification/config",
+    "expected": "Refuse qualification/selection; the runner command is an immutable artifact literal bound to the installation tuple"
+  },
+  {
+    "id": "claude-credential-in-adapter",
+    "change": "Adapter sets or passes any Claude token, base URL, settings path or config directory in argv or environment",
+    "obligation": "argv/stdin; handle/drop/FD",
+    "expected": "Pre-exec refusal 78 with no exec; the gateway endpoint and placeholder credential are runner-internal"
   }
 ]

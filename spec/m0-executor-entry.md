@@ -192,6 +192,38 @@ duplicate option, injected flag, prompt-file, resume or credential/config flag:
  "--timeout", decimal(T)]
 ```
 
+**Claude runner variant.** The runner command (element 2) is an immutable
+literal of the adapter artifact, bound to the installation tuple together with
+E and H: either `run-codex` or `run-claude`. Nothing in the entry, the
+environment or the arguments selects it, and `run-claude` never falls back to
+`run-codex`. A Claude installation is a different artifact and tuple from a
+Codex one. For `run-claude`, argv is the same 19 elements in the same order,
+with only element 2 changed:
+
+```text
+[E, "run-claude", "--account", input.account,
+ "--profile", input.profile, "--launch-home", L,
+ "--model", input.model, "--reasoning-effort", input.reasoning_effort,
+ "--output-last-message", O, "--prompt-stdin", "--cwd", W,
+ "--timeout", decimal(T)]
+```
+
+The same bounds, derivations (J/L/W/O, T), environment, FD3 handling, stdin
+pipe and pre-exec refusal 78 apply unchanged. The adapter adds no
+Claude-specific flag, environment variable or file; in particular it never sets
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, a
+settings path or a config directory. The secret-free gateway endpoint and any
+placeholder credential are runner-internal: the broker builds the vendor
+environment, as it does for Codex. A token, endpoint or credential-like value
+in the adapter's argv or environment is a pre-exec refusal.
+`input.reasoning_effort` passes through unchanged as a `CatalogString`; an
+unsupported value is the runner's refusal, never an adapter remap. The broker
+owns the exact `run-claude` option set and its post-exec statuses (broker
+slice S3a); where they differ from the Codex shape, this text follows the
+pinned broker contract. Qualification is per tuple: a `run-claude` tuple needs
+its own broker qualification and native negatives, and Codex evidence does not
+carry over.
+
 Actual argv UTF-8 storage, sum of each element's byte length plus one NUL, is
 <=8192 bytes; each element <=1024 bytes, and OS exec representation/pointer/env
 limits must independently qualify. No caller environment map: use only the
@@ -241,7 +273,7 @@ The adapter installs the pipe read end as 0 with `dup2`, closes both original
 pipe descriptors and every descriptor except 0–2, verifies by kernel object
 identity that 0–2 are the only remaining descriptors and that no pipe write end
 survives, and directly `execve(E, argv, unchanged_environment)`: the **same
-process becomes run-codex**, with no surviving adapter supervisor. Only 0–2
+process becomes the pinned runner**, with no surviving adapter supervisor. Only 0–2
 reach the runner. The adapter's userland prompt copy ends with the replaced
 address space; the unread bytes live only in the pipe buffer, which is released
 when the runner and its descendants close the read end. Because nothing runs

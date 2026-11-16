@@ -94,6 +94,10 @@ request forms of §2. It changes no form, no check and no code path.
   public key whose private half is a file made by the installer for the caller
   account: owned by the caller UID, mode `0600`, never printed or copied. It is
   not derived through Keymaker purpose 6, and Keymaker has no custody of it.
+  The file is created only after the owner's explicit consent to a new key on
+  that host. It must not be readable by, or reachable from, the worker UID or
+  any account other than the caller: the secret-free rule for workers covers
+  this key like any other secret.
 - **The checks of §2 stay in full.** Every request carries `auth={key,sig}`;
   the key must equal the protected association key, the signature must verify
   over the exact preimage, the kernel peer UID must equal the association UID

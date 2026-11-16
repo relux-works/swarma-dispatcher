@@ -3,85 +3,85 @@
     "id": "missing",
     "change": "remove /input/prompt",
     "obligation": "lexical/shape",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "extra",
     "change": "add /input/argv = [\"--resume\",\"x\"]",
     "obligation": "lexical/shape; argv/stdin",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "null",
     "change": "set /input/prompt = null",
     "obligation": "lexical/shape",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "duplicate",
     "change": "append a second \"v\":1 top-level member",
     "obligation": "lexical/shape",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "escaped-duplicate",
     "change": "append \"\\u0076\":1 top-level member",
     "obligation": "lexical/shape",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "invalid-utf8",
     "change": "replace one prompt byte with FF",
     "obligation": "lexical/shape",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "bom",
     "change": "prefix EF BB BF",
     "obligation": "lexical/shape",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "surrogate",
     "change": "replace prompt with JSON string \"\\ud800\"",
     "obligation": "lexical/shape",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "noninteger",
     "change": "replace top v token with 1.0 or 1e0",
     "obligation": "lexical/shape",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "negative-zero",
     "change": "replace controller_epoch token with -0",
     "obligation": "lexical/shape",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "range",
     "change": "set controller_epoch = 9007199254740992",
     "obligation": "lexical/shape",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "depth",
     "change": "replace prompt with nine nested objects",
     "obligation": "finite byte/work; lexical/shape",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "size",
     "change": "prefix enough JSON whitespace to reach 49153 bytes",
     "obligation": "finite byte/work",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "escape-size",
     "change": "replace prompt with 24576 escaped U+0001 characters",
     "obligation": "finite byte/work",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "identity",
@@ -117,13 +117,13 @@
     "id": "selectors",
     "change": "set account to --config or model to --resume",
     "obligation": "argv/stdin",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "injected-member",
     "change": "add any of path,argv,env,token,resume,config,prompt_file to input",
     "obligation": "argv/stdin",
-    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start and confirmed bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "catalog",
@@ -147,7 +147,7 @@
     "id": "clock",
     "change": "use timeout 300 after original 290 deadline, or round 0.9 remainder to 1",
     "obligation": "original clocks/stop/replay",
-    "expected": "Adapter refuses T outside original bound or fractional upward rounding before exec; 78 requires attributable original fate evidence of no runner start and bounded feeder cleanup, otherwise UNKNOWN with original debt"
+    "expected": "Adapter refuses T outside original bound or fractional upward rounding before exec; 78 requires attributable original fate evidence of no runner start, otherwise UNKNOWN with original debt"
   },
   {
     "id": "second-start",
@@ -199,7 +199,7 @@
   },
   {
     "id": "fd3-left-open",
-    "change": "Retain admitted plan kernel object or any duplicate in feeder, run-codex or downstream, irrespective of descriptor number",
+    "change": "Retain admitted plan kernel object or any duplicate in run-codex or downstream, irrespective of descriptor number",
     "obligation": "handle/drop/FD",
     "expected": "Kernel object-identity observation must fail qualification; broker later reusing numeric 3 for another object is not a failure"
   },
@@ -297,7 +297,7 @@
     "id": "status-attribution",
     "change": "Treat numeric 78 or mixed/raw signal/lost exec observation as known no-effect adapter refusal",
     "obligation": "handle/drop/FD; Result/debt",
-    "expected": "UNKNOWN completion without trustworthy original fate actor/phase/no-start/feeder-cleanup evidence; retain original publication/Result/effect/cleanup/lease/token/stop debt"
+    "expected": "UNKNOWN completion without trustworthy original fate actor/phase/no-start evidence; retain original publication/Result/effect/cleanup/lease/token/stop debt"
   },
   {
     "id": "status-collision",
@@ -306,14 +306,20 @@
     "expected": "Reject collision/remap; 78 is proposed adapter pre-exec only pending owning review; unknown attribution retains all original debt"
   },
   {
-    "id": "feeder-lifecycle",
-    "change": "Wait for pipe drain before exec, retain plan object/duplicates in feeder, or leave feeder outside bounded original stop/join/disposal",
+    "id": "stdin-pipe-lifecycle",
+    "change": "Reintroduce a feeder, use a blocking write, write partially, raise capacity with F_SETPIPE_SZ, or let a pipe write end survive exec",
     "obligation": "handle/drop/FD; original clocks/stop/replay",
-    "expected": "Refuse native qualification; both runner/feeder must lack plan object/all copies, finite non-deadlocking lifecycle and whole-account absence required"
+    "expected": "Refuse native qualification; the prompt is written once, non-blocking and whole into a capacity-checked pipe before exec, the write end is closed so the runner sees EOF, and any failure is pre-exec refusal 78 with no exec"
+  },
+  {
+    "id": "stdin-pipe-capacity-short",
+    "change": "Accept a pipe whose F_GETPIPE_SZ capacity is below the exact decoded prompt length (for example a pipe shrunk by the per-user pipe-buffer soft limit), or treat a failed F_GETPIPE_SZ as success",
+    "obligation": "handle/drop/FD; original clocks/stop/replay",
+    "expected": "Pre-exec refusal 78 with no write and no exec; never truncate, retry or adapt capacity"
   },
   {
     "id": "prompt-replay",
-    "change": "Deliver prompt twice or restart feeder/runner after unknown original start",
+    "change": "Deliver prompt twice or restart the runner after unknown original start",
     "obligation": "argv/stdin; original clocks/stop/replay",
     "expected": "Reject replay; one exact prompt then EOF per original execution, retain original claim and unknown effect/debt"
   }

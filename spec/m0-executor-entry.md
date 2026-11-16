@@ -104,7 +104,7 @@ string <=128 bytes. Check raw bytes before allocation; scan at most limit+1 only
 to detect excess. Reuse one bounded parse and one bounded CCJ traversal, each
 linear in <=49152 bytes/512 tokens; no recursive dependency expansion, retries,
 network resolution, catalog fetching or directory tree walk. Reserve <=256 KiB
-aggregate owned adapter/feeder parse/canonical/prompt/argv buffers, including
+aggregate owned adapter parse/canonical/prompt/argv buffers, including
 all prompt copies. These parser budgets are separate from D's protected
 snapshot budgets in §3; the adapter resolves no
 protected metadata. Complete platform/library/syscall work and wall-time
@@ -221,34 +221,41 @@ published complete profile, OS allowlist or native credit.
 
 FD3 is the immutable plan, **never runner stdin**. The native adapter parses it
 completely, retains only bounded decoded values needed for mapping/audit, and
-closes the plan kernel object and EVERY duplicate **before creating the feeder**.
-Never reopen it by path. It then creates one bounded feeder and a fresh stdin
-pipe for the exact decoded Prompt UTF-8 bytes, once, then EOF. No added LF,
-normalization, truncation, home input, second prompt or lease retry is allowed.
-The feeder holds only its bounded prompt copy, pipe write end and immutable
-qualified clock/deadline inputs; close unrelated inherited descriptors including
-caller 0–2 in the feeder. It holds no plan object, executable, directory, service
-or protected metadata handle. Any internal cancellation channel is adapter-owned,
-closed before exec and never an extra inherited manager/protected handle.
+closes the plan kernel object and EVERY duplicate **before creating the stdin
+pipe**. Never reopen it by path.
 
-The adapter installs the pipe read end as 0, closes its write end and every
-descriptor except 0–2, and directly `execve(E, argv, unchanged_environment)`:
-the **same process becomes run-codex**, with no surviving adapter supervisor.
-Only 0–2 reach the runner. Feeder writing may wait for a reader, but the adapter
-must not wait for pipe drain/feeder completion before exec; qualify pipe capacity,
-non-deadlocking start/close order and finite cancellation on exec failure, EOF,
-broken pipe, deadline or account stop. Before known pre-exec refusal, adapter
-cancels, joins and disposes the feeder within qualified finite bounds. After
-successful exec, independent original fate/stop ownership must bound feeder
-completion, join/reaping and prompt-buffer disposal: this proposal supplies no
-runner feeder-management implementation. Those mechanisms and bounds remain
-UNQUALIFIED; missing evidence closes use. Feeder and runner remain within the
-original generation's whole-account stop/absence scope.
+**Pre-filled stdin pipe (no feeder).** M0 has no feeder process or thread. After
+closing the plan, the adapter creates one fresh pipe with `pipe2(O_CLOEXEC)`,
+reads its capacity with `F_GETPIPE_SZ` and requires capacity >= the exact decoded
+Prompt byte length (at most 24576). It never raises capacity with `F_SETPIPE_SZ`:
+a pipe shrunk by the per-user pipe-buffer soft limit must refuse, not adapt. It
+sets the write end `O_NONBLOCK` and writes the exact decoded Prompt UTF-8 bytes
+once, in a single pass, then closes the write end, so the runner reads exactly
+those bytes and then EOF. No added LF, normalization, truncation, home input,
+second prompt or lease retry is allowed. A failed `F_GETPIPE_SZ`, insufficient
+capacity, `EAGAIN`, a short write or any write error is a known pre-exec refusal
+(78) with no exec; a blocking write is never used, so no pre-exec step waits for
+a reader.
+
+The adapter installs the pipe read end as 0 with `dup2`, closes both original
+pipe descriptors and every descriptor except 0–2, verifies by kernel object
+identity that 0–2 are the only remaining descriptors and that no pipe write end
+survives, and directly `execve(E, argv, unchanged_environment)`: the **same
+process becomes run-codex**, with no surviving adapter supervisor. Only 0–2
+reach the runner. The adapter's userland prompt copy ends with the replaced
+address space; the unread bytes live only in the pipe buffer, which is released
+when the runner and its descendants close the read end. Because nothing runs
+beside the runner, there is no feeder cancellation, join, reaping or
+prompt-buffer disposal to qualify after exec; the runner remains within the
+original generation's whole-account stop/absence scope. This mechanism is Linux
+only; macOS parity remains open and has no feeder fallback. Pipe-capacity,
+order and descriptor-identity qualification remain native gates; missing
+evidence closes use.
 
 Runner-internal qualified guard/vendor descriptors are broker-owned, not extra
 inherited adapter descriptors. Caller stdout/stderr remain existing observation
-paths. The plan object and ALL its duplicates must be absent in BOTH runner and
-feeder (and downstream), verified by
+paths. The plan object and ALL its duplicates must be absent in the runner
+(and downstream), verified by
 kernel object identity (for example device/inode or qualified open-file-description
 comparison), not descriptor number or adapter logs. Broker-created internal
 descriptors may later reuse number 3; that alone is no violation.
@@ -329,19 +336,19 @@ Runner's statuses 0, 1, 64, 69, 75, 124, 130 and [phase precedence][runner] rema
 runner-owned after successful exec; there is no wrapper remap. This leaf proposes
 reserved **adapter pre-exec refusal 78**, disjoint from that pinned set, pending
 owning changed-surface review; it is not an upstream status extension. A known
-attributable adapter refusal emits 78 only after confirmed no runner start and
-bounded feeder cancellation/join/disposal. It preserves the original spent
+attributable adapter refusal emits 78 only after confirmed no runner start (exec not
+attempted or failed). It preserves the original spent
 claim/debit and any preparation/cleanup debt; it does not assert universal no-effect.
 Foreign adapter errors/timeouts are never relabelled runner-owned 64/69/75/124/130.
 
 Trustworthy attribution would require installed original fate evidence bound to
 execution, generation, process incarnation and approved adapter artifact/digest,
-observing the exclusive pre-exec phase, failed/not-attempted exec, exact exit 78,
-no runner start and completed feeder cleanup. The observer and finite mechanism
+observing the exclusive pre-exec phase, failed/not-attempted exec, exact exit 78
+and no runner start. The observer and finite mechanism
 are unsupported/unqualified here. Numeric 78 alone authenticates neither actor,
 phase nor absence and cannot replace that evidence. Exec success replaces the
 adapter with the runner, whose statuses retain their own meaning. Missing,
-unattributable or mixed observations, raw signals, unknown exec/start/feeder fate
+unattributable or mixed observations, raw signals, unknown exec/start fate
 or lost completion are **UNKNOWN completion**: retain all original publication,
 Result, effect, cleanup, lease/token and stop debt. Never infer no-effect,
 release, absence, replay/admission or Result/read authority from status alone.

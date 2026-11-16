@@ -166,32 +166,31 @@
       130
     ],
     "plan_object_in_runner": false,
-    "plan_object_in_feeder": false,
-    "closure": "Close plan object/all copies before feeder creation; feeder owns bounded prompt copy/pipe write end/immutable qualified timing only, no unrelated inherited descriptors; runner inherits only 0-2",
-    "lifecycle": "Do not await pipe drain before exec; finite failure/deadline/broken-pipe/account-stop cancellation, join/reaping and prompt disposal required. Independent original fate/stop owner handles feeder after exec; unsupported mechanism remains UNQUALIFIED",
+    "closure": "Close plan object/all copies before creating the stdin pipe; no feeder exists; runner inherits only 0-2, verified by kernel object identity",
+    "lifecycle": "No feeder and no pre-exec wait: pipe2(O_CLOEXEC), F_GETPIPE_SZ capacity >= exact prompt length (no F_SETPIPE_SZ raise), one O_NONBLOCK single-pass write, write end closed before exec; any capacity/EAGAIN/short/error refuses 78 with no exec. Qualification of this mechanism remains UNQUALIFIED",
     "prompt_deliveries_max": 1,
     "cases": [
       {
         "id": "known-preexec-refusal",
         "actor": "adapter",
         "phase": "pre-exec",
-        "observation": "Hypothetical installed original fate observer binds execution/generation/process incarnation/adapter digest, exclusive pre-exec phase, exact exit 78, no runner start and feeder cancellation/join/disposal; mechanism UNQUALIFIED; exec not attempted",
+        "observation": "Hypothetical installed original fate observer binds execution/generation/process incarnation/adapter digest, exclusive pre-exec phase, exact exit 78, no runner start; mechanism UNQUALIFIED; exec not attempted",
         "observed_status": 78,
         "runner_started": false,
-        "feeder_cleanup": "confirmed",
+        "pipe_write_end": "closed or never created; exec not attempted or failed",
         "effects": "No runner start; worker preparation and original C/claim/debit remain",
-        "disposition": "Known adapter pre-exec refusal only under hypothetical trustworthy installed original fate observation; original spent claim/debit and preparation debt preserved, feeder cleanup confirmed"
+        "disposition": "Known adapter pre-exec refusal only under hypothetical trustworthy installed original fate observation; original spent claim/debit and preparation debt preserved"
       },
       {
         "id": "known-failed-exec",
         "actor": "adapter",
         "phase": "pre-exec failed exec",
-        "observation": "Hypothetical installed original fate observer binds execution/generation/process incarnation/adapter digest, exclusive pre-exec phase, exact exit 78, no runner start and feeder cancellation/join/disposal; mechanism UNQUALIFIED; failed exec positively observed",
+        "observation": "Hypothetical installed original fate observer binds execution/generation/process incarnation/adapter digest, exclusive pre-exec phase, exact exit 78, no runner start; mechanism UNQUALIFIED; failed exec positively observed",
         "observed_status": 78,
         "runner_started": false,
-        "feeder_cleanup": "confirmed",
+        "pipe_write_end": "closed or never created; exec not attempted or failed",
         "effects": "Failed exec, no runner start; original preparation/claim/debit remain",
-        "disposition": "Known adapter pre-exec refusal only under hypothetical trustworthy installed original fate observation; original spent claim/debit and preparation debt preserved, feeder cleanup confirmed"
+        "disposition": "Known adapter pre-exec refusal only under hypothetical trustworthy installed original fate observation; original spent claim/debit and preparation debt preserved"
       },
       {
         "id": "successful-exec-runner-success",
@@ -200,7 +199,7 @@
         "observation": "Hypothetical trustworthy original fate observation attributes exec success and runner terminal 0 after matching completed turn, release/cleanup and successful rename",
         "observed_status": 0,
         "runner_started": true,
-        "feeder_cleanup": "separately required and observed under qualified original fate ownership",
+        "pipe_write_end": "closed before exec; descriptor identity separately qualified",
         "effects": "New O; see old/absent publication neighbors",
         "disposition": "Runner terminal 0; D deadline/disposition and authenticated Result separate, no status-based read or debt discharge"
       },
@@ -211,18 +210,18 @@
         "observation": "Hypothetical trustworthy original fate observation attributes exec success and runner 69 lease_harness_unqualified",
         "observed_status": 69,
         "runner_started": true,
-        "feeder_cleanup": "separately required; unknown cleanup retains debt",
+        "pipe_write_end": "closed before exec; descriptor identity separately qualified",
         "effects": "Qualification measurement may precede refusal; no lease/admitted app-server; see qualification neighbors",
         "disposition": "Runner-owned 69 unchanged; not an adapter status or authenticated Result"
       },
       {
-        "id": "unknown-exec-or-feeder",
-        "actor": "unresolved adapter/runner/feeder",
+        "id": "unknown-exec",
+        "actor": "unresolved adapter/runner",
         "phase": "exec boundary unresolved",
-        "observation": "Exec/start outcome or feeder cleanup unobserved",
+        "observation": "Exec/start outcome",
         "observed_status": null,
         "runner_started": "unknown",
-        "feeder_cleanup": "unknown",
+        "pipe_write_end": "unknown",
         "effects": "Runner/prompt/lease/publication effects not excluded",
         "disposition": "UNKNOWN completion; retain all original publication/Result/effect/cleanup/lease/token/stop debt; no retry, admission, absence or read authority"
       },
@@ -233,7 +232,7 @@
         "observation": "Numeric 78 only, without installed original fate evidence",
         "observed_status": 78,
         "runner_started": "unknown",
-        "feeder_cleanup": "unknown",
+        "pipe_write_end": "unknown",
         "effects": "No absence/no-effect inference",
         "disposition": "UNKNOWN completion; retain all original publication/Result/effect/cleanup/lease/token/stop debt; no retry, admission, absence or read authority"
       },
@@ -244,7 +243,7 @@
         "observation": "Status 78 conflicts with pinned runner set; mixed or unsupported attribution",
         "observed_status": 78,
         "runner_started": "unknown",
-        "feeder_cleanup": "unknown",
+        "pipe_write_end": "unknown",
         "effects": "Do not reinterpret as known adapter refusal or upstream status extension",
         "disposition": "UNKNOWN completion; retain all original publication/Result/effect/cleanup/lease/token/stop debt; no retry, admission, absence or read authority"
       },
@@ -255,11 +254,11 @@
         "observation": "Raw signal or lost/mixed completion observation, no exclusive actor/phase evidence",
         "observed_status": null,
         "runner_started": "unknown",
-        "feeder_cleanup": "unknown",
+        "pipe_write_end": "unknown",
         "effects": "Original physical effects remain unresolved",
         "disposition": "UNKNOWN completion; retain all original publication/Result/effect/cleanup/lease/token/stop debt; no retry, admission, absence or read authority"
       }
     ],
-    "limit": "Numeric 78 alone authenticates neither actor, phase nor absence; no Result/read authority, no new upstream status or implemented observer/feeder mechanism"
+    "limit": "Numeric 78 alone authenticates neither actor, phase nor absence; no Result/read authority, no new upstream status or implemented observer mechanism"
   }
 }

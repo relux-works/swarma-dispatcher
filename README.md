@@ -63,7 +63,7 @@ A separate [DRAFT closed executor-entry proposal](spec/m0-executor-entry.md)
 defines one finite FD3 input and deterministic existing `run-codex` argv/UTF-8
 stdin mapping, with [inert specimens](fixtures/m0-executor-entry/README.md).
 D-side protected equality, bound deadline/slack and direct native exec with a
-bounded feeder are proposed only. PATH narrowing and adapter refusal status 78
+capacity-checked pre-filled stdin pipe (no feeder) are proposed only. PATH narrowing and adapter refusal status 78
 await owning selection. Typed catalog/installation, native qualification and
 authenticated Result joins remain gates; no adapter runtime is supplied.
 

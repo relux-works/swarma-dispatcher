@@ -47,21 +47,22 @@ the unchanged helper bootstrap environment. No adapter PATH rewrite, broker flag
 R-EXEC permission or kernel PATH enforcement is claimed.
 
 `boundary.witnesses.json` pairs known pre-exec refusal 78, successful exec with
-runner-owned 0/69, known failed exec and unknown exec/feeder/status observations.
+runner-owned 0/69, known failed exec and unknown exec/status observations.
 The native adapter directly execve-replaces itself with the pinned command;
 there is no surviving adapter supervisor. Close FD3's kernel object and every
-duplicate before feeder creation. Both runner and feeder must lack that object;
-only 0–2 reach runner. Feeder owns one bounded prompt copy/pipe write end and
-immutable qualified timing inputs, closes unrelated inherited descriptors, and
-never causes adapter to wait for pipe drain before exec. Finite cancellation,
-join/reaping and disposal remain UNQUALIFIED, including independent original
-fate/stop ownership after exec and whole-account absence. No second prompt/start
+duplicate before creating the stdin pipe. The runner must lack that object;
+only 0–2 reach runner. There is no feeder: the adapter writes the exact prompt
+once, non-blocking, into a fresh `pipe2(O_CLOEXEC)` pipe whose `F_GETPIPE_SZ`
+capacity covers it, closes the write end and refuses 78 on any capacity or
+write failure, without raising capacity. Pipe-capacity, order and
+descriptor-identity qualification remain UNQUALIFIED, including whole-account
+absence after exec. No second prompt/start
 or lease replay is permitted after unknown effect.
 
 Status 78 is a proposed reserved adapter pre-exec refusal, pending owning review,
 disjoint from pinned runner statuses 0, 1, 64, 69, 75, 124, 130. Only trustworthy
 original fate evidence binding actor/process/artifact/execution/generation,
-exclusive pre-exec phase, no runner start and completed feeder cleanup could
+exclusive pre-exec phase, and no runner start could
 support that attribution. The mechanism is unsupported here. Numeric 78 alone,
 collision, mixed/raw signal or lost observation means UNKNOWN completion and
 retains all original publication/Result/effect/cleanup/lease/token/stop debt.

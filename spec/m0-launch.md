@@ -110,11 +110,13 @@ rule.
   account: owned by the caller UID, mode `0600`. It is not derived through
   Keymaker purpose 6, and Keymaker has no custody of it. The file is created
   only after the owner's explicit consent to a new key on that host.
-- **Where the key file may be.** The file lies in a caller-owned directory of
+- **Where the key file may be.** The private key must not be readable by, or
+  reachable from, the worker UID or any account other than the caller and
+  root; the rules below enforce this. The file lies in a caller-owned directory of
   mode `0700`, reached through non-symlink ancestors owned by root or the
   caller UID that are not group- or other-writable, and outside every worker
   home, workspace, export and retention path. The caller tool opens it with
-  `O_NOFOLLOW` and refuses any other owner, mode or file type. The key is never
+  `O_NOFOLLOW` and refuses any other owner, mode or file type. The private key is never
   printed, logged, journaled, passed in argv or the environment, copied, or
   included in a backup or export.
 - **Caller and worker are different accounts.** In this cut the association
@@ -132,10 +134,12 @@ rule.
   over the exact preimage, the kernel peer UID must equal the association UID
   and the caller generation must be the independently active one. A request
   without `auth`, with another key or from another UID refuses as before.
-- **Transport admission is separate from this cut.** The caller's managed UID
-  reaches these checks only through the separate protected M0 caller list,
-  which admits the connection and grants no authority; the association
-  equality above still decides.
+- **Transport admission is separate from this cut.** The reference transport
+  admits only unmanaged callers, with one named exception: the protected M0
+  caller list ([transport](transport.md), "Managed M0 callers"). The caller's
+  managed UID reaches these checks only through that list, which admits the
+  connection and grants no authority; the association equality above still
+  decides. A managed UID that is not on the list never reaches M0.
 - **`registration_number` and `master_epoch` carry no Keymaker meaning in this
   cut.** They remain required members of the closed association, each in
   1..9007199254740991. The protected policy records one fixed value for each;
@@ -152,17 +156,23 @@ rule.
   purpose-6 number stays reserved and unallocated; this cut does not use or
   redefine it.
 - **Window.** At or after the statement's `not_after`, the dispatcher admits no
-  dispatch. Owned cancel skips only the window check: the statement's other
+  dispatch. The installer refuses a policy whose `not_after` is later than the
+  statement's `not_after`, so committed start C (§3 step 2) and the run's own
+  expiry fall inside the statement's window. Owned cancel skips only the window check: the statement's other
   checks still apply, and if they refuse, the retained stop obligation and the
   automatic stop of §3 continue. Stop, cleanup and the Keymaker and broker end
   operations of a run admitted inside the window keep working, as they do
   after the policy's own `not_after`.
 
 The cut ends with the first enforcing run and is not a second permanent
-profile. For that run it stands in only for the importing-custody row of §7 and
-for the purpose-6 bootstrap and first-caller parts of the Keymaker row. Every
-other §7 gate applies to that run unchanged, and until the `static-gate/1`
-format is published and one statement is signed, the cut is unavailable.
+profile. For that run it stands in only for the importing-owners row of §7
+(Keymaker bootstrap/custody, broker time settlement, broker D5), for the
+purpose-6 bootstrap and first-caller parts of the "Keymaker +
+generation/time/storage owners" row, and for the purpose-6 staging, rotation
+and epoch parts of the "Operator/curator and installer" row. Every other §7
+gate applies to that run unchanged. The cut is unavailable until the
+`static-gate/1` format is published, one statement is signed, and the
+dispatcher's statement check and the caller tool have landed.
 
 ## 2. Closed proposed forms and signing
 

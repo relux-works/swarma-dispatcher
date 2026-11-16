@@ -80,8 +80,9 @@ jobs:
           binary_dir="$(mktemp -d "$RUNNER_TEMP/managed-peer.XXXXXX")"
           trap 'rm -rf "$binary_dir"' EXIT
           go test -c -o "$binary_dir/transport.test" ./internal/transport/
-          sudo env TEST_BINARY="$binary_dir/transport.test" bash -euo pipefail -c '
+          sudo env TEST_BINARY="$binary_dir/transport.test" PACKAGE_DIR="$PWD/internal/transport" bash -euo pipefail -c '
             test "$(id -u)" -eq 0
+            cd "$PACKAGE_DIR"
             scratch="$(mktemp -d /var/lib/managed-peer.XXXXXX)"
             trap '\''rm -rf "$scratch"'\'' EXIT
             mkdir "$scratch/home" "$scratch/tmp"

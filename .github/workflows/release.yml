@@ -1,0 +1,121 @@
+name: Linux pre-release draft
+
+# Tag-push workflows load from the tag. Dispatch on main instead, with a tag input.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing annotated v* tag to admit from main
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.admit.outputs.commit }}
+      tag_object: ${{ steps.admit.outputs.tag_object }}
+      policy_commit: ${{ steps.admit.outputs.policy_commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Admit using default-branch scripts and tag consistency policy
+        id: admit
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          .scripts/release-admit.sh "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          printf 'policy_commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - name: Run isolated positive and negative release controls
+        run: .scripts/release-test.sh "$RUNNER_TEMP/release-controls"
+      - name: Build admitted source with default-branch tooling in isolated scratch
+        env:
+          RELEASE_COMMIT: ${{ steps.admit.outputs.commit }}
+        run: |
+          set -euo pipefail
+          policy_root=$(pwd -P)
+          work=$(mktemp -d "$RUNNER_TEMP/release-build.XXXXXX")
+          work=$(cd "$work" && pwd -P)
+          mkdir -p "$work"/{home,config,cache,tmp,go-build,go-mod,go-path}
+          export HOME="$work/home" USERPROFILE="$work/home"
+          export XDG_CONFIG_HOME="$work/config" XDG_CACHE_HOME="$work/cache"
+          export TMPDIR="$work/tmp" TMP="$work/tmp" TEMP="$work/tmp" GOTMPDIR="$work/tmp"
+          export GOCACHE="$work/go-build" GOMODCACHE="$work/go-mod" GOPATH="$work/go-path"
+          unset GOTELEMETRYDIR
+          git clone --quiet --no-local --no-checkout "$policy_root" "$work/source"
+          git -C "$work/source" checkout --quiet --detach "$RELEASE_COMMIT"
+          "$policy_root/.scripts/release-build.sh" "$RUNNER_TEMP/dist" "$work/source"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
+        with:
+          name: linux-release-${{ github.run_id }}
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  draft:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: linux-release-${{ github.run_id }}
+          path: ${{ runner.temp }}/dist
+      - name: Recheck main admission and create a labelled pre-release draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG_OBJECT: ${{ needs.build.outputs.tag_object }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+          POLICY_COMMIT: ${{ needs.build.outputs.policy_commit }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$POLICY_COMMIT"
+          main=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
+          test "$main" = "$(git rev-parse refs/remotes/origin/main)"
+          remote=$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
+          test "$remote" = "$RELEASE_TAG_OBJECT"
+          .scripts/release-admit.sh "$RELEASE_TAG"
+          python3 .scripts/release-metadata.py check "$RUNNER_TEMP/dist"
+          cd "$RUNNER_TEMP/dist"
+          sha256sum --strict --check SHA256SUMS
+          assets=(*_linux_amd64 *_linux_arm64 SHA256SUMS provenance.json release-set.json)
+          for asset in "${assets[@]}"; do test -f "$asset"; done
+          printf '%s\n' \
+            'Test profile PRE-RELEASE. Any bot signature: agent-held key, proves nothing about origin' \
+            'Build inputs are recorded in provenance.json; artifact digests in SHA256SUMS and release-set.json.' \
+            'Installer v0 trusts only the aggregate release-set digest approved by the owner in person before any root step.' \
+            > "$RUNNER_TEMP/release-notes.txt"
+          gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --draft --prerelease \
+            --title "$RELEASE_TAG (PRE-RELEASE)" --notes-file "$RUNNER_TEMP/release-notes.txt"

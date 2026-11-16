@@ -712,6 +712,8 @@ If the ledger was also rolled back, recover post-snapshot objects from OS invent
 
 Companion figure: [backend process identities, host admission and recovery](../diagrams/v1-daemon.puml).
 
+The dispatcher-Host registration, epoch-fencing and reconciliation part of this gated backend's publication is drafted in [host-registration/1 (minimal form)](host-registration.md); it does not by itself satisfy the publication gate below.
+
 Before the SH2+ session-host module may hold executions through its agent-side runner (not the service UID):
 
 - **Owner admission (R-SESSION).** The owner's admitted `start` explicitly carries session lifecycle authorisation when successors are allowed (§§3.4, 4.2). Same allocation/generation, stored plan verbatim and owner's grant window bound it; ordinary allocation lifetime and cumulative/anchored restart budget also bound it. A one-start request admits only that start. The original caller ancestry stays the broker dependency; the host never obtains a caller chain.

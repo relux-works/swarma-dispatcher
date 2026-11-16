@@ -71,6 +71,13 @@ refusal status 78 await owning selection. Typed catalog/installation, native
 qualification and authenticated Result joins remain gates; no adapter runtime
 is supplied.
 
+A draft [host-registration/1 minimal form](spec/host-registration.md)
+specifies static registration of one same-machine Session Host, kernel-peer
+and pin authentication in both directions, registration-epoch and
+state-version fencing, dispatcher-owned `host_start`/`host_stop` journal
+phases and unknown-outcome reconciliation. It enables nothing by itself:
+the SH2+ backend stays behind the §12 gate and §16 question 3.
+
 ## Principles
 
 - The dispatcher runs under its own unprivileged service account; root stays in the helper and the launcher.

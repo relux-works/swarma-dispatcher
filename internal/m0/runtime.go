@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	goruntime "runtime"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -43,14 +44,26 @@ type Result struct {
 // Runtime is the M0 ledger and policy evaluator. The mutex is the
 // state-transition lock: it covers local journal and projection I/O only and
 // is never held across a seam call.
+//
+// Three process-local facts refine the durable state and never survive a
+// reopen: materialized reports that the cached projection record equals the
+// applied frames (the barrier of journal.md «materialize before a dependent
+// external call»); permits holds the call permit of each run's stop
+// transaction (granted when this process appended the run's first stop
+// intent, or journaled a stop observation while no stop pass owned the run;
+// consumed by the Stop call); inflight marks the runs whose stop pass is
+// between its decision and its outcome frame.
 type Runtime struct {
-	mu      sync.Mutex
-	seams   Seams
-	store   ledger
-	proj    *projection
-	closed  bool
-	latched error
-	exit    atomic.Bool
+	mu           sync.Mutex
+	seams        Seams
+	store        ledger
+	proj         *projection
+	closed       bool
+	latched      error
+	exit         atomic.Bool
+	materialized bool
+	permits      map[string]bool
+	inflight     map[string]chan struct{}
 }
 
 func platformSupported() error {
@@ -184,6 +197,16 @@ func (r *Runtime) usableLocked() error {
 
 // appendLocked journals one frame durably, then reduces it. An inconsistency
 // after a durable append closes the runtime: the ledger is not repaired.
+//
+// Every appended frame leaves the cached projection record behind the applied
+// frames, whatever the frame reduced to (a cancel, a removal promoted into
+// stop intents, an expiry noticed while reducing another frame, an explicit
+// expiry intent): the next external call must pass barrierLocked first.
+//
+// A frame appended by this process that gives a run its first stop intent
+// grants that run's call permit (rule a). Replay reduces frames through the
+// consumer and never through this function, so a replayed intent grants
+// nothing.
 func (r *Runtime) appendLocked(f *frame) error {
 	b, err := encodeFrame(f)
 	if err != nil {
@@ -192,15 +215,28 @@ func (r *Runtime) appendLocked(f *frame) error {
 	if _, err := r.store.Append(b); err != nil {
 		return r.storageFailureLocked(err)
 	}
+	var withoutIntent []string
+	for id, rec := range r.proj.Dispatches {
+		if rec.StopEffectID == "" {
+			withoutIntent = append(withoutIntent, id)
+		}
+	}
 	if err := r.proj.apply(f); err != nil {
 		r.latched = err
 		return err
 	}
+	r.materialized = false
+	for _, id := range withoutIntent {
+		if r.proj.Dispatches[id].StopEffectID != "" {
+			r.grantPermitLocked(id)
+		}
+	}
 	return nil
 }
 
-// materializeLocked writes the bounded projection record before a dependent
-// external call, as the journal contract requires.
+// materializeLocked writes the bounded projection record, as the journal
+// contract requires before a dependent external call and after a transition
+// is published.
 func (r *Runtime) materializeLocked() error {
 	b, err := r.proj.marshal()
 	if err != nil {
@@ -214,7 +250,49 @@ func (r *Runtime) materializeLocked() error {
 	if err := r.store.ReplaceRecord(projectionRecord, b); err != nil {
 		return r.storageFailureLocked(err)
 	}
+	r.materialized = true
 	return nil
+}
+
+// barrierLocked is the durable-intent barrier of every external call
+// (journal.md: «Before a dependent external call, materialize journaled
+// records»). It materializes the projection whenever any frame was applied
+// since the last materialization, so no call site needs to know which
+// reduction created the records the call depends on. A failed barrier
+// returns before the call with the journal unchanged.
+func (r *Runtime) barrierLocked() error {
+	if r.materialized {
+		return nil
+	}
+	return r.materializeLocked()
+}
+
+// grantPermitLocked records a process-local call permit for one run's stop
+// transaction. Permits are never persisted and never derived from replay.
+func (r *Runtime) grantPermitLocked(requestID string) {
+	if r.permits == nil {
+		r.permits = map[string]bool{}
+	}
+	r.permits[requestID] = true
+}
+
+// claimStopPassLocked marks one run's stop pass as in flight, from its decision
+// to its outcome frame, and returns the channel closed when it ends. A second
+// pass for the same run waits on it instead of issuing a parallel call.
+func (r *Runtime) claimStopPassLocked(requestID string) chan struct{} {
+	if r.inflight == nil {
+		r.inflight = map[string]chan struct{}{}
+	}
+	done := make(chan struct{})
+	r.inflight[requestID] = done
+	return done
+}
+
+func (r *Runtime) releaseStopPass(requestID string, done chan struct{}) {
+	r.mu.Lock()
+	delete(r.inflight, requestID)
+	r.mu.Unlock()
+	close(done)
 }
 
 // reserveFitsLocked refuses forward work when the durable reserve cannot
@@ -525,7 +603,9 @@ func (r *Runtime) dispatch(ctx context.Context, peer uint32, req *Request) (*Res
 		r.mu.Unlock()
 		return nil, err
 	}
-	if err := r.materializeLocked(); err != nil {
+	// The reservation and intent records the launch depends on are
+	// materialized here, under the same lock hold, before the only Start call.
+	if err := r.barrierLocked(); err != nil {
 		r.mu.Unlock()
 		return nil, err
 	}
@@ -749,11 +829,12 @@ func (r *Runtime) cancel(ctx context.Context, peer uint32, req *Request) (*Resul
 	target = r.proj.Dispatches[req.DispatchRequestID]
 	c := r.proj.Cancels[req.RequestID]
 	if c == nil {
-		// Only a new cancel is refused on a terminal run; a same-ID retry of
-		// the cancel that produced the absence replays its original outcome.
-		if target.Phase == phaseAbsent {
+		// Table row 12: a terminal stop transaction (absent, or the no-effect
+		// cancel of a reservation) accepts no new cancel; only the same-ID
+		// replay of the cancel that ended it returns its original outcome.
+		if terminalStop(target.StopOutcome) {
 			r.mu.Unlock()
-			return nil, refuse(CodeRunTerminal, "original run already confirmed absent")
+			return nil, refuse(CodeRunTerminal, "original run's stop transaction is terminal")
 		}
 		if err := r.reserveFitsLocked(); err != nil {
 			r.mu.Unlock()
@@ -762,9 +843,10 @@ func (r *Runtime) cancel(ctx context.Context, peer uint32, req *Request) (*Resul
 		noEffect := target.Phase == phaseReserved
 		event := timeOrZero(now)
 		stopEffect := effectID(principal, target.RequestID, lineageRecordID, componentLaunch, operationStop, 1)
-		// A late cancel never replaces earlier obligations: a recorded removal
-		// is already on the record (removal frame), and the cancel frame's own
-		// time makes the reducer record expiry detection before the cancel
+		// Rows 1, 3 and 6: the cancel record is the owner's stop intent with
+		// the cancel obligation. It never replaces earlier obligations: a
+		// recorded removal is already on the record, and the frame's own time
+		// makes the reducer record expiry detection before the cancel
 		// obligation when the original expiry has passed.
 		if err := r.appendLocked(&frame{Type: frameCancel, Now: event, Cancel: &cancelFrame{
 			RequestID: req.RequestID, Principal: principal, PeerUID: peer, Canonical: string(req.Canonical),
@@ -774,26 +856,30 @@ func (r *Runtime) cancel(ctx context.Context, peer uint32, req *Request) (*Resul
 			return nil, err
 		}
 		if noEffect {
+			// Row 1: a reservation never reached intent, so no receiver effect
+			// exists; the transaction ends with no call.
 			if err := r.appendLocked(&frame{Type: frameStop, Now: event, Stop: &stopFrame{RequestID: target.RequestID, Outcome: stopNoEffect}}); err != nil {
 				r.mu.Unlock()
 				return nil, err
 			}
-		}
-		if err := r.materializeLocked(); err != nil {
-			r.mu.Unlock()
-			return nil, err
+			if err := r.materializeLocked(); err != nil {
+				r.mu.Unlock()
+				return nil, err
+			}
 		}
 		c = r.proj.Cancels[req.RequestID]
 	}
-	// A terminal stop is never re-issued; an unknown one is continued under the
-	// same original effect and obligations.
-	if c.NoEffect || terminalStop(target.StopOutcome) {
+	// Rows 1, 7 and 12: a terminal transaction is answered from the record; an
+	// unresolved one (rows 8 and 9) is continued by the stop pass under the
+	// same original effect and obligations, and the reply is the cancel's own
+	// outcome.
+	if !target.stopUnresolved() {
 		res, err := cancelOutcome(c, target, existing != nil)
 		r.mu.Unlock()
 		return res, err
 	}
 	r.mu.Unlock()
-	if err := r.issueStop(ctx, target.RequestID); err != nil {
+	if err := r.stopPass(ctx, target.RequestID); err != nil {
 		return nil, err
 	}
 	r.mu.Lock()
@@ -801,9 +887,10 @@ func (r *Runtime) cancel(ctx context.Context, peer uint32, req *Request) (*Resul
 	return cancelOutcome(r.proj.Cancels[req.RequestID], r.proj.Dispatches[target.RequestID], existing != nil)
 }
 
-// stopRequestLocked assembles the stop effect of one dispatch from its
-// recorded obligations. The ceiling is the earliest over all of them.
-func stopRequestLocked(rec *dispatchRecord) StopRequest {
+// stopRequestOf assembles the stop effect of one dispatch from its recorded
+// obligations: the original effect identity, the first obligation's event and
+// detection, every retained obligation and the earliest ceiling over them.
+func stopRequestOf(rec *dispatchRecord) StopRequest {
 	return StopRequest{
 		EffectID: rec.StopEffectID, ExecutionID: rec.ExecutionID, Worker: rec.Worker,
 		Event: rec.StopEvent, Detection: rec.StopDetection,
@@ -812,31 +899,76 @@ func stopRequestLocked(rec *dispatchRecord) StopRequest {
 	}
 }
 
-// issueStop performs or continues the recorded stop effect of one dispatch
-// outside the lock and journals its outcome. A terminal outcome is never
-// re-issued. An unknown outcome is a continuation: the original stop effect is
-// observed first, then the SAME stop (same effect identity, events, detection
-// and earliest ceiling) is retried. Only receiver-owned confirmed absence with
-// bounded evidence releases the claim; a failed or unknown stop never does.
-func (r *Runtime) issueStop(ctx context.Context, requestID string) error {
+// stopPass is the ONLY caller of Launcher.Stop. One pass drives one run's
+// unresolved stop transaction through table rows 8, 9, 14 and 15:
+//
+//   - the durable intent is already journaled (R1), by the cancel, removal or
+//     expiry frame that created it; a pass without an intent is inconsistent;
+//   - a fresh transaction (no outcome frame and a call permit held by this
+//     process) issues the Stop directly (row 8); any other unresolved
+//     transaction observes the original stop effect and journals the class
+//     first (row 9), because a reopened process cannot tell «never called»
+//     from «called, reply lost» and an unknown outcome is retried only after
+//     a query (R3);
+//   - the projection is materialized by barrierLocked before every call (R2);
+//   - the permit is consumed before the call, so no later pass in this
+//     process skips the observation unless a new observation grants one;
+//   - the receipt decides: receiver-owned absence with bounded evidence is
+//     terminal (row 14); an error, a non-absent receipt or empty or oversized
+//     evidence is journaled as unknown and keeps the claim (row 15); a lost
+//     outcome frame leaves the transaction unresolved for the next pass (row
+//     16).
+//
+// Two passes for the same run never overlap: the second waits for the first
+// and returns, the record then carries the receipt.
+func (r *Runtime) stopPass(ctx context.Context, requestID string) error {
 	r.mu.Lock()
+	if err := r.usableLocked(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	rec := r.proj.Dispatches[requestID]
 	if rec == nil || rec.StopEffectID == "" {
 		r.mu.Unlock()
-		return inconsistent("stop without a recorded intent")
+		return inconsistent("stop pass without a recorded intent")
 	}
-	if terminalStop(rec.StopOutcome) {
+	if !rec.stopUnresolved() {
 		r.mu.Unlock()
 		return nil
 	}
-	continuation := rec.StopOutcome == stopUnknown
-	stop := stopRequestLocked(rec)
+	if wait := r.inflight[requestID]; wait != nil {
+		r.mu.Unlock()
+		<-wait
+		return nil
+	}
+	done := r.claimStopPassLocked(requestID)
+	defer r.releaseStopPass(requestID, done)
+	fresh := rec.StopOutcome == "" && r.permits[requestID]
 	r.mu.Unlock()
-	if continuation {
-		if err := r.observeStop(ctx, requestID, stop); err != nil {
+	if !fresh {
+		// Row 9 then row 17: the class, a failure included, is recorded and
+		// the pass continues with the Stop whatever it was.
+		if _, err := r.observeEffect(ctx, requestID, observeStop); err != nil {
 			return err
 		}
 	}
+	r.mu.Lock()
+	if err := r.usableLocked(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
+	rec = r.proj.Dispatches[requestID]
+	if rec == nil || !rec.stopUnresolved() {
+		r.mu.Unlock()
+		return nil
+	}
+	if err := r.barrierLocked(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
+	delete(r.permits, requestID)
+	stop := stopRequestOf(rec)
+	r.mu.Unlock()
 	receipt, callErr := r.seams.Launcher.Stop(ctx, stop)
 	after, clockErr := r.seams.Clock.Now()
 	if clockErr != nil || !after.Confident {
@@ -848,7 +980,7 @@ func (r *Runtime) issueStop(ctx context.Context, requestID string) error {
 		return err
 	}
 	rec = r.proj.Dispatches[requestID]
-	if rec == nil || terminalStop(rec.StopOutcome) {
+	if rec == nil || !rec.stopUnresolved() {
 		return nil
 	}
 	s := &stopFrame{RequestID: requestID, Outcome: stopUnknown}
@@ -862,82 +994,136 @@ func (r *Runtime) issueStop(ctx context.Context, requestID string) error {
 	return r.materializeLocked()
 }
 
-// observeStop records the receiver's read-only observation of the original
-// stop effect. The class is evidence for reconciliation only: it never
-// releases the claim and never substitutes for the stop receipt.
-func (r *Runtime) observeStop(ctx context.Context, requestID string, stop StopRequest) error {
-	class, oerr := r.seams.Launcher.Observe(ctx, EffectQuery{EffectID: stop.EffectID, Operation: operationStop, ArgumentsDigest: stop.ExecutionID})
+// observeEffect is the ONLY caller of Launcher.Observe. It queries one
+// original effect of a run read-only, after the barrier, and journals the
+// class: a receiver error or an unlisted class is recorded as unknown (row
+// 17). The class is evidence for reconciliation only; it never changes the
+// stop state or releases the claim (R5). A stop observation journaled while
+// no stop pass owns the run grants the run's call permit (rule b); one
+// journaled by the pass itself, or during another pass's call, grants
+// nothing.
+//
+// queryErr is the receiver's failure, returned after the unknown class was
+// recorded so a caller may report it; err is a ledger or runtime failure
+// that ends the caller's work.
+func (r *Runtime) observeEffect(ctx context.Context, requestID, effect string) (queryErr, err error) {
+	r.mu.Lock()
+	if err := r.usableLocked(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
+	rec := r.proj.Dispatches[requestID]
+	if rec == nil {
+		r.mu.Unlock()
+		return nil, inconsistent("observation of an unknown dispatch")
+	}
+	var q EffectQuery
+	switch effect {
+	case observeStop:
+		if !rec.stopUnresolved() {
+			r.mu.Unlock()
+			return nil, nil
+		}
+		q = EffectQuery{EffectID: rec.StopEffectID, Operation: operationStop, ArgumentsDigest: rec.ExecutionID}
+	default:
+		if !rec.launchUnresolved() {
+			r.mu.Unlock()
+			return nil, nil
+		}
+		q = EffectQuery{EffectID: rec.EffectID, Operation: operationStart, ArgumentsDigest: rec.EntryDigest}
+	}
+	if err := r.barrierLocked(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
+	r.mu.Unlock()
+	class, oerr := r.seams.Launcher.Observe(ctx, q)
 	if oerr != nil || (class != ObservationPresent && class != ObservationAbsent && class != ObservationContradictory) {
 		class = ObservationUnknown
+	}
+	if oerr != nil {
+		queryErr = asRefusal(oerr, CodeObservationUnknown, "effect.observe failed")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.usableLocked(); err != nil {
-		return err
+		return queryErr, err
 	}
-	if rec := r.proj.Dispatches[requestID]; rec == nil || terminalStop(rec.StopOutcome) {
-		return nil
+	rec = r.proj.Dispatches[requestID]
+	if rec == nil || (effect == observeStop && !rec.stopUnresolved()) {
+		return queryErr, nil
 	}
-	return r.appendLocked(&frame{Type: frameObserve, Observe: &observeFrame{RequestID: requestID, Class: class, Effect: observeStop}})
+	if err := r.appendLocked(&frame{Type: frameObserve, Observe: &observeFrame{RequestID: requestID, Class: class, Effect: effect}}); err != nil {
+		return queryErr, err
+	}
+	if effect == observeStop && r.inflight[requestID] == nil {
+		r.grantPermitLocked(requestID)
+	}
+	return queryErr, nil
+}
+
+// unresolvedLocked selects, in a stable order, the runs whose stop transaction
+// is unresolved and the runs whose launch effect is unresolved. It is the one
+// predicate shared by the cancel tail, Sweep and Reconcile.
+func (r *Runtime) unresolvedLocked() (stops, launches []string) {
+	ids := make([]string, 0, len(r.proj.Dispatches))
+	for id := range r.proj.Dispatches {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		rec := r.proj.Dispatches[id]
+		if rec.stopUnresolved() {
+			stops = append(stops, id)
+		}
+		if rec.launchUnresolved() {
+			launches = append(launches, id)
+		}
+	}
+	return stops, launches
 }
 
 // Reconcile observes every unresolved original effect through the launcher's
-// read-only effect.observe and records the class: unresolved launches and
-// unknown stops alike. It never issues a start; stop continuation is Sweep's.
+// read-only effect.observe and records the class (table row 10): every
+// unresolved stop transaction, with or without an outcome frame, and every
+// unresolved launch. It never issues a start or a stop; a recorded stop
+// observation permits the next stop pass of a fresh transaction to proceed
+// without observing again.
 func (r *Runtime) Reconcile(ctx context.Context) error {
 	r.mu.Lock()
-	var pending []dispatchRecord
-	for _, rec := range r.proj.Dispatches {
-		if rec.Phase == phaseInFlight || rec.Phase == phaseCommitted || rec.Phase == phaseUnknown || rec.StopOutcome == stopUnknown {
-			pending = append(pending, *rec)
-		}
-	}
 	err := r.usableLocked()
+	stops, launches := r.unresolvedLocked()
 	r.mu.Unlock()
 	if err != nil {
 		return err
 	}
+	for _, id := range stops {
+		// Row 17: every class, a failure included, is recorded as evidence
+		// only; the receiver's failure is not an error of the reconciliation.
+		if _, err := r.observeEffect(ctx, id, observeStop); err != nil {
+			return err
+		}
+	}
 	var first error
-	for _, rec := range pending {
-		if rec.StopOutcome == stopUnknown {
-			if err := r.observeStop(ctx, rec.RequestID, stopRequestLocked(&rec)); err != nil {
-				return err
-			}
-		}
-		if rec.Phase != phaseInFlight && rec.Phase != phaseCommitted && rec.Phase != phaseUnknown {
-			continue
-		}
-		class, oerr := r.seams.Launcher.Observe(ctx, EffectQuery{EffectID: rec.EffectID, Operation: operationStart, ArgumentsDigest: rec.EntryDigest})
-		if oerr != nil {
-			class = ObservationUnknown
-			if first == nil {
-				first = asRefusal(oerr, CodeObservationUnknown, "effect.observe failed")
-			}
-		}
-		if class != ObservationPresent && class != ObservationAbsent && class != ObservationContradictory {
-			class = ObservationUnknown
-		}
-		r.mu.Lock()
-		if err := r.usableLocked(); err != nil {
-			r.mu.Unlock()
+	for _, id := range launches {
+		queryErr, err := r.observeEffect(ctx, id, observeStart)
+		if err != nil {
 			return err
 		}
-		if err := r.appendLocked(&frame{Type: frameObserve, Observe: &observeFrame{RequestID: rec.RequestID, Class: class, Effect: observeStart}}); err != nil {
-			r.mu.Unlock()
-			return err
+		if queryErr != nil && first == nil {
+			first = queryErr
 		}
-		r.mu.Unlock()
 	}
 	return first
 }
 
-// Sweep records the dispatcher's automatic expiry stop obligation when the
-// qualified clock first reaches a run's original expiry, then issues or
-// continues every unresolved stop transaction (a recorded stop effect with a
-// non-terminal outcome) under its original effect and earliest ceiling,
-// independently of the launch phase. The removal obligation is never added
-// here: the removal frame already carried it to every run with its original
-// event and detection. Sweep never starts anything.
+// Sweep is the dispatcher's periodic stop pass. It records the expiry stop
+// obligation when the qualified clock first reaches a run's original expiry
+// and no earlier frame already proved it (table row 5), then runs one stop
+// pass over every unresolved stop transaction (rows 8 and 9). The removal
+// obligation is never added here: the removal frame already carried it to
+// every run with its original event and detection (row 4). Sweep never starts
+// anything (R6).
 func (r *Runtime) Sweep(ctx context.Context) error {
 	now, clockErr := r.seams.Clock.Now()
 	if clockErr != nil {
@@ -951,7 +1137,6 @@ func (r *Runtime) Sweep(ctx context.Context) error {
 		r.mu.Unlock()
 		return err
 	}
-	var work []string
 	for _, rec := range r.proj.Dispatches {
 		expired := now.Confident && effectiveNow(now.Unix, r.proj.Watermark) >= rec.Deadlines.Expiry
 		if rec.stopDebtPossible() && expired && !rec.hasObligation(sourceExpiry) {
@@ -962,20 +1147,13 @@ func (r *Runtime) Sweep(ctx context.Context) error {
 				r.mu.Unlock()
 				return err
 			}
-			if err := r.materializeLocked(); err != nil {
-				r.mu.Unlock()
-				return err
-			}
-		}
-		// Unresolved stop debt is selected by the stop transaction alone.
-		if rec.StopEffectID != "" && !terminalStop(rec.StopOutcome) {
-			work = append(work, rec.RequestID)
 		}
 	}
+	work, _ := r.unresolvedLocked()
 	r.mu.Unlock()
 	var first error
 	for _, id := range work {
-		if err := r.issueStop(ctx, id); err != nil && first == nil {
+		if err := r.stopPass(ctx, id); err != nil && first == nil {
 			first = err
 		}
 	}

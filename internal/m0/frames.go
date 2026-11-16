@@ -322,6 +322,20 @@ func (rec *dispatchRecord) stopDebtPossible() bool {
 	return rec.EffectID != "" && rec.Phase != phaseAbsent && rec.Phase != phaseCancelled
 }
 
+// stopUnresolved is the one predicate selecting an open stop transaction
+// (table states I and U): a stop intent is recorded and no terminal outcome
+// is. A missing outcome frame is unresolved exactly like a recorded unknown
+// one; the cancel tail, Sweep and Reconcile all select through it.
+func (rec *dispatchRecord) stopUnresolved() bool {
+	return rec.StopEffectID != "" && !terminalStop(rec.StopOutcome)
+}
+
+// launchUnresolved reports an original launch effect whose receipt is still
+// open: in flight, committed without a result, or unknown.
+func (rec *dispatchRecord) launchUnresolved() bool {
+	return rec.Phase == phaseInFlight || rec.Phase == phaseCommitted || rec.Phase == phaseUnknown
+}
+
 func (rec *dispatchRecord) stopEffect() string {
 	return effectID(rec.Principal, rec.RequestID, lineageRecordID, componentLaunch, operationStop, 1)
 }

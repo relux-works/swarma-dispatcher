@@ -9,9 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,7 +38,7 @@ func (d *nativeDialer) Dial(context.Context) (net.Conn, error) {
 	return a, nil
 }
 func (d *nativeDialer) serve(peer net.Conn) error {
-	_ = peer.SetDeadline(time.Now().Add(3 * time.Second))
+	_ = peer.SetDeadline(time.Now().Add(8 * time.Second))
 	w := keymaker.Pinned{}
 	b, err := w.ReadFrame(peer)
 	if err != nil {
@@ -56,31 +56,29 @@ func (d *nativeDialer) serve(peer net.Conn) error {
 	if err = w.WriteFrame(peer, b); err != nil {
 		return err
 	}
-	b, err = w.ReadFrame(peer)
-	if err != nil {
-		return err
-	}
-	req, err := wire.DecodeRequestFrame(b)
-	if err != nil || req.Method != wire.BindMethod {
-		return errors.New("native bind missing")
-	}
-	d.binds.Add(1)
-	reply := bytes.ReplaceAll(d.reply, []byte("00000000000000000000000000000001"), []byte(req.ID))
-	if _, err = peer.Write(reply); err != nil {
-		return err
-	}
-	// Wait for close after a refusal. No second bind may appear.
-	if bytes.Contains(reply, []byte(`"error"`)) {
+	// Like the holder, answer every bind in sequence until the client closes.
+	for {
 		b, err = w.ReadFrame(peer)
-		if err == nil {
-			next, e := wire.DecodeRequestFrame(b)
-			if e != nil || next.Method == wire.BindMethod {
-				d.binds.Add(1)
-				return errors.New("second bind after refusal")
+		if err != nil {
+			if errors.Is(err, io.EOF) && d.binds.Load() >= 1 {
+				return nil
 			}
+			return err
+		}
+		req, err := wire.DecodeRequestFrame(b)
+		if err != nil {
+			return err
+		}
+		if req.Method != wire.BindMethod {
+			// The end after a bound run: not answered here; the client closes.
+			continue
+		}
+		d.binds.Add(1)
+		reply := bytes.ReplaceAll(d.reply, []byte("00000000000000000000000000000001"), []byte(req.ID))
+		if _, err = peer.Write(reply); err != nil {
+			return err
 		}
 	}
-	return nil
 }
 func nativeVector(t *testing.T, name string) []byte {
 	t.Helper()
@@ -104,7 +102,7 @@ func nativeVector(t *testing.T, name string) []byte {
 	return nil
 }
 
-// Claim: native retryable/out-of-set/null/malformed/wrong-ID refusals stay binding, fenced and exit 17 after one bind; literal success binds durably.
+// Claim: literal native refusals keep the record binding with exit 17, no Run, no input and no child: out-of-set (wrong-role), null-ID (busy-unattributed), wrong-ID and malformed replies after exactly ONE bind frame, the correlated retryable request_deadline_exceeded after exactly BindAttemptLimit identical bind frames; the uid stays quarantined. Positive control: the literal success binds durably with one frame.
 func TestNativeHeld(t *testing.T) {
 	for _, name := range []string{"bind-success", "wrong-role", "deadline-correlated", "busy-unattributed", "wrong-response-id", "noncanonical-space"} {
 		t.Run(name, func(t *testing.T) {
@@ -136,29 +134,39 @@ func TestNativeHeld(t *testing.T) {
 					t.Fatal("input or child released after refusal")
 				}
 			}
-			if d.binds.Load() != 1 {
-				t.Fatalf("bind count %d", d.binds.Load())
-			}
 			select {
 			case err := <-d.done:
 				must(t, err)
 			case <-time.After(4 * time.Second):
 				t.Fatal("native peer did not stop")
 			}
+			wantBinds := int32(1)
+			if name == "deadline-correlated" {
+				wantBinds = keymaker.BindAttemptLimit
+			}
+			if d.binds.Load() != wantBinds {
+				t.Fatalf("bind count %d want %d", d.binds.Load(), wantBinds)
+			}
 		})
 	}
 }
 
-// Claim: a pre-request connect failure creates no record, exits 1, and a later attempt starts fresh H1 with a different prepare and nonce.
+// Claim (F3 with r2.7 Q1): a pre-request Keymaker connect failure creates no
+// record and exits 1 (run_bind_unavailable); the lease of the SAME fixed uid
+// is returned after the zero-process proof, so a later attempt with
+// isolation.Fixed binds under that uid, starting from a fresh H1 with a
+// different prepared_id; the failed attempt's prepared_id is never bound.
 func TestConnectFresh(t *testing.T) {
 	e := newEnv(t)
-	e.placement = &seqPlacement{next: cuid}
 	e.kmDialer.Fail = errors.New("synthetic connect failure")
 	l := e.build()
 	_, err := l.Begin(context.Background(), "input-1")
 	v, x := codes.Exit(err, 0, true)
 	if !codes.Is(err, codes.BindUnavailable) || x != nil || v.Status != 1 || len(e.store.Keys()) != 0 || len(e.km.Binds()) != 0 {
 		t.Fatalf("%v %+v %v", err, v, x)
+	}
+	if e.quar.Held(cuid) || v.Detail["lease"] != "" {
+		t.Fatalf("pre-record lease not returned: held=%v detail=%v", e.quar.Held(cuid), v.Detail)
 	}
 	first := e.src.ValidatedIDs()
 	if len(first) != 1 {
@@ -168,11 +176,9 @@ func TestConnectFresh(t *testing.T) {
 	run, err := l.Begin(context.Background(), "input-2")
 	must(t, err)
 	ids := e.src.ValidatedIDs()
-	if len(ids) != 2 || ids[0] == ids[1] || e.record(run.Key).PreparedID != ids[1] || len(e.store.Keys()) != 1 || e.record(run.Key).State != runrecord.Bound {
-		t.Fatalf("fresh prepare: %v", ids)
-	}
-	if !strings.HasPrefix(run.Key, "n-") {
-		t.Fatal("fixture nonce missing")
+	rec := e.record(run.Key)
+	if len(ids) != 2 || ids[0] == ids[1] || rec.PreparedID != ids[1] || rec.PreparedID == first[0] || len(e.store.Keys()) != 1 || rec.State != runrecord.Bound || rec.ChildUID != cuid || run.ChildUID != cuid {
+		t.Fatalf("fresh prepare: %v record %+v", ids, rec)
 	}
 	_, _ = run.End(context.Background(), 0, true, nil)
 }

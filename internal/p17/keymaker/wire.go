@@ -4,11 +4,35 @@
 // Pinned explicitly selects the native j7lifecycle codec. The zero-value
 // client still selects Unpinned and refuses. The codec grants no authority:
 // peer/current-generation authentication remains the dialer's responsibility.
+//
+// Hook text of record: P17 Curator-side hook interface r2.13 (sha256
+// 6849a4edc98b8aa4b257498f5c5c1efa9d5b25d09187474ee7ef284c89eb607a).
+//
+// Channel discipline (pin B spec/keymaker.md section 7: "One request is in
+// flight per connection; no unsolicited replies or pipelining"):
+//
+//   - Open connects and negotiates hello eagerly, inside HelloBudget. Hello
+//     carries no mutation, so a failed Open has no effect and no record.
+//   - Every started request waits its own timeout_ms (1..2000 ms) plus
+//     HolderFrameReportBudget plus ReadMargin for the one reply it is owed.
+//     A local timeout beyond that budget makes the channel ambiguous: the
+//     connection is closed and the run is HELD. A second request is never
+//     written while a reply is owed.
+//   - The exact bind retry (same request ID, same body, hence the same
+//     timeout_ms) is written only after READING a correlated retryable
+//     refusal (non-null ID equal to the outstanding bind ID, code in
+//     RetryableCodes) on the original live connection. A null, malformed or
+//     wrong-ID response is never retried: close, HELD.
+//   - BindAttemptLimit is the one fixed, finite number of bind frames a run
+//     may write. It is a constant, not configuration. When it is reached the
+//     run is HELD (run_bind_unknown, exit 17) and the record stays binding.
 package keymaker
 
 import (
 	"errors"
 	"io"
+	"net"
+	"time"
 
 	"github.com/relux-works/swarma-dispatcher/internal/p17/codes"
 	"github.com/relux-works/swarma-keymaker/j7lifecycle"
@@ -70,14 +94,47 @@ type Request struct {
 	End       *EndRequest
 }
 
+// NativeRefusal is a decoded native refusal: its closed code and retryable
+// bit. It is diagnostic and retry-policy input only; it never proves that no
+// durable effect started.
+type NativeRefusal struct {
+	Code      string
+	Retryable bool
+}
+
 // Response is decoded against the locally outstanding request, never context
 // inferred from the peer. Refused certifies membership in the pinned no-effect
 // set as well as exact non-null ID correlation; it is not a generic error flag.
+// Refusal is set for every decoded native refusal, in or out of that set; an
+// empty ID then means wire null (uncorrelated).
 type Response struct {
 	ID      string
 	Bind    *BindResult
 	End     *EndResult
 	Refused bool
+	Refusal *NativeRefusal
+}
+
+// RetryableCodes is the closed set of native refusal codes after which the
+// exact same-ID bind retry is permitted (pin B spec/keymaker.md section 7:
+// "retryable is true only for rate_limited, busy,
+// generation_source_unavailable, enrollment_unavailable, audit_unavailable
+// and request_deadline_exceeded; mutation retries MUST retain the original
+// ID and arguments"). Membership never makes a refusal no-effect.
+var retryableCodes = map[string]bool{
+	"busy":                          true,
+	"rate_limited":                  true,
+	"request_deadline_exceeded":     true,
+	"generation_source_unavailable": true,
+	"enrollment_unavailable":        true,
+	"audit_unavailable":             true,
+}
+
+// RetryableRefusal reports whether r permits the exact bind retry: the
+// retryable bit is set and the code is in the closed retryable set.
+// Correlation is checked by the caller against the outstanding request ID.
+func RetryableRefusal(r *NativeRefusal) bool {
+	return r != nil && r.Retryable && retryableCodes[r.Code]
 }
 
 // ErrRefused certifies a correlated refusal in the pinned no-effect set.
@@ -87,6 +144,9 @@ var ErrRefused = errors.New("keymaker: refused")
 // Wire is the codec seam. Encode is deterministic for a given request so that
 // a retry sends the identical bytes. Frames are the native framing.
 type Wire interface {
+	// Hello negotiates the protocol on a fresh connection within budget. It
+	// carries no mutation and authenticates no peer.
+	Hello(c net.Conn, budget time.Duration) error
 	Encode(req Request) ([]byte, error)
 	WriteFrame(w io.Writer, b []byte) error
 	ReadFrame(r io.Reader) ([]byte, error)
@@ -100,6 +160,7 @@ type Unpinned struct{}
 
 func unpinned() error { return codes.Unpinned("keymaker wire codec", Pin) }
 
+func (Unpinned) Hello(net.Conn, time.Duration) error              { return unpinned() }
 func (Unpinned) Encode(Request) ([]byte, error)                   { return nil, unpinned() }
 func (Unpinned) WriteFrame(io.Writer, []byte) error               { return unpinned() }
 func (Unpinned) ReadFrame(io.Reader) ([]byte, error)              { return nil, unpinned() }

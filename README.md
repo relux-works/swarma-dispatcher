@@ -367,14 +367,31 @@ codec respectively, at the exact versions in `go.mod`. Nil wires still select
 `Unpinned` and refuse by name. The helper (spawn and sweep), authoritative
 generation reader, work-product export and operator release seams also refuse
 by default. The Source adapter implements its documented closed protocol
-without importing any upstream internal package. The native Keymaker hello is
-sent only after the durable binding/ending record exists. A successful bind
-must become durably bound before input can be released. The no-effect refusal
-table is empty until the pinned Keymaker registry explicitly publishes it:
-correlation and nonretryability alone never make a refusal terminal. All such
-native bind refusals currently remain HELD, exit 17, with no input. Only an
-exact retry on the original assigned connection is permitted, never a second
-bind after a refusal or a fresh-connection bind replay.
+without importing any upstream internal package. The packages follow the P17
+hook interface text r2.13 (sha256
+`6849a4edc98b8aa4b257498f5c5c1efa9d5b25d09187474ee7ef284c89eb607a`).
+
+The native Keymaker hello is negotiated eagerly at connect, before the durable
+binding record. A connect or hello failure is `run_bind_unavailable` with no
+run record, and the next attempt starts from a fresh Source prepare. A
+successful bind must become durably bound before input can be released. The
+no-effect refusal table is empty until the pinned Keymaker registry explicitly
+publishes it: correlation and nonretryability alone never make a refusal
+terminal. All such native bind refusals currently remain HELD, exit 17, with
+no input.
+
+The Keymaker wire carries one request at a time, so no second bind is written
+while a reply is owed. A local timeout closes the connection and the run is
+HELD. The bind is written at most `keymaker.BindAttemptLimit` (3, a fixed
+constant) times: the exact retry, with the same request ID and body on the
+original assigned connection, follows only a read, correlated, retryable
+refusal. A null, malformed or wrong-ID response is never retried, and at the
+limit the run is HELD. There is no bind on a fresh connection.
+
+A uid leased before any run record exists returns to the pool on a failure
+only when the privilege-drop helper was never invoked for that lease and the
+zero-process proof succeeds on a qualified procfs view; otherwise it is
+quarantined. The input principal's uid must equal the leased uid.
 
 A uid leaves quarantine only with the zero-process proof AND (operator release
 OR (acknowledged end AND work-product export)). The export seam reports exactly

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/relux-works/a2a-swarm/runorigin"
 	"github.com/relux-works/swarma-dispatcher/internal/journal"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/codes"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/fakes"
@@ -57,9 +58,11 @@ func journalCfg(t *testing.T) journal.Config {
 }
 
 type env struct {
-	t              *testing.T
-	jcfg           journal.Config
-	store          *runrecord.Store
+	t     *testing.T
+	jcfg  journal.Config
+	store *runrecord.Store
+	// records, when set, replaces store as the launcher's RecordStore.
+	records        launcher.RecordStore
 	src            *fakes.SourceScript
 	srcDialer      *fakes.SourceDialer
 	km             *fakes.KeymakerScript
@@ -90,6 +93,13 @@ func (p *seqPlacement) ChildUID(uint32) (uint32, error) {
 	uid := p.next
 	p.next++
 	return uid, nil
+}
+
+// peek returns the uid the next ChildUID call will lease.
+func (p *seqPlacement) peek() uint32 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.next
 }
 
 func (e *env) nonce() (string, error) {
@@ -127,9 +137,9 @@ func newEnv(t *testing.T) *env {
 		LauncherUID:    luid,
 		Station:        "1",
 		RequestTimeout: 100 * time.Millisecond,
-		BindAttempts:   3,
 		MaxRestarts:    2,
 		ProcRoot:       e.proc.Root,
+		ProcMountInfo:  e.proc.MountInfoPath(),
 		SweepBudget:    sweep.Budget{Attempts: 3},
 	}
 	e.deps = launcher.Deps{
@@ -149,32 +159,54 @@ func newEnv(t *testing.T) *env {
 	return e
 }
 
-// Typed principal fixtures preserve the round-1 scenarios with the native shape.
-func principal(label string) keymaker.Principal {
-	return keymaker.Principal{UID: 22000 + uint32(label[len(label)-1]-'0'), Generation: "1"}
+// event is the retained event every fixture run names.
+var event = runorigin.EventRef{RoomID: "!room:example", EventID: "$retained-event"}
+
+// principalFor is the input principal of R_i: its uid is the leased uid.
+func principalFor(uid uint32) keymaker.Principal {
+	return keymaker.Principal{UID: uid, Generation: "1"}
 }
 
-type fixtureLauncher struct{ *launcher.Launcher }
-
-func (l *fixtureLauncher) Begin(ctx context.Context, label string) (*launcher.Run, error) {
-	return l.Launcher.Begin(ctx, principal(label))
+// fixtureLauncher supplies the fixture event and the input principal whose
+// uid equals the uid the placement is about to lease. The label only names
+// the scenario at the call site.
+type fixtureLauncher struct {
+	*launcher.Launcher
+	e *env
 }
-func (l *fixtureLauncher) BeginChild(ctx context.Context, parent *launcher.Run, label string) (*launcher.Run, error) {
-	return l.Launcher.BeginChild(ctx, parent, principal(label))
+
+func (l *fixtureLauncher) nextUID() uint32 {
+	switch p := l.e.placement.(type) {
+	case *seqPlacement:
+		return p.peek()
+	case isolation.Fixed:
+		return uint32(p)
+	}
+	return cuid
+}
+func (l *fixtureLauncher) Begin(ctx context.Context, _ string) (*launcher.Run, error) {
+	return l.Launcher.Begin(ctx, event, principalFor(l.nextUID()))
+}
+func (l *fixtureLauncher) BeginChild(ctx context.Context, parent *launcher.Run, _ string) (*launcher.Run, error) {
+	return l.Launcher.BeginChild(ctx, parent, principalFor(l.nextUID()))
 }
 
 // build creates the launcher from the current env fields.
 func (e *env) build() *fixtureLauncher {
 	e.t.Helper()
 	e.deps.Placement = e.placement
-	e.deps.Records = e.store
+	if e.records != nil {
+		e.deps.Records = e.records
+	} else {
+		e.deps.Records = e.store
+	}
 	if e.deps.Killer == nil {
 		e.deps.Killer = e.killer
 	}
 	e.deps.Quarantine = e.quar
 	l, err := launcher.New(e.cfg, e.deps)
 	must(e.t, err)
-	e.l = &fixtureLauncher{l}
+	e.l = &fixtureLauncher{l, e}
 	return e.l
 }
 
@@ -230,7 +262,7 @@ func TestBeginBindsDurably(t *testing.T) {
 	}
 	id, body, err := fakes.ParseBind(binds[0])
 	must(t, err)
-	if id != rec.BindRequestID || !bytes.Equal(body.Origin, rec.Origin) || body.ParentRun != "" || body.InputPrincipal != principal("input-1") || body.IdentityRegistrationNumber != 1 {
+	if id != rec.BindRequestID || !bytes.Equal(body.Origin, rec.Origin) || body.ParentRun != "" || body.InputPrincipal != principalFor(cuid) || body.IdentityRegistrationNumber != 1 {
 		t.Fatalf("bind %q %+v", id, body)
 	}
 	if _, err := os.Stat(filepath.Join(e.jcfg.Directory, "records", runrecord.RecordName(run.Key))); err != nil {
@@ -311,18 +343,92 @@ func TestInputGates(t *testing.T) {
 	}
 }
 
-// Claim (H2 step 6, "lost bind: retry on the same connection succeeds"): with
-// the first bind response dropped the launcher retries the identical bytes on
-// the same connection and binds; no second Keymaker connection is opened.
-func TestLostBindRetrySameConnection(t *testing.T) {
+const lateBy = 120 * time.Millisecond // RequestTimeout (100 ms) + 20 ms
+
+// Claim (F1 scenario b at the launcher): a bind success that arrives 20 ms
+// after the request's timeout_ms binds the run with exactly ONE bind frame
+// and no byte written while the reply was owed; the end on the same live
+// connection is then acknowledged, the launcher exits with the child's
+// status and the record is ended.
+func TestLateBindSuccessThenEnd(t *testing.T) {
 	e := newEnv(t)
-	e.km.BindMode = "drop-first"
+	e.km.BindMode = "late"
+	e.km.Delay = lateBy
+	run := endReady(t, e)
+	if binds := e.km.Binds(); len(binds) != 1 || e.km.Overlaps() != 0 || e.kmDialer.Dials() != 1 || e.record(run.Key).State != runrecord.Bound {
+		t.Fatalf("binds=%d overlaps=%d dials=%d", len(binds), e.km.Overlaps(), e.kmDialer.Dials())
+	}
+	e.exportEvidence[run.Key] = sweep.Exported
+	out, err := run.End(context.Background(), 3, true, nil)
+	must(t, err)
+	if !out.Acknowledged || out.Verdict.Status != 3 || e.record(run.Key).State != runrecord.Ended || len(e.km.Ends()) != 1 || e.kmDialer.Dials() != 1 || e.km.Overlaps() != 0 {
+		t.Fatalf("end after a late bind: %+v ends=%d dials=%d", out, len(e.km.Ends()), e.kmDialer.Dials())
+	}
+}
+
+// Claim (F1 scenario a and the positive control "a read correlated retryable
+// refusal, then the exact retry succeeds"): a correlated
+// request_deadline_exceeded that arrives 20 ms after timeout_ms is read, the
+// identical bind is then written again on the same connection and the run
+// binds: exactly two bind frames, byte-identical, never overlapping, one
+// Keymaker connection.
+func TestBindRetryAfterRetryableRefusal(t *testing.T) {
+	e := newEnv(t)
+	e.km.BindMode = "deadline-then-ok"
+	e.km.Delay = lateBy
 	l := e.build()
 	run, err := l.Begin(context.Background(), "input-1")
 	must(t, err)
 	binds := e.km.Binds()
-	if len(binds) != 2 || !bytes.Equal(binds[0], binds[1]) || e.kmDialer.Dials() != 1 || e.record(run.Key).State != runrecord.Bound {
-		t.Fatalf("binds=%d dials=%d", len(binds), e.kmDialer.Dials())
+	if len(binds) != 2 || !bytes.Equal(binds[0], binds[1]) || e.kmDialer.Dials() != 1 || e.km.Overlaps() != 0 || e.record(run.Key).State != runrecord.Bound {
+		t.Fatalf("binds=%d dials=%d overlaps=%d", len(binds), e.kmDialer.Dials(), e.km.Overlaps())
+	}
+}
+
+// Claim (H2 step 5c, the four HELD controls at the launcher): a bind held
+// unanswered past the local read budget ("silent": exactly one bind frame),
+// a retryable refusal with a wrong ID and one with a null ID (no retry: one
+// bind frame), and a peer that answers every bind with a correlated
+// retryable refusal (bind frames == BindAttemptLimit) each return
+// run_bind_unknown, exit 17, with no Run; the record stays binding, the uid
+// stays quarantined, nothing was written while a reply was owed, and the
+// restart sweep HOLDs the record without sending an end. Positive control:
+// TestBindRetryAfterRetryableRefusal.
+func TestBindHeldKeepsBinding(t *testing.T) {
+	for mode, wantBinds := range map[string]int{"silent": 1, "wrong-id": 1, "null-id": 1, "busy": keymaker.BindAttemptLimit} {
+		t.Run(mode, func(t *testing.T) {
+			e := newEnv(t)
+			e.km.BindMode = mode
+			l := e.build()
+			run, err := l.Begin(context.Background(), "input-1")
+			v, x := codes.Exit(err, 0, false)
+			if !codes.Is(err, codes.BindUnknown) || x != nil || v.Status != 17 || run != nil || errors.Is(err, keymaker.ErrRefused) {
+				t.Fatalf("%v %+v %v", err, v, x)
+			}
+			keys := e.store.Keys()
+			if len(keys) != 1 || e.record(keys[0]).State != runrecord.Binding || !e.quar.Held(cuid) {
+				t.Fatalf("keys=%v held=%v", keys, e.quar.Held(cuid))
+			}
+			binds := e.km.Binds()
+			if len(binds) != wantBinds || e.kmDialer.Dials() != 1 || e.km.Overlaps() != 0 {
+				t.Fatalf("binds=%d want %d dials=%d overlaps=%d", len(binds), wantBinds, e.kmDialer.Dials(), e.km.Overlaps())
+			}
+			for _, b := range binds[1:] {
+				if !bytes.Equal(b, binds[0]) {
+					t.Fatal("a retry changed the request bytes")
+				}
+			}
+			if mode == "busy" && v.Detail["native_code"] != "busy" {
+				t.Fatalf("detail %+v", v.Detail)
+			}
+			e.reopen()
+			e.km.SetBindMode("")
+			l = e.build()
+			reports := l.Restart(context.Background())
+			if len(reports) != 1 || reports[0].Action != runrecord.ActionHold || len(e.km.Ends()) != 0 || e.record(keys[0]).State != runrecord.Binding || !e.quar.Held(cuid) {
+				t.Fatalf("reports %+v", reports)
+			}
+		})
 	}
 }
 
@@ -381,7 +487,7 @@ func TestBindRefusedDefinite(t *testing.T) {
 	// Only an explicit operator release frees the never-used uid (no end and
 	// no export evidence can exist for it), and only with the zero-process proof.
 	e.operator[keys[0]] = cuid
-	if d, err := e.quar.Release(keys[0], cuid, false, sweep.Enumerate(e.proc.Root, cuid)); err != nil || !d.Release || e.quar.Held(cuid) {
+	if d, err := e.quar.Release(keys[0], cuid, false, sweep.Enumerate(e.proc.View(), cuid)); err != nil || !d.Release || e.quar.Held(cuid) {
 		t.Fatalf("operator release: %+v %v", d, err)
 	}
 	e.reopen()
@@ -427,8 +533,9 @@ func TestEndExactAck(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(e.proc.Root, "777")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("child survived the sweep")
 	}
-	if _, err := run.End(context.Background(), 3, true, nil); err == nil {
-		t.Fatal("second end on an ended record accepted")
+	killsBefore := len(e.killer.UIDs())
+	if _, err := run.End(context.Background(), 3, true, nil); !errors.Is(err, launcher.ErrEndCalled) || len(e.killer.UIDs()) != killsBefore || len(e.km.Ends()) != 1 {
+		t.Fatalf("second end on an ended run: %v", err)
 	}
 }
 
@@ -450,7 +557,7 @@ func TestEndAckNoExportKeepsQuarantine(t *testing.T) {
 		t.Fatalf("new run received the quarantined uid: %v", err)
 	}
 	e.operator[run.Key] = cuid
-	if d, err := e.quar.Release(run.Key, cuid, true, sweep.Enumerate(e.proc.Root, cuid)); err != nil || !d.Release || !d.OperatorReleased || e.quar.Held(cuid) {
+	if d, err := e.quar.Release(run.Key, cuid, true, sweep.Enumerate(e.proc.View(), cuid)); err != nil || !d.Release || !d.OperatorReleased || e.quar.Held(cuid) {
 		t.Fatalf("operator release: %+v %v", d, err)
 	}
 	// Unpinned default seams: same refusal, with the unpinned causes recorded.
@@ -468,14 +575,15 @@ func TestEndAckNoExportKeepsQuarantine(t *testing.T) {
 
 // Claim (H5 steps 3-4, D4; "lost end leads to ending and a retry; teardown
 // happens on the error path"; "run_end_unknown exits 17, never the child
-// status"): a dropped end response leaves the record ending and fenced with
+// status"): an end left unanswered past the local read budget closes the
+// connection (nothing is resent on it) and leaves the record ending and fenced with
 // the exact request stored, teardown still ran, the exit is 17 with
 // child_status 3 in the detail, input is refused afterwards and the uid stays
 // quarantined; a retry on a fresh connection sends the identical bytes and
 // moves the record to ended.
 func TestLostEndStaysEndingThenRetry(t *testing.T) {
 	e := newEnv(t)
-	e.km.EndMode = "drop"
+	e.km.EndMode = "silent"
 	run := endReady(t, e)
 	e.exportEvidence[run.Key] = sweep.Exported
 	torn := false
@@ -559,7 +667,7 @@ func TestRebindRefused(t *testing.T) {
 
 func endBody(t *testing.T, id, runID string) []byte {
 	t.Helper()
-	b, err := fakes.KeymakerWire{}.Encode(keymaker.Request{ID: id, Method: keymaker.MethodEnd, End: &keymaker.EndRequest{RunID: runID}})
+	b, err := fakes.KeymakerWire{}.Encode(keymaker.Request{ID: id, TimeoutMS: 100, Method: keymaker.MethodEnd, End: &keymaker.EndRequest{RunID: runID}})
 	must(t, err)
 	return b
 }
@@ -573,6 +681,12 @@ func endBody(t *testing.T, id, runID string) []byte {
 // record whose recorded launcher is alive is owned and left alone. Release
 // gate: the swept uids with export evidence are released, the one without
 // stays quarantined although its end was acknowledged and its child killed.
+// Terminal records (F10): the uid of a record that was already ended is
+// released again from the record, its export evidence and a fresh
+// zero-process proof (2006), and the uid of a refused record after the proof
+// alone (2010); their neighbours with a live process under the uid (2009
+// ended, 2011 refused) stay quarantined, and nothing is killed or ended for
+// a terminal record.
 func TestRestartTable(t *testing.T) {
 	e := newEnv(t)
 	dead := &incarnation.Incarnation{PID: 4242, UID: luid, StartTicks: 1, BootID: "boot-1"}
@@ -633,6 +747,30 @@ func TestRestartTable(t *testing.T) {
 	must(t, err)
 	_, err = e.store.Update("ended", func(r *runrecord.Record) error { r.State = runrecord.Ended; r.EndAcknowledged = true; return nil })
 	must(t, err)
+	ended := func(key string, uid uint32) {
+		must(t, e.store.Create(mk(key, uid, dead)))
+		_, err := e.store.Update(key, bound)
+		must(t, err)
+		_, err = e.store.Update(key, func(r *runrecord.Record) error {
+			r.State = runrecord.Ending
+			r.EndRequestID = "end-" + key
+			r.EndRequestBody = endBody(t, "end-"+key, "run-"+key)
+			return nil
+		})
+		must(t, err)
+		_, err = e.store.Update(key, func(r *runrecord.Record) error { r.State = runrecord.Ended; r.EndAcknowledged = true; return nil })
+		must(t, err)
+	}
+	refused := func(key string, uid uint32) {
+		must(t, e.store.Create(mk(key, uid, dead)))
+		_, err := e.store.Update(key, func(r *runrecord.Record) error { r.State = runrecord.Refused; return nil })
+		must(t, err)
+	}
+	ended("endedlive", 2009)
+	must(t, e.proc.Add(900, [4]uint32{2009, 0, 2009, 0}, 7)) // proof fails for 2009
+	refused("refused", 2010)
+	refused("refusedlive", 2011)
+	must(t, e.proc.Add(901, [4]uint32{2011, 2011, 2011, 2011}, 8)) // proof fails for 2011
 	must(t, e.store.Create(mk("noexport", 2008, dead)))
 	_, err = e.store.Update("noexport", bound)
 	must(t, err)
@@ -648,7 +786,7 @@ func TestRestartTable(t *testing.T) {
 	_, err = e.store.Update("owned", released)
 	must(t, err)
 
-	for _, k := range []string{"nochild", "spawned", "orphan", "ending"} {
+	for _, k := range []string{"nochild", "spawned", "orphan", "ending", "ended", "endedlive"} {
 		e.exportEvidence[k] = sweep.Exported
 	}
 	e.reopen()
@@ -661,7 +799,8 @@ func TestRestartTable(t *testing.T) {
 	want := map[string]runrecord.RestartAction{
 		"binding": runrecord.ActionHold, "nochild": runrecord.ActionEndAndKill, "spawned": runrecord.ActionEndAndKill,
 		"orphan": runrecord.ActionEndThenSweep, "ending": runrecord.ActionRetryEnd, "ended": runrecord.ActionNeverAdopt, "owned": runrecord.ActionOwned,
-		"noexport": runrecord.ActionEndThenSweep,
+		"noexport":  runrecord.ActionEndThenSweep,
+		"endedlive": runrecord.ActionNeverAdopt, "refused": runrecord.ActionNeverAdopt, "refusedlive": runrecord.ActionNeverAdopt,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("reports %+v", reports)
@@ -671,7 +810,8 @@ func TestRestartTable(t *testing.T) {
 			t.Fatalf("%s: action %s want %s (err %v)", k, got[k].Action, a, got[k].Err)
 		}
 	}
-	states := map[string]runrecord.State{"binding": runrecord.Binding, "nochild": runrecord.Ended, "spawned": runrecord.Ended, "orphan": runrecord.Ended, "ending": runrecord.Ended, "ended": runrecord.Ended, "owned": runrecord.Bound, "noexport": runrecord.Ended}
+	states := map[string]runrecord.State{"binding": runrecord.Binding, "nochild": runrecord.Ended, "spawned": runrecord.Ended, "orphan": runrecord.Ended, "ending": runrecord.Ended, "ended": runrecord.Ended, "owned": runrecord.Bound, "noexport": runrecord.Ended,
+		"endedlive": runrecord.Ended, "refused": runrecord.Refused, "refusedlive": runrecord.Refused}
 	for k, s := range states {
 		if rec := e.record(k); rec.State != s || !e.store.Fenced(k) {
 			t.Fatalf("%s: state %s want %s fenced=%v", k, rec.State, s, e.store.Fenced(k))
@@ -698,7 +838,7 @@ func TestRestartTable(t *testing.T) {
 			t.Fatalf("no end for %s: %v", run, endIDs)
 		}
 	}
-	if endIDs["run-ended"] || endIDs["run-owned"] || endIDs["run-binding"] || len(endIDs) != 5 {
+	if endIDs["run-ended"] || endIDs["run-endedlive"] || endIDs["run-owned"] || endIDs["run-binding"] || len(endIDs) != 5 {
 		t.Fatalf("ends sent to the wrong runs: %v", endIDs)
 	}
 	if !bytes.Equal(endingBytes, e.record("ending").EndRequestBody) {
@@ -709,7 +849,7 @@ func TestRestartTable(t *testing.T) {
 	for _, u := range e.killer.UIDs() {
 		killed[u] = true
 	}
-	if !killed[2003] || !killed[2004] || !killed[2008] || killed[2007] || killed[2001] {
+	if !killed[2003] || !killed[2004] || !killed[2008] || killed[2007] || killed[2001] || killed[2006] || killed[2009] || killed[2010] || killed[2011] {
 		t.Fatalf("killer uids %v", e.killer.UIDs())
 	}
 	for _, pid := range []string{"300", "400", "401", "800"} {
@@ -717,13 +857,22 @@ func TestRestartTable(t *testing.T) {
 			t.Fatalf("pid %s survived", pid)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(e.proc.Root, "700")); err != nil {
-		t.Fatal("owned run's child was killed")
+	for _, pid := range []string{"700", "900", "901"} {
+		if _, err := os.Stat(filepath.Join(e.proc.Root, pid)); err != nil {
+			t.Fatalf("pid %s of an owned or terminal run was killed", pid)
+		}
 	}
 	// 2008 ended with a zero-process proof but without export: quarantined.
-	for uid, held := range map[uint32]bool{2001: true, 2002: false, 2003: false, 2004: false, 2005: false, 2006: true, 2007: true, 2008: true} {
+	// 2006 (ended, export, proof) and 2010 (refused, proof) are released at
+	// restart; 2009 and 2011 have a live process and stay quarantined.
+	for uid, held := range map[uint32]bool{2001: true, 2002: false, 2003: false, 2004: false, 2005: false, 2006: false, 2007: true, 2008: true, 2009: true, 2010: false, 2011: true} {
 		if e.quar.Held(uid) != held {
 			t.Fatalf("uid %d held=%v want %v", uid, e.quar.Held(uid), held)
+		}
+	}
+	for k, want := range map[string]bool{"ended": true, "refused": true, "endedlive": false, "refusedlive": false} {
+		if got[k].UIDReleased != want {
+			t.Fatalf("%s: report UIDReleased=%v want %v", k, got[k].UIDReleased, want)
 		}
 	}
 }
@@ -779,7 +928,7 @@ func TestChildRunGates(t *testing.T) {
 	}
 	_, body, err := fakes.ParseBind(binds[1])
 	must(t, err)
-	if body.ParentRun != parent.RunID || body.Origin != nil || body.InputPrincipal != principal("input-2") {
+	if body.ParentRun != parent.RunID || body.Origin != nil || body.InputPrincipal != principalFor(cuid+1) {
 		t.Fatalf("child bind %+v", body)
 	}
 	must(t, parent.Spawn(e.spawnChild(777)))
@@ -842,7 +991,7 @@ func TestSourceRefusalsNoKeymaker(t *testing.T) {
 }
 
 // Claim (seams refuse by name, never fall back): with the Keymaker codec
-// unpinned local encoding refuses before any frame or record; with the sweep helper unpinned an acknowledged
+// unpinned the eager hello refuses by name before any frame or record, and the unused lease is returned; with the sweep helper unpinned an acknowledged
 // end leaves the uid quarantined; with no Keymaker dialer the launch fails
 // with run_bind_unavailable after Source validated and before any record.
 func TestUnpinnedSeams(t *testing.T) {
@@ -853,8 +1002,8 @@ func TestUnpinnedSeams(t *testing.T) {
 	if !codes.IsUnpinned(err) || len(e.km.Binds()) != 0 {
 		t.Fatalf("unpinned wire: %v binds=%d", err, len(e.km.Binds()))
 	}
-	if keys := e.store.Keys(); len(keys) != 0 {
-		t.Fatalf("record after unpinned wire: %v", keys)
+	if keys := e.store.Keys(); len(keys) != 0 || e.quar.Held(cuid) {
+		t.Fatalf("record after unpinned wire: %v held=%v", keys, e.quar.Held(cuid))
 	}
 	e = newEnv(t)
 	e.deps.Killer = sweep.UnpinnedKiller{}

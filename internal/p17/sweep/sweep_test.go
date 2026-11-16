@@ -32,8 +32,8 @@ func add(t *testing.T, p *fakes.ProcTree, pid int, uids [4]uint32) {
 
 // Claim (D5a): the proof enumerates all processes and matches on the real,
 // effective, saved OR filesystem uid; a setuid child (ruid R_i, other euid)
-// and an euid-only match are both counted, other uids are not, and an empty
-// tree proves zero.
+// and an euid-only match are both counted, other uids are not, and a tree
+// with no process under R_i (pid 1 and two unrelated ones remain) proves zero.
 func TestEnumerateMatchesEveryUIDField(t *testing.T) {
 	p := tree(t)
 	add(t, p, 10, [4]uint32{ri, ri, ri, ri})
@@ -43,9 +43,9 @@ func TestEnumerateMatchesEveryUIDField(t *testing.T) {
 	add(t, p, 14, [4]uint32{0, 0, 0, ri})                    // fs only
 	add(t, p, 15, [4]uint32{0, 0, 0, 0})                     // root, unrelated
 	add(t, p, 16, [4]uint32{ri + 1, ri + 1, ri + 1, ri + 1}) // neighbour uid
-	e := sweep.Enumerate(p.Root, ri)
+	e := sweep.Enumerate(p.View(), ri)
 	want := []int{10, 11, 12, 13, 14}
-	if e.Err != nil || e.Scanned != 7 || len(e.Unreadable) != 0 || len(e.Matched) != len(want) {
+	if e.Err != nil || e.Scanned != 8 || len(e.Unreadable) != 0 || len(e.Matched) != len(want) {
 		t.Fatalf("%+v", e)
 	}
 	for i, pid := range want {
@@ -61,7 +61,7 @@ func TestEnumerateMatchesEveryUIDField(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if e := sweep.Enumerate(p.Root, ri); !e.Proved() || e.Scanned != 2 {
+	if e := sweep.Enumerate(p.View(), ri); !e.Proved() || e.Scanned != 3 {
 		t.Fatalf("positive control: %+v", e)
 	}
 }
@@ -78,11 +78,11 @@ func TestEnumerateUnreadableNotProved(t *testing.T) {
 	if err := p.MakeUnreadable(20); err != nil {
 		t.Fatal(err)
 	}
-	e := sweep.Enumerate(p.Root, ri)
+	e := sweep.Enumerate(p.View(), ri)
 	if e.Err != nil || len(e.Matched) != 0 || len(e.Unreadable) != 1 || e.Unreadable[0] != 20 || e.Proved() {
 		t.Fatalf("%+v", e)
 	}
-	if e := sweep.Enumerate(p.Root+"/missing", ri); e.Err == nil || e.Proved() {
+	if e := sweep.Enumerate(sweep.View{ProcRoot: p.Root + "/missing", MountInfo: p.MountInfoPath()}, ri); e.Err == nil || e.Proved() {
 		t.Fatalf("missing root: %+v", e)
 	}
 }
@@ -97,7 +97,7 @@ func TestSweepKillsByUIDOnly(t *testing.T) {
 	add(t, p, 30, [4]uint32{ri, ri, ri, ri})
 	add(t, p, 31, [4]uint32{ri, 0, ri, 0}) // setuid child
 	k := &fakes.Killer{Tree: p}
-	out := sweep.Sweep(context.Background(), p.Root, ri, k, sweep.Budget{Attempts: 3})
+	out := sweep.Sweep(context.Background(), p.View(), ri, k, sweep.Budget{Attempts: 3})
 	if out.Err != nil || !out.Final.Proved() || out.Kills != 1 {
 		t.Fatalf("%+v", out)
 	}
@@ -122,21 +122,21 @@ func TestSweepBudgetAndKillerFailures(t *testing.T) {
 	p := tree(t)
 	add(t, p, 40, [4]uint32{ri, ri, ri, ri})
 	k := &fakes.Killer{Tree: p, Immortal: true}
-	out := sweep.Sweep(context.Background(), p.Root, ri, k, sweep.Budget{Attempts: 2})
+	out := sweep.Sweep(context.Background(), p.View(), ri, k, sweep.Budget{Attempts: 2})
 	if !errors.Is(out.Err, sweep.ErrNotProved) || out.Kills != 2 || out.Final.Proved() || len(k.UIDs()) != 2 {
 		t.Fatalf("%+v kills=%v", out, k.UIDs())
 	}
 	failing := &fakes.Killer{Tree: p, Fail: errors.New("helper refused")}
-	out = sweep.Sweep(context.Background(), p.Root, ri, failing, sweep.Budget{Attempts: 2})
+	out = sweep.Sweep(context.Background(), p.View(), ri, failing, sweep.Budget{Attempts: 2})
 	if out.Err == nil || errors.Is(out.Err, sweep.ErrNotProved) || out.Kills != 0 {
 		t.Fatalf("failing killer: %+v", out)
 	}
-	out = sweep.Sweep(context.Background(), p.Root, ri, sweep.UnpinnedKiller{}, sweep.Budget{Attempts: 2})
+	out = sweep.Sweep(context.Background(), p.View(), ri, sweep.UnpinnedKiller{}, sweep.Budget{Attempts: 2})
 	if !codes.IsUnpinned(out.Err) || out.Final.Proved() {
 		t.Fatalf("unpinned killer: %+v", out)
 	}
 	// Positive control: with nothing under the uid, no killer is needed.
-	out = sweep.Sweep(context.Background(), p.Root, ri+5, nil, sweep.Budget{Attempts: 1})
+	out = sweep.Sweep(context.Background(), p.View(), ri+5, nil, sweep.Budget{Attempts: 1})
 	if out.Err != nil || !out.Final.Proved() || out.Kills != 0 {
 		t.Fatalf("empty uid: %+v", out)
 	}
@@ -148,11 +148,8 @@ func (f failingWorkProductExport) ExportStatus(string) (sweep.WorkProductExportR
 	return sweep.Exported, f.err
 }
 
-// Claim: only proof AND (operator release OR (end ACK AND work-product export)) frees a uid; unreadable/live/wrong-uid/failed proof and missing evidence keep it quarantined.
+// Claim: only proof AND (operator release OR (end ACK AND work-product export)) frees a uid; unreadable/live/wrong-uid/failed proof and missing evidence keep it quarantined. Only the unreadable-pid sub-case skips under root.
 func TestQuarantineRelease(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("root reads every file; unreadable plant needs a non-root test process")
-	}
 	p := tree(t)
 	exportEvidence := sweep.StaticWorkProductExport{}
 	operator := sweep.StaticOperatorRelease{}
@@ -164,7 +161,7 @@ func TestQuarantineRelease(t *testing.T) {
 	if err := q.Lease(ri); !errors.Is(err, sweep.ErrQuarantined) {
 		t.Fatalf("held uid leased again: %v", err)
 	}
-	proved := sweep.Enumerate(p.Root, ri)
+	proved := sweep.Enumerate(p.View(), ri)
 	if !proved.Proved() {
 		t.Fatal("setup: empty tree not proved")
 	}
@@ -180,49 +177,55 @@ func TestQuarantineRelease(t *testing.T) {
 	if d.WorkProductExportSatisfied || d.OperatorReleased || !d.Proved || !d.EndAcknowledged {
 		t.Fatalf("decision inputs %+v", d)
 	}
-	// Export proved but one pid unreadable.
+	// Export proved but one pid unreadable. Only this sub-case needs a
+	// non-root test process (root reads every file); it alone is skipped.
 	exportEvidence[run] = sweep.Exported
-	add(t, p, 60, [4]uint32{0, 0, 0, 0})
-	if err := p.MakeUnreadable(60); err != nil {
-		t.Fatal(err)
-	}
-	unreadable := sweep.Enumerate(p.Root, ri)
-	if unreadable.Err != nil || len(unreadable.Unreadable) != 1 || unreadable.Proved() {
-		t.Fatalf("setup: %+v", unreadable)
-	}
-	d, err = q.Release(run, ri, true, unreadable)
-	refuse("export with an unreadable pid", d, err)
-	if !d.WorkProductExportSatisfied || d.Proved {
-		t.Fatalf("decision inputs %+v", d)
-	}
-	if err := p.Remove(60); err != nil {
-		t.Fatal(err)
-	}
+	t.Run("export with an unreadable pid", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root reads every file; unreadable plant needs a non-root test process")
+		}
+		add(t, p, 60, [4]uint32{0, 0, 0, 0})
+		if err := p.MakeUnreadable(60); err != nil {
+			t.Fatal(err)
+		}
+		unreadable := sweep.Enumerate(p.View(), ri)
+		if unreadable.Err != nil || len(unreadable.Unreadable) != 1 || unreadable.Proved() {
+			t.Fatalf("setup: %+v", unreadable)
+		}
+		d, err := q.Release(run, ri, true, unreadable)
+		refuse("export with an unreadable pid", d, err)
+		if !d.WorkProductExportSatisfied || d.Proved {
+			t.Fatalf("decision inputs %+v", d)
+		}
+		if err := p.Remove(60); err != nil {
+			t.Fatal(err)
+		}
+	})
 	// Export and proof, but no end ACK.
-	d, err = q.Release(run, ri, false, sweep.Enumerate(p.Root, ri))
+	d, err = q.Release(run, ri, false, sweep.Enumerate(p.View(), ri))
 	refuse("export without end ACK", d, err)
 	// Export and ACK, but a live child under R_i.
 	add(t, p, 50, [4]uint32{ri, ri, ri, ri})
-	d, err = q.Release(run, ri, true, sweep.Enumerate(p.Root, ri))
+	d, err = q.Release(run, ri, true, sweep.Enumerate(p.View(), ri))
 	refuse("live child", d, err)
 	if err := p.Remove(50); err != nil {
 		t.Fatal(err)
 	}
 	// Proof for another uid, and a failed enumeration.
-	d, err = q.Release(run, ri, true, sweep.Enumerate(p.Root, ri+1))
+	d, err = q.Release(run, ri, true, sweep.Enumerate(p.View(), ri+1))
 	refuse("another uid's proof", d, err)
-	d, err = q.Release(run, ri, true, sweep.Enumerate(p.Root+"/missing", ri))
+	d, err = q.Release(run, ri, true, sweep.Enumerate(sweep.View{ProcRoot: p.Root + "/missing", MountInfo: p.MountInfoPath()}, ri))
 	refuse("failed enumeration", d, err)
 	// Failed export status, and the refusing default.
 	broken := sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: failingWorkProductExport{errors.New("export evidence unavailable")}, Operator: operator}}
 	broken.Hold(ri)
-	d, err = broken.Release(run, ri, true, sweep.Enumerate(p.Root, ri))
+	d, err = broken.Release(run, ri, true, sweep.Enumerate(p.View(), ri))
 	if !errors.Is(err, sweep.ErrQuarantined) || d.Release || d.WorkProductExportSatisfied || d.WorkProductExportErr == nil || !broken.Held(ri) {
 		t.Fatalf("unreadable export evidence: %+v err=%v", d, err)
 	}
 	var unpinned sweep.Quarantine
 	unpinned.Hold(ri)
-	d, err = unpinned.Release(run, ri, true, sweep.Enumerate(p.Root, ri))
+	d, err = unpinned.Release(run, ri, true, sweep.Enumerate(p.View(), ri))
 	if !errors.Is(err, sweep.ErrQuarantined) || d.Release || !codes.IsUnpinned(d.WorkProductExportErr) || !codes.IsUnpinned(d.OperatorErr) || !unpinned.Held(ri) {
 		t.Fatalf("unpinned seams: %+v err=%v", d, err)
 	}
@@ -230,7 +233,7 @@ func TestQuarantineRelease(t *testing.T) {
 		t.Fatal("new run received a quarantined uid")
 	}
 	// Positive control: zero processes, proved export and end ACK.
-	d, err = q.Release(run, ri, true, sweep.Enumerate(p.Root, ri))
+	d, err = q.Release(run, ri, true, sweep.Enumerate(p.View(), ri))
 	if err != nil || !d.Release || q.Held(ri) {
 		t.Fatalf("positive control: %+v err=%v", d, err)
 	}
@@ -242,26 +245,26 @@ func TestQuarantineRelease(t *testing.T) {
 	// does not count.
 	delete(exportEvidence, run)
 	operator[run] = ri + 1
-	d, err = q.Release(run, ri, false, sweep.Enumerate(p.Root, ri))
+	d, err = q.Release(run, ri, false, sweep.Enumerate(p.View(), ri))
 	refuse("operator release for another uid", d, err)
 	operator[run] = ri
-	d, err = q.Release(run, ri, false, sweep.Enumerate(p.Root, ri))
+	d, err = q.Release(run, ri, false, sweep.Enumerate(p.View(), ri))
 	if err != nil || !d.Release || !d.OperatorReleased || q.Held(ri) {
 		t.Fatalf("operator release: %+v err=%v", d, err)
 	}
 	// Operator release never bypasses the proof.
 	q.Hold(ri)
 	add(t, p, 51, [4]uint32{0, ri, 0, 0})
-	d, err = q.Release(run, ri, false, sweep.Enumerate(p.Root, ri))
+	d, err = q.Release(run, ri, false, sweep.Enumerate(p.View(), ri))
 	refuse("operator release with a live process", d, err)
 }
 
 // Claim: ReleaseAllowed is proof AND (operator OR (ACK AND export)); every other combination is false.
 func TestReleaseAllowedTable(t *testing.T) {
 	p := tree(t)
-	proved := sweep.Enumerate(p.Root, ri)
+	proved := sweep.Enumerate(p.View(), ri)
 	add(t, p, 70, [4]uint32{ri, ri, ri, ri})
-	live := sweep.Enumerate(p.Root, ri)
+	live := sweep.Enumerate(p.View(), ri)
 	for _, c := range []struct {
 		e                             sweep.Enumeration
 		ack, exportEvidence, operator bool
@@ -281,22 +284,33 @@ func TestReleaseAllowedTable(t *testing.T) {
 	}
 }
 
-// Claim (positive control on the real procfs): the enumeration for the test
-// process's own uid contains the test process; it is not proved. Limit: on a
-// host with hidepid other pids may be unreadable, which is also not proved,
-// so only the positive match is asserted.
+// Claim (positive control on the real procfs): on a qualified real /proc the
+// enumeration for the test process's own uid contains the test process, so
+// it is not proved; on a host whose /proc is not a qualified view (hidepid,
+// subset=pid, nested pid namespace) the enumeration reports
+// ErrViewUnqualified and is not proved either.
 func TestEnumerateRealProc(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("procfs is Linux only")
 	}
-	e := sweep.Enumerate("/proc", uint32(os.Getuid()))
+	e := sweep.Enumerate(sweep.View{}, uint32(os.Getuid()))
+	if e.Proved() {
+		t.Fatalf("own uid proved empty: %+v", e)
+	}
+	if !e.Qualified() {
+		if !errors.Is(e.Err, sweep.ErrViewUnqualified) {
+			t.Fatalf("unqualified view without its error: %v", e.Err)
+		}
+		t.Logf("real /proc is not a qualified view on this host: %v", e.Err)
+		return
+	}
 	found := false
 	for _, pid := range e.Matched {
 		if pid == os.Getpid() {
 			found = true
 		}
 	}
-	if e.Err != nil || !found || e.Proved() {
-		t.Fatalf("self not enumerated: err=%v matched=%d proved=%v", e.Err, len(e.Matched), e.Proved())
+	if e.Err != nil || !found {
+		t.Fatalf("self not enumerated: err=%v matched=%d", e.Err, len(e.Matched))
 	}
 }

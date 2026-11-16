@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -16,20 +17,59 @@ type Dialer interface {
 	Dial(ctx context.Context) (net.Conn, error)
 }
 
-// DefaultBindAttempts bounds same-connection retries of a lost bind response.
-const DefaultBindAttempts = 3
+const (
+	// BindAttemptLimit is the one fixed, finite number of j7_run_bind request
+	// frames a run may write on its assigned connection: the first request
+	// plus the exact retries, each of which follows a read, correlated,
+	// retryable refusal. It is deliberately a constant and not a
+	// configuration field: no caller can raise it. When it is reached the run
+	// is HELD (run_bind_unknown).
+	BindAttemptLimit = 3
+
+	// HelloBudget is the protocol's hello deadline (pin B spec/keymaker.md
+	// section 7: "Hello deadline is 2 seconds"; internal/control/server.go
+	// frameBudget). Open negotiates hello eagerly inside this budget.
+	HelloBudget = 2 * time.Second
+
+	// HolderFrameReportBudget is the holder's own budget for framing and for
+	// the refusal report it still writes after a request deadline (pin B
+	// spec/keymaker.md section 7: "the service MUST also bound framing to 2
+	// seconds"; internal/control/server.go: const frameBudget = 2 *
+	// time.Second). The holder measures timeout_ms from completion of the
+	// request frame and may answer request_deadline_exceeded only after it.
+	HolderFrameReportBudget = 2 * time.Second
+
+	// ReadMargin is the fixed local margin added on top of timeout_ms and
+	// HolderFrameReportBudget, for scheduling and socket latency.
+	ReadMargin = 500 * time.Millisecond
+)
+
+// ReadBudget is the local wait for the one reply a started request is owed:
+// the request's own timeout_ms plus HolderFrameReportBudget plus ReadMargin.
+// It is sized so that the holder's own deadline reply always arrives first;
+// a local timeout beyond it means the channel is ambiguous.
+func ReadBudget(timeoutMS int64) time.Duration {
+	return time.Duration(timeoutMS)*time.Millisecond + HolderFrameReportBudget + ReadMargin
+}
 
 var (
 	// ErrConnectionGone means the assigned connection is no longer usable.
 	ErrConnectionGone = errors.New("keymaker: assigned connection gone")
-	// ErrLost means one response was not received inside its timeout while the
-	// connection stayed assigned.
-	ErrLost = errors.New("keymaker: response lost within timeout")
+	// ErrLost means the one reply a started request was owed did not arrive
+	// inside ReadBudget. The channel is ambiguous and has been closed; the
+	// request is never written again on it.
+	ErrLost = errors.New("keymaker: reply not received within the local read budget; channel closed")
 	// ErrSealed means an ended acknowledgement already closed this channel to
 	// further mutation.
 	ErrSealed = errors.New("keymaker: channel sealed after ended acknowledgement")
 	// ErrTimeout means the per-request timeout is outside 1..2000 ms.
 	ErrTimeout = errors.New("keymaker: per-request timeout outside 1..2000 ms")
+	// ErrHello means the eager hello failed. Nothing but hello bytes was
+	// written; no mutation can have started.
+	ErrHello = errors.New("keymaker: hello failed before any request")
+	// ErrUncorrelated means a response did not carry the outstanding request
+	// ID (null or different). It is never retried.
+	ErrUncorrelated = errors.New("keymaker: response id is null or differs from the outstanding request")
 )
 
 // Conn is one assigned Keymaker connection for one run.
@@ -41,13 +81,18 @@ type Conn struct {
 	gone    bool
 	sealed  bool
 	closed  bool
-	started bool
-	// Requests counts frames written; tests use it to prove retry identity.
+	// requests counts request frames written (hello excluded); tests use it
+	// to prove retry identity and the attempt limit.
 	requests int
 }
 
-// Open dials one fresh connection. timeout is the per-request timeout and
-// must be within 1..2000 ms. A nil wire is the refusing default.
+// Open dials one fresh connection and negotiates hello on it, eagerly and
+// within HelloBudget. timeout is the per-request timeout and must be within
+// 1..2000 ms. A nil wire is the refusing default.
+//
+// Every failure of Open happens before any request frame: hello carries no
+// mutation, so the caller may treat it as run_bind_unavailable with no
+// record. The connection is closed on failure.
 func Open(ctx context.Context, d Dialer, w Wire, timeout time.Duration) (*Conn, error) {
 	if timeout < time.Millisecond || timeout > 2000*time.Millisecond || !codes.RequestTimeoutOK(timeout.Milliseconds()) {
 		return nil, ErrTimeout
@@ -67,6 +112,10 @@ func Open(ctx context.Context, d Dialer, w Wire, timeout time.Duration) (*Conn, 
 	}
 	if c == nil {
 		return nil, errors.New("keymaker: dialer returned no connection")
+	}
+	if err := w.Hello(c, HelloBudget); err != nil {
+		_ = c.Close()
+		return nil, errors.Join(ErrHello, err)
 	}
 	return &Conn{c: c, wire: w, timeout: timeout}, nil
 }
@@ -100,35 +149,16 @@ func (c *Conn) closeLocked() error {
 	return c.c.Close()
 }
 
-// startLocked negotiates once, after the caller has persisted binding/ending.
-// Thus Open fails only before any request bytes, as required by H2 step 4.
-func (c *Conn) startLocked() error {
-	if c.started {
-		return nil
-	}
-	c.started = true
-	if c.gone || c.closed {
-		return ErrConnectionGone
-	}
-	if h, ok := c.wire.(interface {
-		Hello(net.Conn, time.Duration) error
-	}); ok {
-		if err := h.Hello(c.c, c.timeout); err != nil {
-			c.gone = true
-			return err
-		}
-	}
-	return nil
-}
-
 func isTimeout(err error) bool {
 	var ne net.Error
 	return errors.As(err, &ne) && ne.Timeout()
 }
 
-// exchange writes b once and waits for exactly one response with its own
-// timeout. A timeout leaves the connection assigned and returns ErrLost;
-// any other failure, including EOF, marks the connection gone.
+// exchange writes b once and waits ReadBudget for exactly the one reply that
+// request is owed. It is the only place a request frame is written, it runs
+// under c.mu, and every failure closes the connection before returning: a
+// second request can therefore never be written while a reply is owed. On a
+// correlation failure the decoded response is still returned for diagnostics.
 func (c *Conn) exchange(req Request, b []byte) (Response, error) {
 	if c.gone || c.closed {
 		return Response{}, ErrConnectionGone
@@ -136,38 +166,46 @@ func (c *Conn) exchange(req Request, b []byte) (Response, error) {
 	if c.sealed {
 		return Response{}, ErrSealed
 	}
-	budget := c.timeout
-	if req.TimeoutMS > 0 && req.TimeoutMS <= 2000 && time.Duration(req.TimeoutMS)*time.Millisecond < budget {
-		budget = time.Duration(req.TimeoutMS) * time.Millisecond
+	fail := func(resp Response, err error) (Response, error) {
+		_ = c.closeLocked()
+		return resp, errors.Join(ErrConnectionGone, err)
 	}
-	now := time.Now()
-	if err := c.c.SetDeadline(now.Add(budget)); err != nil {
-		c.gone = true
-		return Response{}, errors.Join(ErrConnectionGone, err)
+	// Every attempt carries its own request timeout inside 1..2000 ms.
+	if !codes.RequestTimeoutOK(req.TimeoutMS) {
+		return fail(Response{}, ErrTimeout)
+	}
+	if err := c.c.SetDeadline(time.Now().Add(ReadBudget(req.TimeoutMS))); err != nil {
+		return fail(Response{}, err)
 	}
 	c.requests++
 	if err := c.wire.WriteFrame(c.c, b); err != nil {
-		c.gone = true
-		return Response{}, errors.Join(ErrConnectionGone, err)
+		return fail(Response{}, err)
 	}
 	fr, err := c.wire.ReadFrame(c.c)
 	if err != nil {
-		if isTimeout(err) && !errors.Is(err, ErrConnectionGone) {
-			return Response{}, errors.Join(ErrLost, err)
+		if isTimeout(err) {
+			// A reply is still owed on this channel: it is ambiguous.
+			return fail(Response{}, errors.Join(ErrLost, err))
 		}
-		c.gone = true
-		return Response{}, errors.Join(ErrConnectionGone, err)
+		return fail(Response{}, err)
 	}
 	resp, err := c.wire.DecodeResponse(req, fr)
 	if err != nil {
-		c.gone = true
-		return Response{}, errors.Join(ErrConnectionGone, err)
+		return fail(Response{}, err)
 	}
-	if resp.ID != req.ID {
-		c.gone = true
-		return Response{}, errors.Join(ErrConnectionGone, errors.New("keymaker: response id mismatch"))
+	if resp.ID == "" || resp.ID != req.ID {
+		return fail(resp, ErrUncorrelated)
 	}
 	return resp, nil
+}
+
+// withNative adds the closed native refusal code and retryable bit of resp, if
+// any, to a HELD refusal for operator reconciliation.
+func withNative(r *codes.Refusal, resp Response) *codes.Refusal {
+	if resp.Refusal == nil {
+		return r
+	}
+	return r.With("native_code", resp.Refusal.Code).With("native_retryable", strconv.FormatBool(resp.Refusal.Retryable))
 }
 
 // EncodeBind returns the exact bytes Bind would send, for the durable record
@@ -182,15 +220,18 @@ func (c *Conn) EncodeEnd(id string, req EndRequest) ([]byte, error) {
 	return c.wire.Encode(Request{ID: id, TimeoutMS: c.timeout.Milliseconds(), Method: MethodEnd, End: &req})
 }
 
-// Bind sends j7_run_bind with the given request ID. A lost response is
-// retried with the identical bytes on this same connection, at most
-// attempts times. If the connection is gone the run is HELD:
-// run_bind_unknown. An exact Keymaker refusal returns ErrRefused. The
-// returned bytes are the exact request sent, for the durable record.
-func (c *Conn) Bind(id string, req BindRequest, attempts int) (BindResult, []byte, error) {
-	if attempts <= 0 {
-		attempts = DefaultBindAttempts
-	}
+// Bind sends j7_run_bind with the given request ID (hooks r2.13, H2 steps 5 and 6).
+//
+// The identical bytes are written again only after a correlated retryable
+// refusal was READ on this same live connection, and at most
+// BindAttemptLimit frames are written in total. Every other outcome that is
+// not a success or a correlated refusal in the pinned no-effect set closes
+// the connection and is HELD, run_bind_unknown: a local timeout with a reply
+// still owed, EOF, a null, malformed or wrong-ID response, a correlated
+// refusal that is not retryable, and the attempt limit. A refusal in the
+// no-effect set returns run_bind_refused with ErrRefused. The returned bytes
+// are the exact request sent, for the durable record.
+func (c *Conn) Bind(id string, req BindRequest) (BindResult, []byte, error) {
 	if id == "" {
 		return BindResult{}, nil, errors.New("keymaker: request id required")
 	}
@@ -201,34 +242,41 @@ func (c *Conn) Bind(id string, req BindRequest, attempts int) (BindResult, []byt
 	if err != nil {
 		return BindResult{}, nil, err
 	}
-	if err := c.startLocked(); err != nil {
-		return BindResult{}, b, codes.Refuse(codes.BindUnknown, "native hello failed; run HELD", err)
+	held := func(op string, cause error, resp Response) (BindResult, []byte, error) {
+		_ = c.closeLocked()
+		r := codes.Refuse(codes.BindUnknown, op, cause).With("request_id", id).With("requests_written", strconv.Itoa(c.requests))
+		return BindResult{}, b, withNative(r, resp)
 	}
-	var last error
-	for i := 0; i < attempts; i++ {
+	for attempt := 1; ; attempt++ {
 		resp, err := c.exchange(request, b)
-		if err == nil {
-			if resp.Refused {
-				return BindResult{}, b, codes.Refuse(codes.BindRefused, "correlated no-effect bind refusal", ErrRefused)
-			}
-			if resp.Bind == nil || resp.Bind.RunID == "" {
-				c.gone = true
-				return BindResult{}, b, codes.Refuse(codes.BindUnknown, "bind result without run_id; run HELD", nil).With("request_id", id)
-			}
-			return *resp.Bind, b, nil
+		if err != nil {
+			return held("bind outcome unknown on the assigned connection; run HELD", err, resp)
 		}
-		last = err
-		if errors.Is(err, ErrLost) {
+		if resp.Refused {
+			return BindResult{}, b, withNative(codes.Refuse(codes.BindRefused, "correlated no-effect bind refusal", ErrRefused), resp)
+		}
+		if resp.Refusal != nil {
+			if !RetryableRefusal(resp.Refusal) {
+				return held("correlated bind refusal outside the no-effect set; run HELD", nil, resp)
+			}
+			if attempt >= BindAttemptLimit {
+				return held("bind attempt limit reached after retryable refusals; run HELD", nil, resp)
+			}
+			// The one reply owed was read, correlated and retryable: nothing
+			// is in flight, so the exact same-ID, same-body retry may follow.
 			continue
 		}
-		return BindResult{}, b, codes.Refuse(codes.BindUnknown, "assigned connection gone; run HELD", err).With("request_id", id)
+		if resp.Bind == nil || resp.Bind.RunID == "" {
+			return held("bind result without run_id; run HELD", nil, resp)
+		}
+		return *resp.Bind, b, nil
 	}
-	return BindResult{}, b, codes.Refuse(codes.BindUnknown, "bind response lost after retries; run HELD", last).With("request_id", id)
 }
 
 // End sends j7_run_end once and checks the exact ended result for RunID.
-// Anything else, including a lost response, EOF, or a refusal, is
-// run_end_unknown. On the exact acknowledgement the channel is sealed.
+// Anything else, including a local timeout, EOF, or a refusal, is
+// run_end_unknown and closes the connection. On the exact acknowledgement the
+// channel is sealed.
 func (c *Conn) End(id string, req EndRequest) (EndResult, []byte, error) {
 	if id == "" || req.RunID == "" {
 		return EndResult{}, nil, errors.New("keymaker: request id and run_id required")
@@ -244,7 +292,8 @@ func (c *Conn) End(id string, req EndRequest) (EndResult, []byte, error) {
 }
 
 // EndExact replays only the durable end intent, byte for byte, including its
-// original timeout. Fresh connection configuration cannot rewrite that intent.
+// original timeout. Fresh connection configuration cannot rewrite that
+// intent; the local wait is derived from the persisted timeout_ms alone.
 func (c *Conn) EndExact(id string, req EndRequest, body []byte) (EndResult, []byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -257,22 +306,25 @@ func (c *Conn) EndExact(id string, req EndRequest, body []byte) (EndResult, []by
 }
 
 func (c *Conn) endLocked(request Request, b []byte) (EndResult, []byte, error) {
-	unknown := func(op string, cause error) (EndResult, []byte, error) {
-		return EndResult{}, b, codes.Refuse(codes.EndUnknown, op, cause).With("request_id", request.ID).With("run_id", request.End.RunID)
-	}
-	if err := c.startLocked(); err != nil {
-		return unknown("native hello failed before end", err)
+	unknown := func(op string, cause error, resp Response) (EndResult, []byte, error) {
+		if !errors.Is(cause, ErrSealed) {
+			// The end is written at most once per connection; a retry uses a
+			// fresh connection and the persisted exact request.
+			_ = c.closeLocked()
+		}
+		r := codes.Refuse(codes.EndUnknown, op, cause).With("request_id", request.ID).With("run_id", request.End.RunID)
+		return EndResult{}, b, withNative(r, resp)
 	}
 	resp, err := c.exchange(request, b)
 	if err != nil {
-		return unknown("end not acknowledged", err)
+		return unknown("end not acknowledged", err, resp)
 	}
-	if resp.Refused || resp.End == nil {
-		return unknown("end result refused or missing", ErrRefused)
+	if resp.Refused || resp.Refusal != nil || resp.End == nil {
+		return unknown("end result refused or missing", nil, resp)
 	}
 	res := *resp.End
 	if !res.Ended || res.RunID != request.End.RunID {
-		return unknown("end result not the exact ended acknowledgement", nil)
+		return unknown("end result not the exact ended acknowledgement", nil, resp)
 	}
 	c.sealed = true
 	return res, b, nil

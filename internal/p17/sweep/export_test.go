@@ -19,7 +19,7 @@ func (r exportResult) ExportStatus(string) (sweep.WorkProductExportResult, error
 // Claim: only explicit exported/no-working-copy results plus proof and ACK release; missing, zero, unknown, partial and failed export results stay quarantined.
 func TestWorkProductExport(t *testing.T) {
 	p := tree(t)
-	proof := sweep.Enumerate(p.Root, ri)
+	proof := sweep.Enumerate(p.View(), ri)
 	if !proof.Proved() {
 		t.Fatal("positive zero-process control failed")
 	}
@@ -57,7 +57,7 @@ func TestWorkProductExport(t *testing.T) {
 // Claim: export still requires an ACK, operator release does not, and neither path bypasses zero-process proof for the same uid.
 func TestExportReleaseGates(t *testing.T) {
 	p := tree(t)
-	proof := sweep.Enumerate(p.Root, ri)
+	proof := sweep.Enumerate(p.View(), ri)
 	for _, c := range []struct {
 		name          string
 		ack, operator bool

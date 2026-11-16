@@ -11,11 +11,11 @@ import (
 	"github.com/relux-works/swarma-dispatcher/internal/journal"
 )
 
-// Frame kinds in the journal.
-const (
-	genesisKind    = "p17-run-store/1"
-	transitionKind = "p17-run-transition/1"
-)
+// transitionKind is the only frame kind in the journal: one complete record
+// after one real transition. There is no synthetic genesis frame; sequence 1
+// is the first real record transition (spec/journal.md: "No synthetic
+// genesis or semantic authority is invented").
+const transitionKind = "p17-run-transition/1"
 
 type frame struct {
 	V      int     `json:"v"`
@@ -47,6 +47,11 @@ var (
 	ErrClosed = errors.New("runrecord: store closed")
 	// ErrReplay reports a journal frame the store cannot accept.
 	ErrReplay = errors.New("runrecord: replay rejected")
+	// ErrCommit marks a failure at or after the journal append of a
+	// transition (including the initializing first append). The transition
+	// may or may not be durable: callers must treat the record state as
+	// uncertain, never as "no record".
+	ErrCommit = errors.New("runrecord: transition commit failed; durability uncertain")
 )
 
 // Store owns one journal session and the in-memory view of its records.
@@ -58,24 +63,31 @@ type Store struct {
 	closed  bool
 	// recovering is true only inside OpenEstablished callbacks.
 	recovering bool
+	// pending is true for a fresh store whose journal does not exist yet:
+	// the first real record transition initializes it. cfg is kept for that.
+	pending bool
+	cfg     journal.Config
+	// initErr is the sticky failure of that one initialization; it is never
+	// retried in this store.
+	initErr error
 }
 
 func newStore() *Store {
 	return &Store{records: make(map[string]*Record), fenced: make(map[string]bool)}
 }
 
-// Initialize creates a fresh store: the genesis frame is sequence 1.
+// Initialize prepares a fresh store for installation-established fresh
+// state. It writes nothing: the journal is initialized by the first real
+// record transition (the first Create), whose frame becomes sequence 1, as
+// spec/journal.md requires of a journal's first payload. Until then no
+// journal file and no ownership lock exist, and a restart must choose
+// Initialize again; Open refuses a store that never committed a record.
+// Configuration errors surface at that first Create. A failed initialization
+// is never retried by this store.
 func Initialize(cfg journal.Config) (*Store, error) {
-	gen, err := json.Marshal(frame{V: Version, Kind: genesisKind})
-	if err != nil {
-		return nil, err
-	}
 	st := newStore()
-	s, err := journal.Initialize(cfg, gen)
-	if err != nil {
-		return nil, err
-	}
-	st.s = s
+	st.pending = true
+	st.cfg = cfg
 	return st, nil
 }
 
@@ -95,11 +107,11 @@ func Open(cfg journal.Config) (*Store, error) {
 	return st, nil
 }
 
-// Consume implements journal.Consumer. Sequence 1 must be the genesis frame;
-// every later frame is one complete record after a transition. Replay applies
-// the same transition rules as live writes, so a torn or foreign frame ends
-// recovery instead of being adopted.
-func (st *Store) Consume(seq uint64, payload []byte, r *journal.Recovery) error {
+// Consume implements journal.Consumer. Every frame, sequence 1 included, is
+// one complete record after a real transition. Replay applies the same
+// transition rules as live writes, so a torn or foreign frame (a synthetic
+// genesis frame included) ends recovery instead of being adopted.
+func (st *Store) Consume(_ uint64, payload []byte, r *journal.Recovery) error {
 	if !st.recovering {
 		return errors.Join(ErrReplay, errors.New("runrecord: consume outside recovery"))
 	}
@@ -109,12 +121,6 @@ func (st *Store) Consume(seq uint64, payload []byte, r *journal.Recovery) error 
 	var f frame
 	if err := decodeStrict(payload, &f); err != nil {
 		return errors.Join(ErrReplay, err)
-	}
-	if seq == 1 {
-		if f.V != Version || f.Kind != genesisKind || f.Record != nil {
-			return errors.Join(ErrReplay, errors.New("runrecord: genesis frame"))
-		}
-		return nil
 	}
 	if f.V != Version || f.Kind != transitionKind || f.Record == nil {
 		return errors.Join(ErrReplay, errors.New("runrecord: transition frame"))
@@ -159,31 +165,58 @@ func (st *Store) keysLocked() []string {
 	return keys
 }
 
-// commit appends the transition frame, then materializes the record. A
-// committed append is applied in memory even if materialization fails; the
-// journal session is then closed and every later call fails.
+// usableLocked reports whether the store can take a transition.
+func (st *Store) usableLocked() error {
+	if st.closed {
+		return ErrClosed
+	}
+	if st.initErr != nil {
+		return errors.Join(ErrClosed, st.initErr)
+	}
+	if st.s == nil && !st.pending {
+		return ErrClosed
+	}
+	return nil
+}
+
+// commit appends the transition frame, then materializes the record. On a
+// fresh store the first transition frame initializes the journal as its
+// sequence 1. A committed append is applied in memory even if
+// materialization fails; the journal session is then closed and every later
+// call fails. Every failure from the append on carries ErrCommit.
 func (st *Store) commit(rec *Record) error {
 	p, err := json.Marshal(frame{V: Version, Kind: transitionKind, Record: rec})
 	if err != nil {
 		return err
 	}
-	if _, err := st.s.Append(p); err != nil {
-		return err
-	}
-	st.records[rec.Key] = rec
 	b, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
-	return st.s.ReplaceRecord(RecordName(rec.Key), b)
+	if st.pending {
+		s, err := journal.Initialize(st.cfg, p)
+		st.pending = false
+		if err != nil {
+			st.initErr = err
+			return errors.Join(ErrCommit, err)
+		}
+		st.s = s
+	} else if _, err := st.s.Append(p); err != nil {
+		return errors.Join(ErrCommit, err)
+	}
+	st.records[rec.Key] = rec
+	if err := st.s.ReplaceRecord(RecordName(rec.Key), b); err != nil {
+		return errors.Join(ErrCommit, err)
+	}
+	return nil
 }
 
 // Create writes a new record, which must be in state binding.
 func (st *Store) Create(r *Record) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if st.closed || st.s == nil {
-		return ErrClosed
+	if err := st.usableLocked(); err != nil {
+		return err
 	}
 	if r == nil {
 		return invalid("nil record")
@@ -206,8 +239,8 @@ func (st *Store) Create(r *Record) error {
 func (st *Store) Update(key string, mutate func(*Record) error) (*Record, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if st.closed || st.s == nil {
-		return nil, ErrClosed
+	if err := st.usableLocked(); err != nil {
+		return nil, err
 	}
 	old, ok := st.records[key]
 	if !ok {
@@ -252,10 +285,14 @@ func (st *Store) Fenced(key string) bool {
 	return st.fenced[key]
 }
 
-// State returns the journal session state.
+// State returns the journal session state. A fresh store that has not yet
+// committed its first record has no session and reports the zero State.
 func (st *Store) State() journal.State {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if st.pending && !st.closed {
+		return journal.State{}
+	}
 	if st.s == nil {
 		return journal.State{Closed: true}
 	}
@@ -275,6 +312,9 @@ func (st *Store) Close() error {
 	}
 	return st.s.Close()
 }
+
+// Uncertain reports whether err left a transition's durability uncertain.
+func Uncertain(err error) bool { return errors.Is(err, ErrCommit) }
 
 // MustExit reports the journal's process-exit duty after a sync failure.
 func MustExit(err error) bool { return journal.MustExit(err) }

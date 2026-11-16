@@ -44,8 +44,8 @@ func TestPinnedNoEffectRegistry(t *testing.T) {
 	}
 	q := Request{ID: strings.Repeat("1", 32), TimeoutMS: 100, Method: MethodBind, Bind: func() *BindRequest { b := policyBind(); return &b }()}
 	raw := policyFrame(fmt.Sprintf(`{"error":{"code":"role_not_permitted","retryable":false},"request_id":%q}`, q.ID))
-	if _, err := (Pinned{}).DecodeResponse(q, raw); err == nil {
-		t.Fatal("production table accepted an out-of-set refusal")
+	if r, err := (Pinned{}).DecodeResponse(q, raw); err != nil || r.Refused || r.Refusal == nil || r.Refusal.Code != "role_not_permitted" || r.Refusal.Retryable {
+		t.Fatalf("production table certified an out-of-set refusal as no-effect: %+v %v", r, err)
 	}
 	// Positive control: a test-only table entry reaches the definite branch.
 	set := "role_not_permitted"
@@ -54,7 +54,7 @@ func TestPinnedNoEffectRegistry(t *testing.T) {
 	}
 }
 
-// Claim: only correlated injected no-effect refusals exit 16; retryable/out-of-set/null/wrong-ID/malformed refusals exit 17, with one bind only.
+// Claim: only correlated injected no-effect refusals exit 16. The mutant that widens the table to a retryable code (mode "retryable", table "busy") still fails: a correlated retryable refusal is never run_bind_refused, it is retried up to BindAttemptLimit and then HELD, exit 17. Out-of-set, null, wrong-ID and malformed refusals exit 17 after one bind only. Positive controls: success binds, in-set refuses 16.
 func TestPinnedRefusalPolicy(t *testing.T) {
 	id := strings.Repeat("1", 32)
 	for _, mode := range []string{"success", "in-set", "out-of-set", "retryable", "null", "wrong-id", "malformed"} {
@@ -87,52 +87,50 @@ func TestPinnedRefusalPolicy(t *testing.T) {
 				if err = w.WriteFrame(peer, b); err != nil {
 					return err
 				}
-				b, err = w.ReadFrame(peer)
-				if err != nil {
-					return err
+				for {
+					b, err = w.ReadFrame(peer)
+					if err != nil {
+						// Closing the client must reveal EOF after its last bind.
+						if errors.Is(err, io.EOF) && binds.Load() >= 1 {
+							return nil
+						}
+						return err
+					}
+					q, err := wire.DecodeRequestFrame(b)
+					if err != nil || q.Method != wire.BindMethod {
+						return errors.New("not a valid bind")
+					}
+					if binds.Add(1) > 1 && mode != "retryable" {
+						return errors.New("second bind after an outcome that permits no retry")
+					}
+					code, retry := "role_not_permitted", false
+					responseID, _ := json.Marshal(q.ID)
+					if mode == "retryable" {
+						code, retry = "busy", true
+					}
+					if mode == "null" {
+						responseID = []byte("null")
+					}
+					if mode == "wrong-id" {
+						responseID, _ = json.Marshal(strings.Repeat("2", 32))
+					}
+					body := fmt.Sprintf(`{"error":{"code":%q,"retryable":%t},"request_id":%s}`, code, retry, responseID)
+					if mode == "success" {
+						body = fmt.Sprintf(`{"request_id":%q,"result":{"run_id":"%s","state":"live"}}`, q.ID, strings.Repeat("3", 32))
+					}
+					if mode == "malformed" {
+						body = `{"result":`
+					}
+					if err = w.WriteFrame(peer, policyFrame(body)); err != nil {
+						return err
+					}
 				}
-				q, err := wire.DecodeRequestFrame(b)
-				if err != nil || q.Method != wire.BindMethod {
-					return errors.New("not one valid bind")
-				}
-				binds.Add(1)
-				code, retry := "role_not_permitted", false
-				responseID, _ := json.Marshal(q.ID)
-				if mode == "retryable" {
-					code, retry = "busy", true
-				}
-				if mode == "null" {
-					responseID = []byte("null")
-				}
-				if mode == "wrong-id" {
-					responseID, _ = json.Marshal(strings.Repeat("2", 32))
-				}
-				body := fmt.Sprintf(`{"error":{"code":%q,"retryable":%t},"request_id":%s}`, code, retry, responseID)
-				if mode == "success" {
-					body = fmt.Sprintf(`{"request_id":%q,"result":{"run_id":"%s","state":"live"}}`, q.ID, strings.Repeat("3", 32))
-				}
-				if mode == "malformed" {
-					body = `{"result":`
-				}
-				if err = w.WriteFrame(peer, policyFrame(body)); err != nil {
-					return err
-				}
-				// Closing the client must reveal EOF, not a second request after refusal.
-				var one [1]byte
-				n, err := peer.Read(one[:])
-				if n != 0 || err == nil {
-					return errors.New("second bind after refusal")
-				}
-				if !errors.Is(err, io.EOF) {
-					return err
-				}
-				return nil
 			}}
 			conn, err := Open(context.Background(), d, w, 100*time.Millisecond)
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, _, err = conn.Bind(id, policyBind(), 3)
+			_, _, err = conn.Bind(id, policyBind())
 			if mode == "success" {
 				if err != nil {
 					t.Fatal(err)
@@ -147,9 +145,6 @@ func TestPinnedRefusalPolicy(t *testing.T) {
 					t.Fatalf("%v verdict %+v %v", err, v, e)
 				}
 			}
-			if conn.Requests() != 1 || binds.Load() != 1 {
-				t.Fatal("bind was repeated after an outcome")
-			}
 			_ = conn.Close()
 			select {
 			case err := <-done:
@@ -158,6 +153,13 @@ func TestPinnedRefusalPolicy(t *testing.T) {
 				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("policy peer did not stop")
+			}
+			wantBinds := 1
+			if mode == "retryable" {
+				wantBinds = BindAttemptLimit
+			}
+			if conn.Requests() != wantBinds || int(binds.Load()) != wantBinds {
+				t.Fatalf("bind frames: client %d peer %d want %d", conn.Requests(), binds.Load(), wantBinds)
 			}
 		})
 	}

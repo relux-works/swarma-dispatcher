@@ -6,12 +6,20 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/relux-works/swarma-dispatcher/internal/p17/incarnation"
+	"github.com/relux-works/swarma-dispatcher/internal/p17/sweep"
 )
 
 // ProcTree is a fake procfs root for enumeration and incarnation tests.
+//
+// A new tree is a QUALIFIED view for the D5a proof (sweep.View.Qualify): it
+// lists pid 1 (owned by root) with a readable status, its self/status has a
+// single-field NSpid line, and its fixture mountinfo describes a whole procfs
+// mounted at Root without hidepid or subset. The Set* helpers plant each
+// disqualifying condition.
 type ProcTree struct {
 	Root string
 }
@@ -21,8 +29,51 @@ func NewProcTree(root, bootID string) (*ProcTree, error) {
 	if err := os.MkdirAll(filepath.Join(root, "sys", "kernel", "random"), 0o700); err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(filepath.Join(root, "self"), 0o700); err != nil {
+		return nil, err
+	}
 	p := &ProcTree{Root: root}
+	if err := p.Add(1, [4]uint32{0, 0, 0, 0}, 1); err != nil {
+		return nil, err
+	}
+	if err := p.SetNSpid("4242"); err != nil {
+		return nil, err
+	}
+	if err := p.SetMount("proc", "/", "rw"); err != nil {
+		return nil, err
+	}
 	return p, p.SetBootID(bootID)
+}
+
+// MountInfoPath is the fixture mountinfo file of this tree.
+func (p *ProcTree) MountInfoPath() string { return filepath.Join(p.Root, "self", "mountinfo") }
+
+// View is the sweep view of this tree: its root and its fixture mountinfo.
+func (p *ProcTree) View() sweep.View {
+	return sweep.View{ProcRoot: p.Root, MountInfo: p.MountInfoPath()}
+}
+
+// SetMountInfo writes the fixture mountinfo verbatim.
+func (p *ProcTree) SetMountInfo(content string) error {
+	return os.WriteFile(p.MountInfoPath(), []byte(content), 0o600)
+}
+
+// SetMount writes a fixture mountinfo with an unrelated root mount and one
+// mount at Root with the given filesystem type, mount root and super options
+// (for example "rw,hidepid=2" or "rw,hidepid=invisible,gid=120").
+func (p *ProcTree) SetMount(fstype, mountRoot, superOptions string) error {
+	return p.SetMountInfo("21 1 8:1 / / rw,relatime shared:1 - ext4 /dev/root rw\n" +
+		"22 21 0:21 " + mountRoot + " " + p.Root + " rw,nosuid,nodev,noexec,relatime shared:13 - " + fstype + " proc " + superOptions + "\n")
+}
+
+// SetNSpid writes self/status with the given NSpid fields (space separated);
+// an empty argument writes a status without an NSpid line.
+func (p *ProcTree) SetNSpid(fields string) error {
+	status := "Name:\tfake (self)\nPid:\t4242\n"
+	if fields != "" {
+		status += "NSpid:\t" + strings.Join(strings.Fields(fields), "\t") + "\n"
+	}
+	return os.WriteFile(filepath.Join(p.Root, "self", "status"), []byte(status), 0o600)
 }
 
 // SetBootID rewrites the boot ID.

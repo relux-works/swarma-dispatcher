@@ -38,7 +38,10 @@ type Client struct {
 	Dialer      Dialer
 	Wire        Wire
 	Generations Generations
-	// Event and InputPrincipal select retained event and input, not authority.
+	// Event and InputPrincipal are the defaults Prepare uses. They select a
+	// retained event and input, not authority. A caller that serves several
+	// runs from one shared Client passes them per call through PrepareFor and
+	// never mutates these fields.
 	Event          runorigin.EventRef
 	InputPrincipal runorigin.Principal
 	// Budget caps each Source phase; zero means DefaultBudget. Larger values
@@ -179,10 +182,17 @@ func (p *Prepared) closeLocked() error {
 	return p.conn.Close()
 }
 
-// Prepare runs H1: socket path check, generation check, connect, kernel peer
-// authentication, hello, prepare. On any refusal nothing is connected or the
-// connection is closed before return.
+// Prepare runs H1 with the client's default Event and InputPrincipal.
 func (c *Client) Prepare(ctx context.Context, nonce string) (*Prepared, error) {
+	return c.PrepareFor(ctx, nonce, c.Event, c.InputPrincipal)
+}
+
+// PrepareFor runs H1 for one run's retained event and input principal:
+// socket path check, generation check, connect, kernel peer authentication,
+// hello, prepare. On any refusal nothing is connected or the connection is
+// closed before return. It only reads the Client, so concurrent runs may
+// share one Client.
+func (c *Client) PrepareFor(ctx context.Context, nonce string, event runorigin.EventRef, input runorigin.Principal) (*Prepared, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -240,7 +250,7 @@ func (c *Client) Prepare(ctx context.Context, nonce string) (*Prepared, error) {
 	if _, err := rand.Read(requestID[:]); err != nil {
 		return fail(classifyH1("request ID", err))
 	}
-	req := PrepareRequest{RequestID: hex.EncodeToString(requestID[:]), LaunchNonce: nonce, Event: c.Event, InputPrincipal: c.InputPrincipal, SourceIncarnation: hello.Incarnation}
+	req := PrepareRequest{RequestID: hex.EncodeToString(requestID[:]), LaunchNonce: nonce, Event: event, InputPrincipal: input, SourceIncarnation: hello.Incarnation}
 	prepared, err := w.Prepare(conn, req)
 	if err != nil {
 		return fail(classifyH1("prepare", err))

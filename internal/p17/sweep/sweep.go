@@ -3,7 +3,9 @@
 //
 // The proof enumerates ALL processes under the procfs root and compares the
 // real, effective, saved and filesystem uid of each with R_i. Any pid that
-// cannot be read counts as not proved. Killing goes through an injected
+// cannot be read counts as not proved. Before any scan is trusted the procfs
+// view itself is qualified (View.Qualify): a view that can hide the pids of
+// another user (hidepid, subset=pid, a nested pid namespace) is never proved. Killing goes through an injected
 // Killer that receives only the uid, never a pid: the helper drops every id
 // to R_i and calls kill(-1, SIGKILL). The default Killer refuses by name.
 package sweep
@@ -12,8 +14,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,11 +32,18 @@ type Enumeration struct {
 	Matched    []int
 	Unreadable []int
 	Err        error
+	// qualified is set only by Enumerate, and only after the procfs view was
+	// qualified. A hand-built or zero Enumeration is therefore never proved.
+	qualified bool
 }
 
-// Proved reports zero processes under the uid with every pid readable.
+// Qualified reports whether the scan ran on a qualified procfs view.
+func (e Enumeration) Qualified() bool { return e.qualified }
+
+// Proved reports zero processes under the uid with every pid readable, on a
+// qualified procfs view. An unqualified view is never proved.
 func (e Enumeration) Proved() bool {
-	return e.Err == nil && len(e.Unreadable) == 0 && len(e.Matched) == 0
+	return e.qualified && e.Err == nil && len(e.Unreadable) == 0 && len(e.Matched) == 0
 }
 
 func allDigits(s string) bool {
@@ -47,17 +58,181 @@ func allDigits(s string) bool {
 	return true
 }
 
-// Enumerate scans every numeric directory under procRoot.
-func Enumerate(procRoot string, uid uint32) Enumeration {
-	e := Enumeration{UID: uid}
-	if procRoot == "" {
-		procRoot = "/proc"
+// View names the procfs view the D5a proof reads and how it is qualified.
+// The launcher L is not root, so a procfs mounted with hidepid, with
+// subset=pid, or seen from a nested pid namespace can simply omit the
+// processes of R_i: they are absent from the listing, not unreadable. A scan
+// of such a view proves nothing, so the view is qualified first.
+type View struct {
+	// ProcRoot is the procfs root; empty means /proc.
+	ProcRoot string
+	// MountInfo is the mountinfo file that describes the mount at ProcRoot;
+	// empty means /proc/self/mountinfo of the calling process. Only tests
+	// with a fixture proc tree set it.
+	MountInfo string
+	// GID returns the launcher's effective gid, compared with the gid=
+	// option of a hidepid mount; nil means os.Getegid.
+	GID func() uint32
+}
+
+// ErrViewUnqualified reports a procfs view that cannot carry the proof.
+var ErrViewUnqualified = errors.New("sweep: procfs view not qualified for the zero-process proof")
+
+func unqualified(what string, cause error) error {
+	return errors.Join(ErrViewUnqualified, errors.New("sweep: procfs view: "+what), cause)
+}
+
+func (v View) root() string {
+	if v.ProcRoot == "" {
+		return "/proc"
 	}
+	return filepath.Clean(v.ProcRoot)
+}
+
+// unescapeMount decodes the octal escapes of a mountinfo path field.
+func unescapeMount(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if n, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(n))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// Qualify checks that the view can carry the zero-process proof:
+//
+//   - the topmost mount at ProcRoot in mountinfo is a whole procfs (type
+//     proc, root "/");
+//   - it is not mounted with subset=pid;
+//   - it is not mounted with hidepid other than 0/off, unless the mount
+//     carries gid= and the launcher's gid equals it (hidepid=ptraceable has
+//     no gid exemption and always refuses);
+//   - pid 1 is listed and its status is readable;
+//   - the NSpid: line of self has exactly one field, so the launcher is not
+//     in a pid namespace nested below the one this procfs shows.
+//
+// Nothing is repaired or remounted.
+func (v View) Qualify() error {
+	root := v.root()
+	mi := v.MountInfo
+	if mi == "" {
+		mi = "/proc/self/mountinfo"
+	}
+	b, err := os.ReadFile(mi)
+	if err != nil {
+		return unqualified("mountinfo unreadable", err)
+	}
+	var opts []string
+	found := false
+	for _, line := range strings.Split(string(b), "\n") {
+		// id parent major:minor root mountpoint options [optional...] - fstype source superoptions
+		pre, post, ok := strings.Cut(line, " - ")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(pre)
+		g := strings.Fields(post)
+		if len(f) < 6 || len(g) < 1 || unescapeMount(f[4]) != root {
+			continue
+		}
+		// The last line for a mount point is the topmost mount there.
+		found = true
+		opts = opts[:0]
+		if g[0] != "proc" {
+			opts = append(opts, "\x00notproc")
+			continue
+		}
+		if f[3] != "/" {
+			opts = append(opts, "\x00notroot")
+			continue
+		}
+		opts = append(opts, strings.Split(f[5], ",")...)
+		if len(g) >= 3 {
+			opts = append(opts, strings.Split(g[2], ",")...)
+		}
+	}
+	if !found {
+		return unqualified("no mount at the procfs root in mountinfo", nil)
+	}
+	hide, gid, haveGID := "0", uint64(0), false
+	for _, o := range opts {
+		switch {
+		case o == "\x00notproc":
+			return unqualified("the mount at the procfs root is not of type proc", nil)
+		case o == "\x00notroot":
+			return unqualified("the mount at the procfs root is not the procfs root", nil)
+		case o == "subset=pid" || strings.HasPrefix(o, "subset="):
+			return unqualified("mounted with "+o, nil)
+		case strings.HasPrefix(o, "hidepid="):
+			hide = strings.TrimPrefix(o, "hidepid=")
+		case strings.HasPrefix(o, "gid="):
+			n, err := strconv.ParseUint(strings.TrimPrefix(o, "gid="), 10, 32)
+			if err != nil {
+				return unqualified("gid option unreadable", err)
+			}
+			gid, haveGID = n, true
+		}
+	}
+	switch hide {
+	case "0", "off":
+	case "1", "noaccess", "2", "invisible":
+		own := uint32(os.Getegid())
+		if v.GID != nil {
+			own = v.GID()
+		}
+		if !haveGID || uint64(own) != gid {
+			return unqualified("mounted with hidepid="+hide+" and the launcher gid is not its gid=", nil)
+		}
+	default:
+		return unqualified("mounted with hidepid="+hide, nil)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "1")); err != nil {
+		return unqualified("pid 1 is not listed", err)
+	}
+	if _, err := incarnation.ReadUIDs(root, 1); err != nil {
+		return unqualified("status of pid 1 unreadable", err)
+	}
+	st, err := os.ReadFile(filepath.Join(root, "self", "status"))
+	if err != nil {
+		return unqualified("status of self unreadable", err)
+	}
+	for _, line := range strings.Split(string(st), "\n") {
+		if !strings.HasPrefix(line, "NSpid:") {
+			continue
+		}
+		if n := len(strings.Fields(line[len("NSpid:"):])); n != 1 {
+			return unqualified("NSpid of self has "+strconv.Itoa(n)+" fields; nested pid namespace", nil)
+		}
+		return nil
+	}
+	return unqualified("no NSpid line for self", nil)
+}
+
+// Enumerate qualifies the view, then scans every numeric directory under its
+// procfs root. On an unqualified view nothing is scanned, Err carries
+// ErrViewUnqualified and the result is never proved.
+func Enumerate(v View, uid uint32) Enumeration {
+	e := Enumeration{UID: uid}
+	if err := v.Qualify(); err != nil {
+		e.Err = err
+		return e
+	}
+	procRoot := v.root()
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
 		e.Err = errors.Join(errors.New("sweep: enumeration failed"), err)
 		return e
 	}
+	listedOne := false
 	for _, ent := range entries {
 		if !allDigits(ent.Name()) {
 			continue
@@ -65,6 +240,9 @@ func Enumerate(procRoot string, uid uint32) Enumeration {
 		pid, err := strconv.Atoi(ent.Name())
 		if err != nil || pid <= 0 {
 			continue
+		}
+		if pid == 1 {
+			listedOne = true
 		}
 		e.Scanned++
 		uids, err := incarnation.ReadUIDs(procRoot, pid)
@@ -83,6 +261,12 @@ func Enumerate(procRoot string, uid uint32) Enumeration {
 	}
 	sort.Ints(e.Matched)
 	sort.Ints(e.Unreadable)
+	if !listedOne {
+		// The listing this scan trusted does not show pid 1.
+		e.Err = unqualified("pid 1 is not in the listing", nil)
+		return e
+	}
+	e.qualified = true
 	return e
 }
 
@@ -123,8 +307,9 @@ type Outcome struct {
 }
 
 // Sweep enumerates, kills by uid, and repeats within the budget until the
-// enumeration proves zero. It never signals a pid by number.
-func Sweep(ctx context.Context, procRoot string, uid uint32, k Killer, b Budget) Outcome {
+// enumeration proves zero. It never signals a pid by number. On an
+// unqualified view it returns at once, not proved.
+func Sweep(ctx context.Context, v View, uid uint32, k Killer, b Budget) Outcome {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -136,7 +321,7 @@ func Sweep(ctx context.Context, procRoot string, uid uint32, k Killer, b Budget)
 	}
 	var out Outcome
 	for attempt := 0; ; attempt++ {
-		out.Final = Enumerate(procRoot, uid)
+		out.Final = Enumerate(v, uid)
 		if out.Final.Proved() {
 			return out
 		}
@@ -315,6 +500,9 @@ type Quarantine struct {
 
 	mu   sync.Mutex
 	held map[uint32]bool
+	// helper marks uids for which the privilege-drop helper (spawn or sweep
+	// mode) was invoked since the uid was last leased.
+	helper map[uint32]bool
 }
 
 // ErrQuarantined refuses a lease of a held uid, and reports a refused release.
@@ -348,6 +536,48 @@ func (q *Quarantine) Lease(uid uint32) error {
 		q.held = make(map[uint32]bool)
 	}
 	q.held[uid] = true
+	// A new lease starts with no helper invocation.
+	delete(q.helper, uid)
+	return nil
+}
+
+// MarkHelper records that the privilege-drop helper was invoked for the uid
+// (spawn or sweep mode). The mark lasts until the uid is leased again.
+func (q *Quarantine) MarkHelper(uid uint32) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.helper == nil {
+		q.helper = make(map[uint32]bool)
+	}
+	q.helper[uid] = true
+}
+
+// HelperInvoked reports whether the helper was invoked for the uid since it
+// was last leased.
+func (q *Quarantine) HelperInvoked(uid uint32) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.helper[uid]
+}
+
+// ReturnUnused returns a lease under which nothing was ever started. BOTH
+// conditions must hold: the privilege-drop helper was never invoked for this
+// lease (no MarkHelper since Lease), AND e is a proved enumeration for this
+// uid on a qualified view. A helper invocation is not excused by a clean
+// proof, and the proof is never skipped. Otherwise the uid stays quarantined
+// and ErrQuarantined is returned. This is not the release gate; a lease that was ever used leaves
+// only through Release.
+func (q *Quarantine) ReturnUnused(uid uint32, e Enumeration) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.helper[uid] || e.UID != uid || !e.Proved() {
+		if q.held == nil {
+			q.held = make(map[uint32]bool)
+		}
+		q.held[uid] = true
+		return ErrQuarantined
+	}
+	delete(q.held, uid)
 	return nil
 }
 

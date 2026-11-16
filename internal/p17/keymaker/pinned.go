@@ -131,15 +131,15 @@ func (w Pinned) DecodeResponse(expected Request, b []byte) (Response, error) {
 	}
 	out := Response{ID: r.ID}
 	if r.Refusal != nil {
-		// Correlation or nonretryability alone is not no-effect evidence.
+		// Correlation or nonretryability alone is not no-effect evidence. The
+		// refusal is returned decoded: the client alone decides between the
+		// exact retry (a correlated retryable code) and HELD.
+		out.Refusal = &NativeRefusal{Code: r.Refusal.Code, Retryable: r.Refusal.Retryable}
 		set := PinnedNoEffectCodes
 		if w.noEffectCodes != nil {
 			set = *w.noEffectCodes
 		}
-		if !noEffectRefusal(q.ID, r, set) {
-			return Response{}, j7lifecycle.ErrResponse
-		}
-		out.Refused = true
+		out.Refused = noEffectRefusal(q.ID, r, set)
 	} else if r.Run != nil {
 		if q.Method == j7lifecycle.BindMethod {
 			out.Bind = &BindResult{RunID: r.Run.RunID}
@@ -165,7 +165,8 @@ func (Pinned) DecodeEndRequest(b []byte) (Request, error) {
 	return Request{ID: q.ID, Method: MethodEnd, TimeoutMS: q.TimeoutMS, End: &EndRequest{RunID: q.RunID}}, nil
 }
 
-// Hello negotiates the native protocol before any bind; it authenticates no peer.
+// Hello negotiates the native protocol before any bind, within the given
+// budget; it carries no mutation and authenticates no peer.
 func (w Pinned) Hello(c net.Conn, timeout time.Duration) error {
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {

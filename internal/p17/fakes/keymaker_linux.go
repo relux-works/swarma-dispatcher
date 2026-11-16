@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/relux-works/swarma-dispatcher/internal/frame"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/keymaker"
@@ -20,9 +21,10 @@ import (
 type KeymakerWire struct{}
 
 type kmRequest struct {
-	ID     string          `json:"id"`
-	Method string          `json:"method"`
-	Body   json.RawMessage `json:"body"`
+	ID        string          `json:"id"`
+	Method    string          `json:"method"`
+	TimeoutMS int64           `json:"timeout_ms,omitempty"`
+	Body      json.RawMessage `json:"body,omitempty"`
 }
 type kmBindBody struct {
 	IdentityRegistrationNumber uint64             `json:"identity_registration_number"`
@@ -33,10 +35,19 @@ type kmBindBody struct {
 type kmEndBody struct {
 	RunID string `json:"run_id"`
 }
+
+// kmError is the test spelling of a native refusal: a code and its retryable
+// bit. Refused (below) is the separate test-only no-effect certification.
+type kmError struct {
+	Code      string `json:"code"`
+	Retryable bool   `json:"retryable"`
+}
 type kmResponse struct {
-	ID      string          `json:"id"`
+	// ID is a pointer so that the fake can send an explicit null.
+	ID      *string         `json:"id"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Refused string          `json:"refused,omitempty"`
+	Error   *kmError        `json:"error,omitempty"`
 }
 type kmBindResult struct {
 	RunID string `json:"run_id"`
@@ -44,6 +55,34 @@ type kmBindResult struct {
 type kmEndResult struct {
 	RunID string `json:"run_id"`
 	Ended bool   `json:"ended"`
+}
+
+const kmHello = "hello"
+
+// Hello is the test spelling of the native hello: one request, one reply.
+func (KeymakerWire) Hello(c net.Conn, budget time.Duration) error {
+	if err := c.SetDeadline(time.Now().Add(budget)); err != nil {
+		return err
+	}
+	b, err := json.Marshal(kmRequest{ID: kmHello, Method: kmHello})
+	if err != nil {
+		return err
+	}
+	if err = frame.Write(c, b); err != nil {
+		return err
+	}
+	raw, err := frame.Read(c)
+	if err != nil {
+		return err
+	}
+	var r kmResponse
+	if err = json.Unmarshal(raw, &r); err != nil {
+		return err
+	}
+	if r.ID == nil || *r.ID != kmHello || r.Error != nil || r.Refused != "" {
+		return errors.New("fakes: hello refused")
+	}
+	return nil
 }
 
 func (KeymakerWire) Encode(req keymaker.Request) ([]byte, error) {
@@ -70,7 +109,7 @@ func (KeymakerWire) Encode(req keymaker.Request) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(kmRequest{ID: req.ID, Method: string(req.Method), Body: body})
+	return json.Marshal(kmRequest{ID: req.ID, Method: string(req.Method), TimeoutMS: req.TimeoutMS, Body: body})
 }
 func (KeymakerWire) WriteFrame(w io.Writer, b []byte) error { return frame.Write(w, b) }
 func (KeymakerWire) ReadFrame(r io.Reader) ([]byte, error)  { return frame.Read(r) }
@@ -79,18 +118,34 @@ func (w KeymakerWire) DecodeResponse(expected keymaker.Request, b []byte) (keyma
 	if err := json.Unmarshal(b, &r); err != nil {
 		return keymaker.Response{}, err
 	}
-	out := keymaker.Response{ID: r.ID, Refused: r.Refused != ""}
-	if out.Refused {
+	out := keymaker.Response{}
+	if r.ID != nil {
+		out.ID = *r.ID
+	}
+	if r.Error != nil {
+		out.Refusal = &keymaker.NativeRefusal{Code: r.Error.Code, Retryable: r.Error.Retryable}
+		return out, nil
+	}
+	if r.Refused != "" {
+		// The test wire certifies a test-only no-effect refusal.
+		out.Refused = true
+		out.Refusal = &keymaker.NativeRefusal{Code: r.Refused}
 		return out, nil
 	}
 	if expected.Method == keymaker.MethodBind {
-		res, err := w.ParseBindResult(b)
-		out.Bind = &res
-		return out, err
+		var res kmBindResult
+		if err := json.Unmarshal(r.Result, &res); err != nil {
+			return keymaker.Response{}, err
+		}
+		out.Bind = &keymaker.BindResult{RunID: res.RunID}
+		return out, nil
 	}
-	res, err := w.ParseEndResult(b)
-	out.End = &res
-	return out, err
+	var res kmEndResult
+	if err := json.Unmarshal(r.Result, &res); err != nil {
+		return keymaker.Response{}, err
+	}
+	out.End = &keymaker.EndResult{RunID: res.RunID, Ended: res.Ended}
+	return out, nil
 }
 func (KeymakerWire) DecodeEndRequest(b []byte) (keymaker.Request, error) {
 	var r kmRequest
@@ -104,52 +159,47 @@ func (KeymakerWire) DecodeEndRequest(b []byte) (keymaker.Request, error) {
 	if r.Method != string(keymaker.MethodEnd) || r.ID == "" || body.RunID == "" {
 		return keymaker.Request{}, errors.New("fakes: invalid durable end request")
 	}
-	return keymaker.Request{ID: r.ID, Method: keymaker.MethodEnd, End: &keymaker.EndRequest{RunID: body.RunID}}, nil
+	return keymaker.Request{ID: r.ID, Method: keymaker.MethodEnd, TimeoutMS: r.TimeoutMS, End: &keymaker.EndRequest{RunID: body.RunID}}, nil
 }
 
-func (KeymakerWire) ParseBindResult(body []byte) (keymaker.BindResult, error) {
-	var r kmResponse
-	if err := json.Unmarshal(body, &r); err != nil {
-		return keymaker.BindResult{}, err
-	}
-	if r.Refused != "" {
-		return keymaker.BindResult{}, errors.Join(keymaker.ErrRefused, errors.New(r.Refused))
-	}
-	var res kmBindResult
-	if err := json.Unmarshal(r.Result, &res); err != nil {
-		return keymaker.BindResult{}, err
-	}
-	return keymaker.BindResult{RunID: res.RunID}, nil
-}
-func (KeymakerWire) ParseEndResult(body []byte) (keymaker.EndResult, error) {
-	var r kmResponse
-	if err := json.Unmarshal(body, &r); err != nil {
-		return keymaker.EndResult{}, err
-	}
-	if r.Refused != "" {
-		return keymaker.EndResult{}, errors.Join(keymaker.ErrRefused, errors.New(r.Refused))
-	}
-	var res kmEndResult
-	if err := json.Unmarshal(r.Result, &res); err != nil {
-		return keymaker.EndResult{}, err
-	}
-	return keymaker.EndResult{RunID: res.RunID, Ended: res.Ended}, nil
-}
-
-// KeymakerScript drives a FakeKeymaker connection. BindMode: "" (answer),
-// "drop-first" (ignore the first bind, answer the identical second),
-// "drop-all", "close" (close without answering), "refuse", "no-run-id",
-// "wrong-id". EndMode: "" (exact ended), "drop", "close", "refuse",
-// "not-ended", "other-run".
+// KeymakerScript drives a FakeKeymaker connection. Like the pinned holder it
+// reads frames strictly in sequence and always either replies to a request
+// or closes; it never silently skips one request and answers the next.
+//
+// HelloMode: "" (answer), "close" (close without answering), "refuse".
+//
+// BindMode: "" (answer), "late" (answer success after Delay),
+// "deadline-then-ok" (the first bind is answered after Delay with the
+// correlated retryable refusal request_deadline_exceeded, the identical
+// second with success), "busy" (every bind is answered with the correlated
+// retryable refusal busy), "nonretryable" (a correlated non-retryable
+// refusal outside the no-effect set), "null-id" (a retryable refusal with a
+// null ID), "silent" (read and never answer, holding the connection; the
+// reply stays owed), "close" (close without answering), "refuse" (the
+// test-only no-effect refusal), "no-run-id", "wrong-id" (a retryable
+// refusal whose ID differs from the request's).
+//
+// EndMode: "" (exact ended), "late" (exact ended after Delay), "silent",
+// "close", "refuse", "not-ended", "other-run".
+//
+// While a reply is owed (during Delay, and for as long as a "silent" request
+// is held) the fake watches the connection: any byte that arrives then is a
+// request written while another is in flight and is counted in Overlaps.
 type KeymakerScript struct {
-	RunID    string
-	BindMode string
-	EndMode  string
+	RunID     string
+	HelloMode string
+	BindMode  string
+	EndMode   string
+	// Delay is how long "late" and "deadline-then-ok" replies are held back.
+	Delay time.Duration
 
 	mu          sync.Mutex
+	hellos      int
 	binds       [][]byte
 	ends        [][]byte
 	connections int
+	closed      int
+	overlaps    int
 }
 
 func (s *KeymakerScript) runID() string {
@@ -161,15 +211,30 @@ func (s *KeymakerScript) runID() string {
 	return s.RunID
 }
 
-// SetRunID, SetBindMode and SetEndMode change the script while connections
-// are being served; they are the only race-free way to do so.
-func (s *KeymakerScript) SetRunID(id string)   { s.mu.Lock(); s.RunID = id; s.mu.Unlock() }
-func (s *KeymakerScript) SetBindMode(m string) { s.mu.Lock(); s.BindMode = m; s.mu.Unlock() }
-func (s *KeymakerScript) SetEndMode(m string)  { s.mu.Lock(); s.EndMode = m; s.mu.Unlock() }
-func (s *KeymakerScript) modes() (string, string) {
+// SetRunID, SetHelloMode, SetBindMode and SetEndMode change the script while
+// connections are being served; they are the only race-free way to do so.
+func (s *KeymakerScript) SetRunID(id string)    { s.mu.Lock(); s.RunID = id; s.mu.Unlock() }
+func (s *KeymakerScript) SetHelloMode(m string) { s.mu.Lock(); s.HelloMode = m; s.mu.Unlock() }
+func (s *KeymakerScript) SetBindMode(m string)  { s.mu.Lock(); s.BindMode = m; s.mu.Unlock() }
+func (s *KeymakerScript) SetEndMode(m string)   { s.mu.Lock(); s.EndMode = m; s.mu.Unlock() }
+func (s *KeymakerScript) modes() (hello, bind, end string, delay time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.BindMode, s.EndMode
+	return s.HelloMode, s.BindMode, s.EndMode, s.Delay
+}
+
+// Hellos returns the number of hello requests received.
+func (s *KeymakerScript) Hellos() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hellos
+}
+
+// Overlaps returns how many times bytes arrived while a reply was owed.
+func (s *KeymakerScript) Overlaps() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.overlaps
 }
 
 // Binds returns the raw bind request frames received, in order.
@@ -226,9 +291,54 @@ func (s *KeymakerScript) reply(c net.Conn, r kmResponse) error {
 	return frame.Write(c, b)
 }
 
+// owed holds a reply back while watching the connection: for d when forever
+// is false (a zero d returns at once), until the client closes when forever
+// is true ("silent"). It returns false when the client closed the connection
+// meanwhile.
+func (s *KeymakerScript) owed(c net.Conn, d time.Duration, forever bool) bool {
+	switch {
+	case forever:
+		_ = c.SetReadDeadline(time.Time{})
+	case d <= 0:
+		return true
+	default:
+		_ = c.SetReadDeadline(time.Now().Add(d))
+	}
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
+	var one [1]byte
+	for {
+		n, err := c.Read(one[:])
+		if n > 0 {
+			s.mu.Lock()
+			s.overlaps++
+			s.mu.Unlock()
+			continue
+		}
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+	}
+}
+
+// Closed returns the number of served connections that have ended.
+func (s *KeymakerScript) Closed() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
 // Serve handles one connection until the client closes it.
 func (s *KeymakerScript) Serve(c net.Conn) {
-	defer c.Close()
+	defer func() {
+		_ = c.Close()
+		s.mu.Lock()
+		s.closed++
+		s.mu.Unlock()
+	}()
 	s.mu.Lock()
 	s.connections++
 	s.mu.Unlock()
@@ -242,34 +352,68 @@ func (s *KeymakerScript) Serve(c net.Conn) {
 		if err := json.Unmarshal(raw, &req); err != nil {
 			return
 		}
+		helloMode, bindMode, endMode, delay := s.modes()
+		id := req.ID
 		switch req.Method {
+		case kmHello:
+			s.mu.Lock()
+			s.hellos++
+			s.mu.Unlock()
+			switch helloMode {
+			case "close":
+				return
+			case "refuse":
+				_ = s.reply(c, kmResponse{ID: &id, Error: &kmError{Code: "version_unsupported"}})
+				return
+			}
+			if err := s.reply(c, kmResponse{ID: &id}); err != nil {
+				return
+			}
 		case string(keymaker.MethodBind):
 			s.mu.Lock()
 			s.binds = append(s.binds, append([]byte(nil), raw...))
 			s.mu.Unlock()
 			bindsSeen++
-			bindMode, _ := s.modes()
+			ok, _ := json.Marshal(kmBindResult{RunID: s.runID()})
 			switch bindMode {
-			case "drop-all":
-				continue
-			case "drop-first":
-				if bindsSeen == 1 {
-					continue
-				}
+			case "silent":
+				s.owed(c, 0, true)
+				return
 			case "close":
 				return
+			case "late":
+				if !s.owed(c, delay, false) {
+					return
+				}
+			case "deadline-then-ok":
+				if bindsSeen == 1 {
+					if !s.owed(c, delay, false) {
+						return
+					}
+					_ = s.reply(c, kmResponse{ID: &id, Error: &kmError{Code: "request_deadline_exceeded", Retryable: true}})
+					continue
+				}
+			case "busy":
+				_ = s.reply(c, kmResponse{ID: &id, Error: &kmError{Code: "busy", Retryable: true}})
+				continue
+			case "nonretryable":
+				_ = s.reply(c, kmResponse{ID: &id, Error: &kmError{Code: "role_not_permitted"}})
+				continue
+			case "null-id":
+				_ = s.reply(c, kmResponse{Error: &kmError{Code: "busy", Retryable: true}})
+				continue
 			case "refuse":
-				_ = s.reply(c, kmResponse{ID: req.ID, Refused: "registration_unknown"})
+				_ = s.reply(c, kmResponse{ID: &id, Refused: "registration_unknown"})
 				continue
 			case "no-run-id":
-				_ = s.reply(c, kmResponse{ID: req.ID, Result: json.RawMessage(`{"run_id":""}`)})
+				_ = s.reply(c, kmResponse{ID: &id, Result: json.RawMessage(`{"run_id":""}`)})
 				continue
 			case "wrong-id":
-				_ = s.reply(c, kmResponse{ID: req.ID + "-other", Result: json.RawMessage(`{"run_id":"` + s.runID() + `"}`)})
+				other := id + "-other"
+				_ = s.reply(c, kmResponse{ID: &other, Error: &kmError{Code: "busy", Retryable: true}})
 				continue
 			}
-			res, _ := json.Marshal(kmBindResult{RunID: s.runID()})
-			if err := s.reply(c, kmResponse{ID: req.ID, Result: res}); err != nil {
+			if err := s.reply(c, kmResponse{ID: &id, Result: ok}); err != nil {
 				return
 			}
 		case string(keymaker.MethodEnd):
@@ -278,26 +422,30 @@ func (s *KeymakerScript) Serve(c net.Conn) {
 			s.mu.Unlock()
 			var body kmEndBody
 			_ = json.Unmarshal(req.Body, &body)
-			_, endMode := s.modes()
 			switch endMode {
-			case "drop":
-				continue
+			case "silent":
+				s.owed(c, 0, true)
+				return
 			case "close":
 				return
+			case "late":
+				if !s.owed(c, delay, false) {
+					return
+				}
 			case "refuse":
-				_ = s.reply(c, kmResponse{ID: req.ID, Refused: "run_unknown"})
+				_ = s.reply(c, kmResponse{ID: &id, Error: &kmError{Code: "run_unknown"}})
 				continue
 			case "not-ended":
 				res, _ := json.Marshal(kmEndResult{RunID: body.RunID, Ended: false})
-				_ = s.reply(c, kmResponse{ID: req.ID, Result: res})
+				_ = s.reply(c, kmResponse{ID: &id, Result: res})
 				continue
 			case "other-run":
 				res, _ := json.Marshal(kmEndResult{RunID: body.RunID + "-other", Ended: true})
-				_ = s.reply(c, kmResponse{ID: req.ID, Result: res})
+				_ = s.reply(c, kmResponse{ID: &id, Result: res})
 				continue
 			}
 			res, _ := json.Marshal(kmEndResult{RunID: body.RunID, Ended: true})
-			if err := s.reply(c, kmResponse{ID: req.ID, Result: res}); err != nil {
+			if err := s.reply(c, kmResponse{ID: &id, Result: res}); err != nil {
 				return
 			}
 		default:
@@ -336,4 +484,14 @@ func (d *KeymakerDialer) Dials() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.dials
+}
+
+// RequestTimeoutMS returns the timeout_ms a raw request frame the fake
+// received carries.
+func RequestTimeoutMS(raw []byte) (int64, error) {
+	var r kmRequest
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return 0, err
+	}
+	return r.TimeoutMS, nil
 }

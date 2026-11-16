@@ -81,15 +81,17 @@ func Assert(l Launch) error {
 			}
 		}
 	}
-	for _, e := range l.Env {
+	// An environment entry may itself be a secret (for example a token
+	// appended without KEY=), so refusals name the index only and never copy
+	// any part of the entry.
+	for i, e := range l.Env {
 		eq := strings.IndexByte(e, '=')
 		if eq <= 0 {
-			return fail(ErrEnvShape, e)
+			return fail(ErrEnvShape, "env["+strconv.Itoa(i)+"]")
 		}
-		key := e[:eq]
 		for _, n := range needles {
 			if strings.Contains(e, n) {
-				return fail(ErrLeak, "env "+key)
+				return fail(ErrLeak, "env["+strconv.Itoa(i)+"]")
 			}
 		}
 	}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/relux-works/a2a-swarm/runorigin"
 	"github.com/relux-works/swarma-dispatcher/internal/frame"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/source"
 )
@@ -152,6 +153,8 @@ type SourceScript struct {
 	ValidateMode string
 	// FirstValidateMode overrides ValidateMode for the first connection only.
 	FirstValidateMode string
+	// OmitRegistration drops the identity_registration_number binding.
+	OmitRegistration bool
 
 	mu          sync.Mutex
 	hellos      int
@@ -159,6 +162,11 @@ type SourceScript struct {
 	validates   []string
 	connections int
 }
+
+// SetPrepareMode and SetValidateMode change the script between connections;
+// they are the only race-free way to do so once a connection was served.
+func (s *SourceScript) SetPrepareMode(m string)  { s.mu.Lock(); s.PrepareMode = m; s.mu.Unlock() }
+func (s *SourceScript) SetValidateMode(m string) { s.mu.Lock(); s.ValidateMode = m; s.mu.Unlock() }
 
 // Counts returns hellos sent, prepares and validates received, connections.
 func (s *SourceScript) Counts() (hellos, prepares, validates, connections int) {
@@ -191,9 +199,12 @@ func (s *SourceScript) preparedID(conn int) string {
 	return fmt.Sprintf("%s-%d", base, conn)
 }
 func (s *SourceScript) bindings(conn int) map[string]string {
-	out := map[string]string{"source_incarnation": s.incarnation(), "prepared_id": s.preparedID(conn), "station": "station-1"}
+	out := map[string]string{"source_incarnation": s.incarnation(), "prepared_id": s.preparedID(conn), "station": "station-1", "identity_registration_number": "1"}
 	for k, v := range s.Bindings {
 		out[k] = v
+	}
+	if s.OmitRegistration {
+		delete(out, "identity_registration_number")
 	}
 	return out
 }
@@ -220,6 +231,7 @@ func (s *SourceScript) Serve(c net.Conn) {
 	s.connections++
 	conn := s.connections
 	s.hellos++
+	prepareMode := s.PrepareMode
 	validateMode := s.ValidateMode
 	if conn == 1 && s.FirstValidateMode != "" {
 		validateMode = s.FirstValidateMode
@@ -235,7 +247,7 @@ func (s *SourceScript) Serve(c net.Conn) {
 	s.mu.Lock()
 	s.prepares++
 	s.mu.Unlock()
-	switch s.PrepareMode {
+	switch prepareMode {
 	case "not-supported":
 		_ = sendSource(c, sourceMsg{Error: "origin_not_supported"})
 		return
@@ -396,4 +408,106 @@ func ControlDir(root string, script *SourceScript) (string, func(), error) {
 		<-done
 	}
 	return dir, stop, nil
+}
+
+// PinnedSource is a fake Source that speaks the documented pin A protocol
+// (the one source.Pinned implements) over socket pairs, for launcher tests
+// that run the pinned adapter. It answers hello, prepare and validate for any
+// number of concurrent connections and records every prepare request.
+type PinnedSource struct {
+	// Registration is the identity_registration_number it reports.
+	Registration string
+	Peer         source.Credential
+
+	mu       sync.Mutex
+	conns    int
+	prepares []source.PrepareRequest
+	errs     []error
+}
+
+// Prepares returns every prepare request received (its event and input
+// principal among them), in arrival order.
+func (p *PinnedSource) Prepares() []source.PrepareRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]source.PrepareRequest(nil), p.prepares...)
+}
+
+// Errs returns protocol errors the fake observed.
+func (p *PinnedSource) Errs() []error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]error(nil), p.errs...)
+}
+
+// Dial implements source.Dialer.
+func (p *PinnedSource) Dial(string) (source.Conn, error) {
+	a, b, err := SocketPair()
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	p.conns++
+	n := p.conns
+	p.mu.Unlock()
+	go func() {
+		defer b.Close()
+		if err := p.serve(b, n); err != nil {
+			p.mu.Lock()
+			p.errs = append(p.errs, err)
+			p.mu.Unlock()
+		}
+	}()
+	return &peerConn{Conn: a, cred: p.Peer}, nil
+}
+
+func (p *PinnedSource) serve(c net.Conn, n int) error {
+	inc := fmt.Sprintf("%032x", 0x1000)
+	prep := fmt.Sprintf("%032x", 0x2000+n)
+	if err := frame.Write(c, []byte(`{"capabilities":["source.origin.prepare/1","source.origin.validate/1"],"source_incarnation":"`+inc+`"}`)); err != nil {
+		return err
+	}
+	b, err := frame.Read(c)
+	if err != nil {
+		return err
+	}
+	var req struct {
+		Op     string                `json:"op"`
+		Params source.PrepareRequest `json:"params"`
+	}
+	if err = json.Unmarshal(b, &req); err != nil {
+		return err
+	}
+	if req.Op != "source.origin.prepare/1" {
+		return errors.New("fakes: pinned source: not a prepare")
+	}
+	p.mu.Lock()
+	p.prepares = append(p.prepares, req.Params)
+	p.mu.Unlock()
+	prepared := runorigin.PreparedOrigin{RequestID: req.Params.RequestID, LaunchNonce: req.Params.LaunchNonce, InputPrincipal: req.Params.InputPrincipal, IdentityRegistrationNumber: p.Registration, SourceIncarnation: inc, PreparedID: prep}
+	if err = json.Unmarshal(ValidOrigin(), &prepared.Origin); err != nil {
+		return err
+	}
+	out, err := json.Marshal(prepared)
+	if err != nil {
+		return err
+	}
+	if err = frame.Write(c, out); err != nil {
+		return err
+	}
+	b, err = frame.Read(c)
+	if err != nil {
+		return err
+	}
+	var val struct {
+		Op     string                 `json:"op"`
+		Params source.ValidateRequest `json:"params"`
+	}
+	if err = json.Unmarshal(b, &val); err != nil {
+		return err
+	}
+	if val.Op != "source.origin.validate/1" || val.Params.PreparedID != prep {
+		return errors.New("fakes: pinned source: validate differs from prepare")
+	}
+	return frame.Write(c, out)
 }

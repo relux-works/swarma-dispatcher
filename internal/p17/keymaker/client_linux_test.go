@@ -55,11 +55,14 @@ func TestOpenTimeoutWindow(t *testing.T) {
 
 // Claim (H2 step 5, positive control): a bind on a fresh connection returns
 // the run_id, the request carries the origin bytes verbatim and parent_run
-// "", and exactly one frame was written.
+// "", exactly one frame was written, and hello was negotiated before it.
 func TestBindHappy(t *testing.T) {
 	script := &fakes.KeymakerScript{}
 	c, d := open(t, script)
-	res, sent, err := c.Bind("req-1", bindReq, 3)
+	if script.Hellos() != 1 || len(script.Binds()) != 0 {
+		t.Fatalf("after Open: hellos=%d binds=%d", script.Hellos(), len(script.Binds()))
+	}
+	res, sent, err := c.Bind("req-1", bindReq)
 	if err != nil || res.RunID != "run-1" || c.Requests() != 1 || d.Dials() != 1 {
 		t.Fatalf("%+v %v requests=%d", res, err, c.Requests())
 	}
@@ -73,54 +76,216 @@ func TestBindHappy(t *testing.T) {
 	}
 }
 
-// Claim (H2 step 6, "lost bind: retry on the same connection succeeds"): a
-// response lost within the timeout is retried with byte-identical bytes on
-// the same connection, no second connection is dialed, and the bind
-// completes.
-func TestBindLostRetrySameConnection(t *testing.T) {
-	script := &fakes.KeymakerScript{BindMode: "drop-first"}
+// Claim (eager hello): Open negotiates hello before returning; a peer that
+// closes on hello or refuses it fails Open with ErrHello and no request frame
+// is ever written. Positive control: the answering peer opens and binds.
+func TestOpenHelloEager(t *testing.T) {
+	for _, mode := range []string{"close", "refuse"} {
+		script := &fakes.KeymakerScript{HelloMode: mode}
+		d := &fakes.KeymakerDialer{Script: script}
+		c, err := keymaker.Open(context.Background(), d, fakes.KeymakerWire{}, timeout)
+		if !errors.Is(err, keymaker.ErrHello) || c != nil || d.Dials() != 1 {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		if script.Hellos() != 1 || len(script.Binds()) != 0 || len(script.Ends()) != 0 {
+			t.Fatalf("%s: hellos=%d binds=%d", mode, script.Hellos(), len(script.Binds()))
+		}
+	}
+	script := &fakes.KeymakerScript{}
+	c, _ := open(t, script)
+	if res, _, err := c.Bind("req-1", bindReq); err != nil || res.RunID != "run-1" || script.Hellos() != 1 {
+		t.Fatalf("positive control: %+v %v", res, err)
+	}
+}
+
+const lateBy = timeout + 20*time.Millisecond
+
+// Claim (F1 scenario b, "a late success is read, never answered by a
+// resend"): a bind success that arrives 20 ms after the request's own
+// timeout_ms is read inside the local read budget; exactly one request frame
+// was written, no byte reached the peer while its reply was owed, and the end
+// on the same live connection is then acknowledged.
+func TestBindLateReplyNoResend(t *testing.T) {
+	script := &fakes.KeymakerScript{BindMode: "late", Delay: lateBy}
 	c, d := open(t, script)
-	res, sent, err := c.Bind("req-1", bindReq, 3)
+	res, _, err := c.Bind("req-1", bindReq)
+	if err != nil || res.RunID != "run-1" {
+		t.Fatalf("late success not read: %+v %v", res, err)
+	}
+	if c.Requests() != 1 || len(script.Binds()) != 1 || script.Overlaps() != 0 || d.Dials() != 1 || !c.Live() {
+		t.Fatalf("requests=%d binds=%d overlaps=%d dials=%d live=%v", c.Requests(), len(script.Binds()), script.Overlaps(), d.Dials(), c.Live())
+	}
+	end, _, err := c.End("end-1", keymaker.EndRequest{RunID: "run-1"})
+	if err != nil || !end.Ended || len(script.Ends()) != 1 || script.Overlaps() != 0 {
+		t.Fatalf("end on the same connection: %+v %v", end, err)
+	}
+}
+
+// Claim (F1 scenario a and the positive control "a read correlated retryable
+// refusal, then the exact retry succeeds"): a correlated
+// request_deadline_exceeded that arrives 20 ms after timeout_ms is READ, and
+// only then the identical bytes (same ID, same body, same timeout_ms inside
+// 1..2000) are written again on the same connection and bind; exactly two
+// request frames, never overlapping, one connection.
+func TestBindRetryAfterReadRetryableRefusal(t *testing.T) {
+	script := &fakes.KeymakerScript{BindMode: "deadline-then-ok", Delay: lateBy}
+	c, d := open(t, script)
+	res, sent, err := c.Bind("req-1", bindReq)
 	if err != nil || res.RunID != "run-1" {
 		t.Fatalf("%+v %v", res, err)
 	}
 	binds := script.Binds()
-	if len(binds) != 2 || !bytes.Equal(binds[0], binds[1]) || !bytes.Equal(binds[1], sent) || d.Dials() != 1 || c.Requests() != 2 {
-		t.Fatalf("binds=%d dials=%d requests=%d", len(binds), d.Dials(), c.Requests())
+	if len(binds) != 2 || !bytes.Equal(binds[0], binds[1]) || !bytes.Equal(binds[1], sent) || d.Dials() != 1 || c.Requests() != 2 || script.Overlaps() != 0 || !c.Live() {
+		t.Fatalf("binds=%d dials=%d requests=%d overlaps=%d", len(binds), d.Dials(), c.Requests(), script.Overlaps())
+	}
+	for i, raw := range binds {
+		ms, err := fakes.RequestTimeoutMS(raw)
+		if err != nil || ms != timeout.Milliseconds() || !codes.RequestTimeoutOK(ms) {
+			t.Fatalf("attempt %d carries timeout_ms %d: %v", i+1, ms, err)
+		}
 	}
 }
 
-// Claim (H2 step 6, "after connection loss the run is HELD, never bound
-// blindly"): a connection closed before the reply, a response whose id does
-// not match, a result without run_id, and a response lost on every attempt
-// each yield run_bind_unknown; the connection is not live afterwards and no
-// new connection is dialed by the client.
-func TestBindHeld(t *testing.T) {
-	for _, mode := range []string{"close", "wrong-id", "no-run-id", "drop-all"} {
+// Claim ("a timeout with a reply owed closes the channel, HELD, exactly one
+// request written"): a peer that holds the bind unanswered makes the local
+// read budget (timeout_ms + holder budget + margin) expire; the client closes
+// the connection and returns run_bind_unknown with ErrLost after writing
+// exactly one request frame, and the peer saw no byte while its reply was
+// owed. Positive control: a reply that is late but inside the budget binds
+// (TestBindLateReplyNoResend) and a fast peer binds here.
+func TestBindTimeoutReplyOwedHeld(t *testing.T) {
+	script := &fakes.KeymakerScript{BindMode: "silent"}
+	d := &fakes.KeymakerDialer{Script: script}
+	c, err := keymaker.Open(context.Background(), d, fakes.KeymakerWire{}, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	start := time.Now()
+	_, _, err = c.Bind("req-1", bindReq)
+	waited := time.Since(start)
+	if !codes.Is(err, codes.BindUnknown) || !errors.Is(err, keymaker.ErrLost) || !errors.Is(err, keymaker.ErrConnectionGone) {
+		t.Fatalf("%v", err)
+	}
+	if c.Requests() != 1 || len(script.Binds()) != 1 || script.Overlaps() != 0 || c.Live() || d.Dials() != 1 {
+		t.Fatalf("requests=%d binds=%d overlaps=%d live=%v dials=%d", c.Requests(), len(script.Binds()), script.Overlaps(), c.Live(), d.Dials())
+	}
+	if want := keymaker.ReadBudget(1); waited < want || want != time.Millisecond+keymaker.HolderFrameReportBudget+keymaker.ReadMargin {
+		t.Fatalf("gave up after %v, before the read budget %v", waited, want)
+	}
+	var r *codes.Refusal
+	if !errors.As(err, &r) || r.Detail["requests_written"] != "1" || r.Detail["request_id"] != "req-1" {
+		t.Fatalf("detail %v", err)
+	}
+	if v, e := codes.Exit(err, 0, false); e != nil || v.Status != 17 {
+		t.Fatalf("exit %+v %v", v, e)
+	}
+	// Positive control on the same fixture.
+	ok, _ := open(t, &fakes.KeymakerScript{})
+	if res, _, err := ok.Bind("req-1", bindReq); err != nil || res.RunID != "run-1" {
+		t.Fatalf("positive control: %+v %v", res, err)
+	}
+}
+
+// Claim ("wrong-ID response: no retry"; a null ID likewise): a retryable
+// refusal whose ID is null or differs from the outstanding bind ID is never
+// retried: run_bind_unknown with ErrUncorrelated, the connection closed,
+// exactly one request frame, and the native code and retryable bit in the
+// detail. Positive control: the same retryable refusal WITH the outstanding
+// ID is retried and binds.
+func TestBindUncorrelatedRefusalNoRetry(t *testing.T) {
+	for _, mode := range []string{"wrong-id", "null-id"} {
 		script := &fakes.KeymakerScript{BindMode: mode}
 		c, d := open(t, script)
-		_, _, err := c.Bind("req-1", bindReq, 2)
+		_, _, err := c.Bind("req-1", bindReq)
+		if !codes.Is(err, codes.BindUnknown) || !errors.Is(err, keymaker.ErrUncorrelated) {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		if c.Requests() != 1 || len(script.Binds()) != 1 || c.Live() || d.Dials() != 1 {
+			t.Fatalf("%s: requests=%d binds=%d live=%v", mode, c.Requests(), len(script.Binds()), c.Live())
+		}
+		var r *codes.Refusal
+		if !errors.As(err, &r) || r.Detail["native_code"] != "busy" || r.Detail["native_retryable"] != "true" {
+			t.Fatalf("%s: detail %v", mode, err)
+		}
+	}
+	script := &fakes.KeymakerScript{BindMode: "deadline-then-ok"}
+	c, _ := open(t, script)
+	if res, _, err := c.Bind("req-1", bindReq); err != nil || res.RunID != "run-1" || c.Requests() != 2 {
+		t.Fatalf("positive control: %+v %v requests=%d", res, err, c.Requests())
+	}
+}
+
+// Claim ("limit reached: HELD, requests written == limit"): a peer that
+// answers every bind with a correlated retryable refusal is asked exactly
+// BindAttemptLimit times with identical bytes, then the connection is closed
+// and the run is HELD, run_bind_unknown, exit 17, never run_bind_refused.
+// Positive control: one retryable refusal followed by success binds with two
+// requests, below the limit.
+func TestBindAttemptLimitHeld(t *testing.T) {
+	if keymaker.BindAttemptLimit != 3 {
+		t.Fatalf("the fixed attempt limit changed: %d", keymaker.BindAttemptLimit)
+	}
+	script := &fakes.KeymakerScript{BindMode: "busy"}
+	c, d := open(t, script)
+	_, _, err := c.Bind("req-1", bindReq)
+	if !codes.Is(err, codes.BindUnknown) || errors.Is(err, keymaker.ErrRefused) {
+		t.Fatalf("%v", err)
+	}
+	binds := script.Binds()
+	if c.Requests() != keymaker.BindAttemptLimit || len(binds) != keymaker.BindAttemptLimit || c.Live() || d.Dials() != 1 || script.Overlaps() != 0 {
+		t.Fatalf("requests=%d binds=%d live=%v", c.Requests(), len(binds), c.Live())
+	}
+	for _, b := range binds[1:] {
+		if !bytes.Equal(b, binds[0]) {
+			t.Fatal("a retry changed the request bytes")
+		}
+	}
+	var r *codes.Refusal
+	if !errors.As(err, &r) || r.Detail["requests_written"] != "3" || r.Detail["native_code"] != "busy" || r.Detail["native_retryable"] != "true" {
+		t.Fatalf("detail %v", err)
+	}
+	if v, e := codes.Exit(err, 0, false); e != nil || v.Status != 17 {
+		t.Fatalf("exit %+v %v", v, e)
+	}
+	script = &fakes.KeymakerScript{BindMode: "deadline-then-ok"}
+	c, _ = open(t, script)
+	if res, _, err := c.Bind("req-1", bindReq); err != nil || res.RunID != "run-1" || c.Requests() != 2 {
+		t.Fatalf("positive control: %+v %v requests=%d", res, err, c.Requests())
+	}
+}
+
+// Claim (H2 step 5c and step 6, "after connection loss the run is HELD,
+// never bound blindly"): a connection closed before the reply, a result
+// without run_id and a correlated non-retryable refusal outside the no-effect
+// set each yield run_bind_unknown after exactly one request; the connection
+// is not live afterwards and no new connection is dialed by the client.
+// Positive control: TestBindHappy on the same fixture.
+func TestBindHeld(t *testing.T) {
+	for _, mode := range []string{"close", "no-run-id", "nonretryable"} {
+		script := &fakes.KeymakerScript{BindMode: mode}
+		c, d := open(t, script)
+		_, _, err := c.Bind("req-1", bindReq)
 		if !codes.Is(err, codes.BindUnknown) {
 			t.Fatalf("%s: %v", mode, err)
 		}
-		if d.Dials() != 1 {
-			t.Fatalf("%s: client dialed again", mode)
+		if d.Dials() != 1 || c.Requests() != 1 || c.Live() {
+			t.Fatalf("%s: dials=%d requests=%d live=%v", mode, d.Dials(), c.Requests(), c.Live())
 		}
-		if mode == "drop-all" && (c.Requests() != 2 || !c.Live()) {
-			t.Fatalf("drop-all: requests=%d live=%v", c.Requests(), c.Live())
-		}
-		if mode != "drop-all" && c.Live() {
-			t.Fatalf("%s: connection still live", mode)
+		var r *codes.Refusal
+		if mode == "nonretryable" && (!errors.As(err, &r) || r.Detail["native_code"] != "role_not_permitted" || r.Detail["native_retryable"] != "false") {
+			t.Fatalf("%s: detail %v", mode, err)
 		}
 	}
 }
 
-// Claim: an exact Keymaker refusal of the bind is ErrRefused, not UNKNOWN:
-// the run was definitely not bound.
+// Claim: a correlated refusal that the wire certifies as in the no-effect
+// set is run_bind_refused with ErrRefused, not UNKNOWN, after one request.
+// Negative neighbour: the uncertified correlated refusal in TestBindHeld.
 func TestBindRefused(t *testing.T) {
 	c, _ := open(t, &fakes.KeymakerScript{BindMode: "refuse"})
-	_, _, err := c.Bind("req-1", bindReq, 2)
-	if !errors.Is(err, keymaker.ErrRefused) || codes.Is(err, codes.BindUnknown) {
+	_, _, err := c.Bind("req-1", bindReq)
+	if !errors.Is(err, keymaker.ErrRefused) || !codes.Is(err, codes.BindRefused) || c.Requests() != 1 {
 		t.Fatalf("%v", err)
 	}
 }
@@ -144,13 +309,29 @@ func TestEndExactAndSealed(t *testing.T) {
 	}
 }
 
-// Claim (H5 step 3 and "EOF on Keymaker is NOT an end"): a dropped end
-// response, EOF before the reply, an explicit refusal, ended:false, and an
-// ended result for another run id are each run_end_unknown with the run id
-// in the detail; none seals the channel as acknowledged.
+// Claim (the in-flight rule on the end path): an exact ended result that
+// arrives 20 ms after the end request's own timeout_ms is read inside the
+// local read budget and acknowledges the end with one request frame.
+func TestEndLateReplyAcknowledged(t *testing.T) {
+	script := &fakes.KeymakerScript{EndMode: "late", Delay: lateBy}
+	c, _ := open(t, script)
+	res, _, err := c.End("end-1", keymaker.EndRequest{RunID: "run-1"})
+	if err != nil || !res.Ended || c.Requests() != 1 || script.Overlaps() != 0 {
+		t.Fatalf("late end ack not read: %+v %v requests=%d", res, err, c.Requests())
+	}
+}
+
+// Claim (H5 step 3 and "EOF on Keymaker is NOT an end"): an end held
+// unanswered past the local read budget, EOF before the reply, an explicit
+// refusal, ended:false, and an ended result for another run id are each
+// run_end_unknown with the run id in the detail; none seals the channel as
+// acknowledged, each wrote exactly one request and closed the connection so
+// that nothing further can be written while a reply is owed. Positive
+// control: TestEndExactAndSealed.
 func TestEndUnknownVariants(t *testing.T) {
-	for _, mode := range []string{"drop", "close", "refuse", "not-ended", "other-run"} {
-		c, _ := open(t, &fakes.KeymakerScript{EndMode: mode})
+	for _, mode := range []string{"silent", "close", "refuse", "not-ended", "other-run"} {
+		script := &fakes.KeymakerScript{EndMode: mode}
+		c, _ := open(t, script)
 		_, _, err := c.End("end-1", keymaker.EndRequest{RunID: "run-1"})
 		if !codes.Is(err, codes.EndUnknown) {
 			t.Fatalf("%s: %v", mode, err)
@@ -159,26 +340,36 @@ func TestEndUnknownVariants(t *testing.T) {
 		if !errors.As(err, &r) || r.Detail["run_id"] != "run-1" {
 			t.Fatalf("%s: detail %v", mode, err)
 		}
+		if c.Requests() != 1 || c.Live() || script.Overlaps() != 0 {
+			t.Fatalf("%s: requests=%d live=%v overlaps=%d", mode, c.Requests(), c.Live(), script.Overlaps())
+		}
+		if mode == "silent" && !errors.Is(err, keymaker.ErrLost) {
+			t.Fatalf("silent: %v", err)
+		}
+		if mode == "refuse" && r.Detail["native_code"] != "run_unknown" {
+			t.Fatalf("refuse: detail %v", err)
+		}
 	}
 }
 
 // Claim (seam): with the pinned codec absent the default wire refuses by
-// name before any frame is written.
+// name at the eager hello: Open fails unpinned and no request is written.
+// Positive control: the same dialer with the test wire opens.
 func TestUnpinnedWire(t *testing.T) {
-	d := &fakes.KeymakerDialer{Script: &fakes.KeymakerScript{}}
+	script := &fakes.KeymakerScript{}
+	d := &fakes.KeymakerDialer{Script: script}
 	c, err := keymaker.Open(context.Background(), d, nil, timeout)
+	if !codes.IsUnpinned(err) || !errors.Is(err, keymaker.ErrHello) || c != nil {
+		t.Fatalf("%v", err)
+	}
+	if script.Hellos() != 0 || len(script.Binds()) != 0 || len(script.Ends()) != 0 {
+		t.Fatal("frames written with the unpinned wire")
+	}
+	c, err = keymaker.Open(context.Background(), d, fakes.KeymakerWire{}, timeout)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("positive control: %v", err)
 	}
-	defer c.Close()
-	_, _, err = c.Bind("req-1", bindReq, 1)
-	if !codes.IsUnpinned(err) || c.Requests() != 0 {
-		t.Fatalf("%v requests=%d", err, c.Requests())
-	}
-	_, _, err = c.End("end-1", keymaker.EndRequest{RunID: "run-1"})
-	if !codes.IsUnpinned(err) || c.Requests() != 0 {
-		t.Fatalf("%v requests=%d", err, c.Requests())
-	}
+	_ = c.Close()
 }
 
 // Claim: the byte copy of pin B's corpus always has the pinned size and SHA-256.

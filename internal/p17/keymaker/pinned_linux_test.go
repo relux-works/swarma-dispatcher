@@ -239,7 +239,7 @@ func TestCorpusClientPositive(t *testing.T) {
 			conn, d := openVector(t, c, c.named(t, replyName), c.named(t, reqName))
 			q := localRequest(kind)
 			if q.Bind != nil {
-				res, _, err := conn.Bind(q.ID, *q.Bind, 1)
+				res, _, err := conn.Bind(q.ID, *q.Bind)
 				if err != nil || res.RunID != vectorRun {
 					t.Fatalf("%+v %v", res, err)
 				}
@@ -278,7 +278,7 @@ func TestCorpusClientRefusals(t *testing.T) {
 			q := localRequest(kind)
 			var err error
 			if q.Bind != nil {
-				_, _, err = conn.Bind(q.ID, *q.Bind, 1)
+				_, _, err = conn.Bind(q.ID, *q.Bind)
 			} else {
 				_, _, err = conn.End(q.ID, *q.End)
 			}

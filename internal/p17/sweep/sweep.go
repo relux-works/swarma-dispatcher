@@ -5,7 +5,10 @@
 // real, effective, saved and filesystem uid of each with R_i. Any pid that
 // cannot be read counts as not proved. Before any scan is trusted the procfs
 // view itself is qualified (View.Qualify): a view that can hide the pids of
-// another user (hidepid, subset=pid, a nested pid namespace) is never proved. Killing goes through an injected
+// another user (hidepid or a nested pid namespace) is never proved.
+// subset=pid is refused conservatively: kernel procfs documentation says pid
+// directories remain visible, but deployments must not set it for L.
+// Killing goes through an injected
 // Killer that receives only the uid, never a pid: the helper drops every id
 // to R_i and calls kill(-1, SIGKILL). The default Killer refuses by name.
 package sweep
@@ -59,10 +62,10 @@ func allDigits(s string) bool {
 }
 
 // View names the procfs view the D5a proof reads and how it is qualified.
-// The launcher L is not root, so a procfs mounted with hidepid, with
-// subset=pid, or seen from a nested pid namespace can simply omit the
-// processes of R_i: they are absent from the listing, not unreadable. A scan
-// of such a view proves nothing, so the view is qualified first.
+// The launcher L is not root: hidepid and nested pid namespaces can omit
+// processes of R_i. subset=pid is refused conservatively, not because it
+// hides pid directories (the kernel documentation says those stay visible).
+// A deployment must not set subset=pid for the launcher.
 type View struct {
 	// ProcRoot is the procfs root; empty means /proc.
 	ProcRoot string
@@ -308,7 +311,7 @@ type Outcome struct {
 
 // Sweep enumerates, kills by uid, and repeats within the budget until the
 // enumeration proves zero. It never signals a pid by number. On an
-// unqualified view it returns at once, not proved.
+// unqualified view it still kills within the budget, but cannot prove zero.
 func Sweep(ctx context.Context, v View, uid uint32, k Killer, b Budget) Outcome {
 	if ctx == nil {
 		ctx = context.Background()
@@ -325,12 +328,8 @@ func Sweep(ctx context.Context, v View, uid uint32, k Killer, b Budget) Outcome 
 		if out.Final.Proved() {
 			return out
 		}
-		if out.Final.Err != nil {
-			out.Err = out.Final.Err
-			return out
-		}
 		if attempt >= b.Attempts {
-			out.Err = ErrNotProved
+			out.Err = errors.Join(ErrNotProved, out.Final.Err)
 			return out
 		}
 		if k == nil {
@@ -496,60 +495,93 @@ func (g ReleaseGate) Decide(runKey string, uid uint32, endAcknowledged bool, e E
 // Quarantine tracks R_i uids that may not be leased. A uid enters on lease
 // and leaves only through Release when the gate allows it.
 type Quarantine struct {
+	// Gate is configured before any run; launcher.New calls must precede runs.
 	Gate ReleaseGate
-
-	mu   sync.Mutex
-	held map[uint32]bool
-	// helper marks uids for which the privilege-drop helper (spawn or sweep
-	// mode) was invoked since the uid was last leased.
-	helper map[uint32]bool
+	// Guard reports a non-terminal record on uid, excluding only except.
+	// Configure once before Restart; Lease passes an empty except.
+	Guard     func(uid uint32, except string) bool
+	mu        sync.Mutex
+	held      map[uint32]Entry
+	busy      map[uint32]int
+	started   bool
+	directory string
+	lock      *os.File
+	blocked   error
+	// syncFile is a private crash-point seam; production always uses File.Sync.
+	syncFile func(*os.File) error
 }
 
 // ErrQuarantined refuses a lease of a held uid, and reports a refused release.
 var ErrQuarantined = errors.New("sweep: uid quarantined")
 
-// Hold marks the uid as leased/quarantined.
-func (q *Quarantine) Hold(uid uint32) {
+func holder(keys []string) string {
+	if len(keys) > 0 {
+		return keys[0]
+	}
+	return "standalone"
+}
+
+// Hold restores a record's hold without overwriting another lease.
+func (q *Quarantine) Hold(uid uint32, keys ...string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.held == nil {
-		q.held = make(map[uint32]bool)
+	if q.blocked != nil {
+		return q.blocked
 	}
-	q.held[uid] = true
+	if q.held == nil {
+		q.held = map[uint32]Entry{}
+	}
+	if _, ok := q.held[uid]; ok {
+		return nil
+	}
+	q.held[uid] = Entry{UID: uid, Holder: holder(keys), Reason: "run record"}
+	return q.persistLocked()
 }
 
 // Held reports whether the uid is quarantined.
 func (q *Quarantine) Held(uid uint32) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.held[uid]
+	_, ok := q.held[uid]
+	return ok || q.blocked != nil
 }
 
-// Lease refuses a held uid and otherwise holds it for the new run.
-func (q *Quarantine) Lease(uid uint32) error {
+// Lease durably records its holder before use, and never erases an older mark.
+func (q *Quarantine) Lease(uid uint32, keys ...string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.held[uid] {
+	if q.started && (len(keys) != 1 || keys[0] == "") {
+		return ErrQuarantined
+	}
+	if q.blocked != nil {
+		return q.blocked
+	}
+	if _, ok := q.held[uid]; ok {
+		return ErrQuarantined
+	}
+	if q.Guard != nil && q.Guard(uid, "") {
 		return ErrQuarantined
 	}
 	if q.held == nil {
-		q.held = make(map[uint32]bool)
+		q.held = map[uint32]Entry{}
 	}
-	q.held[uid] = true
-	// A new lease starts with no helper invocation.
-	delete(q.helper, uid)
-	return nil
+	q.held[uid] = Entry{UID: uid, Holder: holder(keys), Reason: "leased"}
+	return q.persistLocked()
 }
 
 // MarkHelper records that the privilege-drop helper was invoked for the uid
 // (spawn or sweep mode). The mark lasts until the uid is leased again.
-func (q *Quarantine) MarkHelper(uid uint32) {
+func (q *Quarantine) MarkHelper(uid uint32, keys ...string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.helper == nil {
-		q.helper = make(map[uint32]bool)
+	e, ok := q.held[uid]
+	if !ok || (len(keys) > 0 && e.Holder != keys[0]) {
+		return ErrQuarantined
 	}
-	q.helper[uid] = true
+	e.Helper = true
+	e.Reason = "helper invoked"
+	q.held[uid] = e
+	return q.persistLocked()
 }
 
 // HelperInvoked reports whether the helper was invoked for the uid since it
@@ -557,7 +589,26 @@ func (q *Quarantine) MarkHelper(uid uint32) {
 func (q *Quarantine) HelperInvoked(uid uint32) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.helper[uid]
+	return q.held[uid].Helper
+}
+
+// WithLease keeps a sweep scoped to its holder until all kill rounds finish.
+// A stale end path never touches a newer holder's uid.
+func (q *Quarantine) WithLease(uid uint32, key string, sweep func() Outcome) Outcome {
+	q.mu.Lock()
+	e, ok := q.held[uid]
+	if q.blocked != nil || !ok || e.Holder != key || (q.Guard != nil && q.Guard(uid, key)) {
+		q.mu.Unlock()
+		err := errors.Join(ErrQuarantined, errors.New("sweep: uid not held exclusively for this record; not proved, uid untouched"))
+		return Outcome{Final: Enumeration{UID: uid, Err: err}, Err: err}
+	}
+	if q.busy == nil {
+		q.busy = map[uint32]int{}
+	}
+	q.busy[uid]++
+	q.mu.Unlock()
+	defer func() { q.mu.Lock(); q.busy[uid]--; q.mu.Unlock() }()
+	return sweep()
 }
 
 // ReturnUnused returns a lease under which nothing was ever started. BOTH
@@ -567,18 +618,24 @@ func (q *Quarantine) HelperInvoked(uid uint32) bool {
 // proof, and the proof is never skipped. Otherwise the uid stays quarantined
 // and ErrQuarantined is returned. This is not the release gate; a lease that was ever used leaves
 // only through Release.
-func (q *Quarantine) ReturnUnused(uid uint32, e Enumeration) error {
+func (q *Quarantine) ReturnUnused(uid uint32, e Enumeration, keys ...string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.helper[uid] || e.UID != uid || !e.Proved() {
-		if q.held == nil {
-			q.held = make(map[uint32]bool)
-		}
-		q.held[uid] = true
+	if q.blocked != nil {
+		return q.blocked
+	}
+	entry, ok := q.held[uid]
+	if !ok || entry.Holder != holder(keys) || q.busy[uid] != 0 {
+		return ErrQuarantined
+	}
+	if entry.Helper || e.UID != uid || !e.Proved() {
+		return ErrQuarantined
+	}
+	if q.Guard != nil && q.Guard(uid, entry.Holder) {
 		return ErrQuarantined
 	}
 	delete(q.held, uid)
-	return nil
+	return q.persistLocked()
 }
 
 // Release frees the uid only when the gate allows it for this run; otherwise
@@ -587,13 +644,18 @@ func (q *Quarantine) Release(runKey string, uid uint32, endAcknowledged bool, e 
 	d := q.Gate.Decide(runKey, uid, endAcknowledged, e)
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if q.blocked != nil {
+		return d, q.blocked
+	}
+	entry, ok := q.held[uid]
+	if !ok || entry.Holder != runKey || q.busy[uid] != 0 || (q.Guard != nil && q.Guard(uid, runKey)) {
+		d.Release = false
+		d.Reason = "uid not exclusively held for this record"
+		return d, ErrQuarantined
+	}
 	if !d.Release {
-		if q.held == nil {
-			q.held = make(map[uint32]bool)
-		}
-		q.held[uid] = true
 		return d, ErrQuarantined
 	}
 	delete(q.held, uid)
-	return d, nil
+	return d, q.persistLocked()
 }

@@ -42,14 +42,22 @@ const (
 	// ReadMargin is the fixed local margin added on top of timeout_ms and
 	// HolderFrameReportBudget, for scheduling and socket latency.
 	ReadMargin = 500 * time.Millisecond
+
+	// BindStartWindow is below the pinned holder's 2 s complete-frame bound
+	// after hello (B e5d8f248, internal/control/server.go). It bounds START,
+	// not completion: a slow or failed attempted write is still HELD.
+	BindStartWindow = 1500 * time.Millisecond
+	// RetryPause separates busy/rate_limited exact retries; the limit stays 3.
+	RetryPause = 200 * time.Millisecond
 )
 
 // ReadBudget is the local wait for the one reply a started request is owed:
-// the request's own timeout_ms plus HolderFrameReportBudget plus ReadMargin.
-// It is sized so that the holder's own deadline reply always arrives first;
-// a local timeout beyond it means the channel is ambiguous.
+// max(timeout_ms, 2000 ms) + 2000 ms + ReadMargin. The pinned holder may
+// spend 2 s in observer.Enter before reporting its deadline refusal within
+// another frameBudget (B e5d8f248 internal/control/server.go). The margin is
+// local slack, not a promise of remote latency; expiry is still ambiguous.
 func ReadBudget(timeoutMS int64) time.Duration {
-	return time.Duration(timeoutMS)*time.Millisecond + HolderFrameReportBudget + ReadMargin
+	return max(time.Duration(timeoutMS)*time.Millisecond, HolderFrameReportBudget) + HolderFrameReportBudget + ReadMargin
 }
 
 var (
@@ -64,9 +72,11 @@ var (
 	ErrSealed = errors.New("keymaker: channel sealed after ended acknowledgement")
 	// ErrTimeout means the per-request timeout is outside 1..2000 ms.
 	ErrTimeout = errors.New("keymaker: per-request timeout outside 1..2000 ms")
-	// ErrHello means the eager hello failed. Nothing but hello bytes was
-	// written; no mutation can have started.
-	ErrHello = errors.New("keymaker: hello failed before any request")
+	// ErrHello is before any bind request; hello is a native request that the
+	// holder checks and audits; this path promises no run record and no bind.
+	ErrHello = errors.New("keymaker: hello failed before any bind request; hello is a native request that the holder checks and audits; this path promises no run record and no bind")
+	// ErrUnsent proves this process never called write for this bind frame.
+	ErrUnsent = errors.New("keymaker: bind write never called; post-hello start window elapsed")
 	// ErrUncorrelated means a response did not carry the outstanding request
 	// ID (null or different). It is never retried.
 	ErrUncorrelated = errors.New("keymaker: response id is null or differs from the outstanding request")
@@ -83,22 +93,27 @@ type Conn struct {
 	closed  bool
 	// requests counts request frames written (hello excluded); tests use it
 	// to prove retry identity and the attempt limit.
-	requests int
+	requests         int
+	helloCompleted   time.Time
+	bindWriteStarted bool
+	// Private observation seams for clock/pause tests; production uses time.
+	now   func() time.Time
+	pause func(time.Duration)
 }
 
 // Open dials one fresh connection and negotiates hello on it, eagerly and
 // within HelloBudget. timeout is the per-request timeout and must be within
 // 1..2000 ms. A nil wire is the refusing default.
 //
-// Every failure of Open happens before any request frame: hello carries no
-// mutation, so the caller may treat it as run_bind_unavailable with no
-// record. The connection is closed on failure.
+// Open fails before any bind request; hello is a native request that the
+// holder checks and audits; this path promises no run record and no bind.
+// The connection is closed on failure.
 func Open(ctx context.Context, d Dialer, w Wire, timeout time.Duration) (*Conn, error) {
 	if timeout < time.Millisecond || timeout > 2000*time.Millisecond || !codes.RequestTimeoutOK(timeout.Milliseconds()) {
 		return nil, ErrTimeout
 	}
 	if d == nil {
-		return nil, errors.New("keymaker: no dialer")
+		return nil, codes.Unpinned("keymaker dialer", Pin)
 	}
 	if w == nil {
 		w = Unpinned{}
@@ -117,7 +132,15 @@ func Open(ctx context.Context, d Dialer, w Wire, timeout time.Duration) (*Conn, 
 		_ = c.Close()
 		return nil, errors.Join(ErrHello, err)
 	}
-	return &Conn{c: c, wire: w, timeout: timeout}, nil
+	return &Conn{c: c, wire: w, timeout: timeout, helloCompleted: time.Now(), now: time.Now, pause: time.Sleep}, nil
+}
+
+// BindWriteStarted is monotone and set BEFORE the first bind write call,
+// including calls that fail reporting zero bytes. It is process-local proof.
+func (c *Conn) BindWriteStarted() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bindWriteStarted
 }
 
 // Live reports whether the connection is still assigned and unsealed.
@@ -177,6 +200,12 @@ func (c *Conn) exchange(req Request, b []byte) (Response, error) {
 	if err := c.c.SetDeadline(time.Now().Add(ReadBudget(req.TimeoutMS))); err != nil {
 		return fail(Response{}, err)
 	}
+	if req.Method == MethodBind && !c.bindWriteStarted {
+		if c.now().Sub(c.helloCompleted) >= BindStartWindow {
+			return fail(Response{}, ErrUnsent)
+		}
+		c.bindWriteStarted = true
+	}
 	c.requests++
 	if err := c.wire.WriteFrame(c.c, b); err != nil {
 		return fail(Response{}, err)
@@ -220,7 +249,7 @@ func (c *Conn) EncodeEnd(id string, req EndRequest) ([]byte, error) {
 	return c.wire.Encode(Request{ID: id, TimeoutMS: c.timeout.Milliseconds(), Method: MethodEnd, End: &req})
 }
 
-// Bind sends j7_run_bind with the given request ID (hooks r2.13, H2 steps 5 and 6).
+// Bind sends j7_run_bind with the given request ID (hooks r2.15, H2 steps 5 and 6).
 //
 // The identical bytes are written again only after a correlated retryable
 // refusal was READ on this same live connection, and at most
@@ -247,20 +276,34 @@ func (c *Conn) Bind(id string, req BindRequest) (BindResult, []byte, error) {
 		r := codes.Refuse(codes.BindUnknown, op, cause).With("request_id", id).With("requests_written", strconv.Itoa(c.requests))
 		return BindResult{}, b, withNative(r, resp)
 	}
+	var last Response
 	for attempt := 1; ; attempt++ {
 		resp, err := c.exchange(request, b)
 		if err != nil {
-			return held("bind outcome unknown on the assigned connection; run HELD", err, resp)
+			if last.Refusal == nil {
+				last = resp
+			}
+			return held("bind outcome unknown on the assigned connection; run HELD", err, last)
+		}
+		if resp.Refusal != nil {
+			last = resp
 		}
 		if resp.Refused {
 			return BindResult{}, b, withNative(codes.Refuse(codes.BindRefused, "correlated no-effect bind refusal", ErrRefused), resp)
 		}
 		if resp.Refusal != nil {
+			// The pinned holder closes after these refusals; never retry them.
+			if resp.Refusal.Code == "generation_source_unavailable" || resp.Refusal.Code == "audit_unavailable" {
+				return held("holder closes after correlated refusal; run HELD", nil, resp)
+			}
 			if !RetryableRefusal(resp.Refusal) {
 				return held("correlated bind refusal outside the no-effect set; run HELD", nil, resp)
 			}
 			if attempt >= BindAttemptLimit {
 				return held("bind attempt limit reached after retryable refusals; run HELD", nil, resp)
+			}
+			if resp.Refusal.Code == "busy" || resp.Refusal.Code == "rate_limited" {
+				c.pause(RetryPause)
 			}
 			// The one reply owed was read, correlated and retryable: nothing
 			// is in flight, so the exact same-ID, same-body retry may follow.

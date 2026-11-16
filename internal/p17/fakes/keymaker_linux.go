@@ -200,6 +200,23 @@ type KeymakerScript struct {
 	connections int
 	closed      int
 	overlaps    int
+	bindBytes   int
+}
+
+// BindBytes counts bytes read in the first post-hello frame, even partial frames.
+func (s *KeymakerScript) BindBytes() int { s.mu.Lock(); defer s.mu.Unlock(); return s.bindBytes }
+
+type bindReader struct {
+	io.Reader
+	s *KeymakerScript
+}
+
+func (r bindReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.s.mu.Lock()
+	r.s.bindBytes += n
+	r.s.mu.Unlock()
+	return n, err
 }
 
 func (s *KeymakerScript) runID() string {
@@ -343,11 +360,22 @@ func (s *KeymakerScript) Serve(c net.Conn) {
 	s.connections++
 	s.mu.Unlock()
 	bindsSeen := 0
+	postHello := false
 	for {
-		raw, err := frame.Read(c)
+		var reader io.Reader = c
+		if postHello {
+			reader = bindReader{c, s}
+		}
+		raw, err := frame.Read(reader)
 		if err != nil {
+			var ne net.Error
+			if postHello && errors.As(err, &ne) && ne.Timeout() {
+				_ = s.reply(c, kmResponse{Error: &kmError{Code: "request_deadline_exceeded", Retryable: true}})
+			}
 			return
 		}
+		postHello = false
+		_ = c.SetReadDeadline(time.Time{})
 		var req kmRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
 			return
@@ -360,6 +388,9 @@ func (s *KeymakerScript) Serve(c net.Conn) {
 			s.hellos++
 			s.mu.Unlock()
 			switch helloMode {
+			case "silent":
+				s.owed(c, 0, true)
+				return
 			case "close":
 				return
 			case "refuse":
@@ -369,6 +400,8 @@ func (s *KeymakerScript) Serve(c net.Conn) {
 			if err := s.reply(c, kmResponse{ID: &id}); err != nil {
 				return
 			}
+			postHello = true
+			_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 		case string(keymaker.MethodBind):
 			s.mu.Lock()
 			s.binds = append(s.binds, append([]byte(nil), raw...))

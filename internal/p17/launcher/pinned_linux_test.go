@@ -151,7 +151,7 @@ func TestNativeHeld(t *testing.T) {
 	}
 }
 
-// Claim (F3 with r2.7 Q1): a pre-request Keymaker connect failure creates no
+// Claim (H2 connect refusal): a pre-request Keymaker connect failure creates no
 // record and exits 1 (run_bind_unavailable); the lease of the SAME fixed uid
 // is returned after the zero-process proof, so a later attempt with
 // isolation.Fixed binds under that uid, starting from a fresh H1 with a

@@ -52,6 +52,9 @@ var (
 	// may or may not be durable: callers must treat the record state as
 	// uncertain, never as "no record".
 	ErrCommit = errors.New("runrecord: transition commit failed; durability uncertain")
+	// ErrConfig refuses a fresh store whose configuration cannot hold a
+	// journal. Nothing was created.
+	ErrConfig = errors.New("runrecord: store configuration refused")
 )
 
 // Store owns one journal session and the in-memory view of its records.
@@ -79,12 +82,29 @@ func newStore() *Store {
 // Initialize prepares a fresh store for installation-established fresh
 // state. It writes nothing: the journal is initialized by the first real
 // record transition (the first Create), whose frame becomes sequence 1, as
-// spec/journal.md requires of a journal's first payload. Until then no
-// journal file and no ownership lock exist, and a restart must choose
-// Initialize again; Open refuses a store that never committed a record.
-// Configuration errors surface at that first Create. A failed initialization
-// is never retried by this store.
+// spec/journal.md requires of a journal's first payload.
+//
+// The configuration is validated here, by reading only: the state directory
+// and its records and inputs directories must exist and be real directories,
+// the filesystem must be ext4 or XFS, and no journal may exist yet. A setup
+// error is therefore ErrConfig at start, not a failed first Create. Nothing
+// is created, locked or repaired by the check, and a failure of the later
+// initialization itself is still reported by that first Create and is never
+// retried by this store.
+//
+// Choosing the entry. Until the first record is committed no journal file
+// and no journal lock exist. A restart in that window must call Initialize
+// again, and Open refuses a store that never committed a record. The entry
+// must not be inferred from the missing file (spec/journal.md): the caller
+// keeps its own durable "installed, no record committed yet" fact, moves it
+// to "established" after its first successful Create (Pending reports the
+// store's side of that), and calls Open from then on. While the store is
+// pending, the journal lock cannot show that the launcher is alive; the
+// launcher's own state-directory lock (sweep.Quarantine) covers that window.
 func Initialize(cfg journal.Config) (*Store, error) {
+	if err := precheck(cfg); err != nil {
+		return nil, err
+	}
 	st := newStore()
 	st.pending = true
 	st.cfg = cfg
@@ -101,6 +121,7 @@ func Open(cfg journal.Config) (*Store, error) {
 		return nil, err
 	}
 	st.s = s
+	st.cfg = cfg
 	for k := range st.records {
 		st.fenced[k] = true
 	}
@@ -283,6 +304,18 @@ func (st *Store) Fenced(key string) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return st.fenced[key]
+}
+
+// StateDirectory is the directory shared with the launcher's lifetime lock
+// and lease ledger. The journal continues to hold its own independent lock.
+func (st *Store) StateDirectory() string { return st.cfg.Directory }
+
+// Pending reports whether this fresh store has not yet committed its first
+// record: no journal and no journal lock exist while it is true.
+func (st *Store) Pending() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.pending
 }
 
 // State returns the journal session state. A fresh store that has not yet

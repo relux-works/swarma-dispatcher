@@ -99,8 +99,14 @@ func TestInitializationFailureIsSticky(t *testing.T) {
 	}
 	bad := cfg(t)
 	bad.Records = "missing-records"
+	if _, err := runrecord.Initialize(bad); !errors.Is(err, runrecord.ErrConfig) {
+		t.Fatalf("setup error not refused at Initialize: %v", err)
+	}
+	bad = cfg(t)
 	st, err = runrecord.Initialize(bad)
 	must(t, err)
+	// A race after validation still makes the first append's failure sticky.
+	must(t, os.Remove(filepath.Join(bad.Directory, bad.Records)))
 	err = st.Create(base("run-a"))
 	if !errors.Is(err, runrecord.ErrCommit) || !runrecord.Uncertain(err) || len(st.Keys()) != 0 {
 		t.Fatalf("failed initialization: %v keys=%v", err, st.Keys())

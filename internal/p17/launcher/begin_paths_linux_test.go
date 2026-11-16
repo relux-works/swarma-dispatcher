@@ -30,7 +30,7 @@ func noTrace(t *testing.T, e *env) {
 	}
 }
 
-// Claim (F3, positive control of the lease rule): with isolation.Fixed, a
+// Claim (pre-record lease return): with isolation.Fixed, a
 // transient Source failure (prepare dependency error; validate lost on every
 // restart) and a transient Keymaker connect failure each fail retryable
 // (exit 1) with no record, and each returns the lease after the zero-process
@@ -68,7 +68,7 @@ func TestLeaseReturned(t *testing.T) {
 	}
 }
 
-// Claim (F3 as narrowed: "the zero-process proof is never skipped"): on a
+// Claim (D5a, the zero-process proof is never skipped): on a
 // pre-record failure with a process planted under the leased uid in the
 // fixture proc tree (saved uid only), or with an unqualified procfs view
 // (hidepid=2), the uid is NOT returned: the Begin error keeps its retryable
@@ -136,37 +136,22 @@ func TestLeaseQuarantinedAfterHelper(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
-			// An older run on the same uid, left ending with a live process.
-			orphan(t, e, "old", cuid, 600)
-			_, err := e.store.Update("old", func(r *runrecord.Record) error {
-				r.State = runrecord.Ending
-				r.EndRequestID = "end-old"
-				r.EndRequestBody = endBody(t, "end-old", "run-old")
-				return nil
-			})
-			must(t, err)
-			e.exportEvidence["old"] = sweep.Exported
 			e.src.PrepareMode = "dependency"
-			var l *fixtureLauncher
-			sweepOld := func() {
-				out, err := l.RetryEnd(context.Background(), "old")
-				if err != nil || out.Sweep.Kills != 1 || !out.UIDReleased {
-					t.Errorf("setup: retry end of the older run: %+v %v", out, err)
-				}
-			}
 			calls := 0
 			e.deps.Nonce = func() (string, error) {
 				calls++
-				if during && calls == 1 {
-					sweepOld() // the helper runs while Begin holds the lease
+				if during && calls == 2 {
+					// Test Killer while this pre-record lease is held; no older run.
+					must(t, e.quar.MarkHelper(cuid))
+					must(t, e.killer.KillAll(context.Background(), cuid))
 				}
 				return e.nonce()
 			}
-			l = e.build()
+			l := e.build()
 			if !during {
-				sweepOld()
+				must(t, e.killer.KillAll(context.Background(), cuid))
 			}
-			_, err = l.Begin(context.Background(), "input-1")
+			_, err := l.Begin(context.Background(), "input-1")
 			v, x := codes.Exit(err, 0, false)
 			if !codes.Is(err, codes.OriginUnavailable) || x != nil || v.Status != 1 {
 				t.Fatalf("the original failure code changed: %v %+v %v", err, v, x)
@@ -177,7 +162,7 @@ func TestLeaseQuarantinedAfterHelper(t *testing.T) {
 			if proof := sweep.Enumerate(e.proc.View(), cuid); !proof.Proved() {
 				t.Fatalf("setup: the enumeration must show zero processes: %+v", proof)
 			}
-			if len(e.store.Keys()) != 1 || len(e.km.Binds()) != 0 {
+			if len(e.store.Keys()) != 0 || len(e.km.Binds()) != 0 {
 				t.Fatalf("records=%v binds=%d", e.store.Keys(), len(e.km.Binds()))
 			}
 			e.src.SetPrepareMode("")
@@ -203,10 +188,10 @@ func TestLeaseQuarantinedAfterHelper(t *testing.T) {
 	}
 }
 
-// Claim (F5, order "connect and hello, then the durable binding record, then
+// Claim (H2 order "connect and hello, then the durable binding record, then
 // the bind frame"): when the binding record is created the Keymaker hello has
 // already been answered and no bind frame has been written; the bind frame
-// follows. Claim (F5, hello failure): a Keymaker that closes on hello, or
+// follows. Claim (hello failure): a Keymaker that closes on hello, or
 // refuses it, fails Begin with run_bind_unavailable (retryable, exit 1), no
 // record, no bind frame and the lease returned; the next attempt starts from
 // a fresh H1 and binds with a new prepared_id, never the failed attempt's.
@@ -226,7 +211,7 @@ func TestHelloOrder(t *testing.T) {
 		t.Fatalf("order: hellos at create %d, binds at create %d, binds after %d", hellosAtCreate, bindsAtCreate, len(e.km.Binds()))
 	}
 
-	for _, mode := range []string{"close", "refuse"} {
+	for _, mode := range []string{"close", "refuse", "silent"} {
 		t.Run(mode, func(t *testing.T) {
 			e := newEnv(t)
 			e.km.HelloMode = mode
@@ -274,7 +259,7 @@ func ownerOrigin() []byte {
 	return []byte(`{"command_id":"` + strings.Repeat("d", 64) + `","event_id":"","grant_id":"","kind":"owner_command","mode":"","tip_hash":""}`)
 }
 
-// Claim (F6, owner command at the launcher): when the Source fixture returns
+// Claim (admission origin): when the Source fixture returns
 // the corpus owner_command origin from validate, Begin refuses
 // run_origin_refused (exit 16) with zero Keymaker dials and no record, and
 // the unused lease is returned. Positive control beside it: the same fixture
@@ -303,7 +288,7 @@ func TestOwnerCommandOriginRefused(t *testing.T) {
 	}
 }
 
-// Claim (F12): a Source result without the identity_registration_number
+// Claim (station binding): a Source result without the identity_registration_number
 // binding is refused run_origin_refused for the (non-pinned) test Wire too,
 // and so is a binding that differs from the station: zero Keymaker dials, no
 // record, lease returned. Positive control: the binding equal to the station
@@ -336,7 +321,7 @@ func TestRegistrationBindingRequired(t *testing.T) {
 	}
 }
 
-// Claim (owner decision: the input principal's uid MUST equal the leased
+// Claim (H0: the input principal's uid MUST equal the leased
 // R_i): Begin with an input principal uid (22001) other than the leased uid
 // (2001) refuses run_isolation_unqualified (exit 16) before any Source or
 // Keymaker contact, writes no record and returns the lease; BeginChild
@@ -344,6 +329,7 @@ func TestRegistrationBindingRequired(t *testing.T) {
 func TestInputUIDIsLeasedUID(t *testing.T) {
 	e := newEnv(t)
 	l := e.build()
+	l.Restart(context.Background())
 	_, err := l.Launcher.Begin(context.Background(), event, principalFor(22001))
 	v, x := codes.Exit(err, 0, false)
 	if !codes.Is(err, codes.IsolationUnqualified) || x != nil || v.Status != 16 || v.Detail["uid"] != "2001" || v.Detail["input_uid"] != "22001" {
@@ -380,7 +366,7 @@ func TestInputUIDIsLeasedUID(t *testing.T) {
 	}
 }
 
-// Claim (F9): Begin takes the retained event per run. Two Begins with two
+// Claim (per-run event): Begin takes the retained event per run. Two Begins with two
 // different events run concurrently through ONE shared *source.Client using
 // the pinned Source adapter (source.Pinned): each prepare reaches Source
 // with its own event and its own input principal, both runs bind, and the
@@ -404,6 +390,9 @@ func TestConcurrentEvents(t *testing.T) {
 	for i := range events {
 		e.placement = isolation.Fixed(cuid + uint32(i))
 		launchers = append(launchers, e.build().Launcher)
+	}
+	for _, l := range launchers {
+		l.Restart(context.Background())
 	}
 	var wg sync.WaitGroup
 	runs := make([]*launcher.Run, len(events))

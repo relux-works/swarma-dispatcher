@@ -100,7 +100,7 @@ func TestOpenHelloEager(t *testing.T) {
 
 const lateBy = timeout + 20*time.Millisecond
 
-// Claim (F1 scenario b, "a late success is read, never answered by a
+// Claim (H2 late reply, "a late success is read, never answered by a
 // resend"): a bind success that arrives 20 ms after the request's own
 // timeout_ms is read inside the local read budget; exactly one request frame
 // was written, no byte reached the peer while its reply was owed, and the end
@@ -121,7 +121,7 @@ func TestBindLateReplyNoResend(t *testing.T) {
 	}
 }
 
-// Claim (F1 scenario a and the positive control "a read correlated retryable
+// Claim (H2 exact retry and the positive control "a read correlated retryable
 // refusal, then the exact retry succeeds"): a correlated
 // request_deadline_exceeded that arrives 20 ms after timeout_ms is READ, and
 // only then the identical bytes (same ID, same body, same timeout_ms inside
@@ -170,7 +170,7 @@ func TestBindTimeoutReplyOwedHeld(t *testing.T) {
 	if c.Requests() != 1 || len(script.Binds()) != 1 || script.Overlaps() != 0 || c.Live() || d.Dials() != 1 {
 		t.Fatalf("requests=%d binds=%d overlaps=%d live=%v dials=%d", c.Requests(), len(script.Binds()), script.Overlaps(), c.Live(), d.Dials())
 	}
-	if want := keymaker.ReadBudget(1); waited < want || want != time.Millisecond+keymaker.HolderFrameReportBudget+keymaker.ReadMargin {
+	if want := keymaker.ReadBudget(1); waited < want || want != 2*keymaker.HolderFrameReportBudget+keymaker.ReadMargin {
 		t.Fatalf("gave up after %v, before the read budget %v", waited, want)
 	}
 	var r *codes.Refusal

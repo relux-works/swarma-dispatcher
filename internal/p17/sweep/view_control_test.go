@@ -57,12 +57,13 @@ func enumerate(t *testing.T, root, mountinfo string, uid uint32) sweep.Enumerati
 // Claim (procfs view, control across revisions): a listing that shows no
 // process under R_i is NOT a zero-process proof when the procfs is mounted
 // with hidepid=2 (R_i's pids are hidden from the non-root launcher) or with
-// subset=pid; the same listing on a procfs mounted with hidepid=0 is proved.
+// subset=pid (refused conservatively, though kernel documentation says pid
+// directories stay visible); the same listing with hidepid=0 is proved.
 func TestHiddenPidsAreNotAProof(t *testing.T) {
 	for _, opts := range []string{"rw,hidepid=2", "rw,hidepid=invisible", "rw,subset=pid"} {
 		root, mi := controlTree(t, opts)
 		if e := enumerate(t, root, mi, ri); e.Proved() {
-			t.Errorf("%s: an empty listing on a view that hides pids was reported as proved", opts)
+			t.Errorf("%s: an unqualified or conservatively refused view was reported as proved", opts)
 		}
 	}
 	root, mi := controlTree(t, "rw,hidepid=0")

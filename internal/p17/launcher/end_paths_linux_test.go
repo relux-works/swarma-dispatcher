@@ -104,7 +104,7 @@ func gone(t *testing.T, e *env, pid string) bool {
 	return errors.Is(err, os.ErrNotExist)
 }
 
-// Claim (F2, "if the ending intent cannot be persisted: send no end, return
+// Claim (H5, "if the ending intent cannot be persisted: send no end, return
 // run_end_unknown with the cause; teardown, km.Close, the uid sweep and the
 // quarantine evaluation run on every return path"): with a store that
 // refuses the bound -> ending update, End returns run_end_unknown (exit 17,
@@ -160,7 +160,7 @@ func TestEndIntentRefused(t *testing.T) {
 	}
 }
 
-// Claim (F2, the later durable steps): when the store refuses to record
+// Claim (H5, the later durable steps): when the store refuses to record
 // teardown, or refuses the ending -> ended update after an exact ack was
 // read, End still ran teardown and the uid sweep, returns run_end_unknown
 // with the store's error, keeps the uid quarantined (the gate saw ack=false
@@ -224,7 +224,7 @@ func orphan(t *testing.T, e *env, key string, uid uint32, pid int) {
 	must(t, err)
 }
 
-// Claim (F2, the restart path: "endOrphan sweeps even when its Update
+// Claim (H6, the restart path: "endOrphan sweeps even when its Update
 // fails"): at restart, with a store that refuses the bound -> ending update,
 // the bound orphan of a dead launcher gets NO end frame but its uid is still
 // swept (the orphan process is killed), the report carries run_end_unknown
@@ -298,11 +298,11 @@ func TestRestartStoreRefuses(t *testing.T) {
 	}
 }
 
-// Claim (F8, exit classification of durable failures in Begin): (1) Keymaker
+// Claim (durable failure classification in Begin): (1) Keymaker
 // bound the run but the bound update is refused: run_bind_unknown, exit 17,
 // with the store's error as cause and run_id in the detail; the record stays
 // binding and the uid quarantined. (2) The binding record is refused before
-// any append: run_bind_unknown with record=none and bind_sent=false, zero
+// any append: run_bind_unavailable with record=none and bind_sent=false, zero
 // bind frames, no record, and the unused lease is returned. (3) The binding
 // commit fails with durability uncertain: run_bind_unknown with
 // record=uncertain, zero bind frames, and the uid stays quarantined. None is
@@ -334,7 +334,10 @@ func TestBeginDurability(t *testing.T) {
 		e := newEnv(t)
 		gated(e).create = func(*runrecord.Record) error { return errStoreRefused }
 		_, err := e.build().Begin(context.Background(), "input-1")
-		v := exit17(t, err)
+		v, x := codes.Exit(err, 0, false)
+		if !codes.Is(err, codes.BindUnavailable) || x != nil || v.Status != 1 {
+			t.Fatalf("clean Create: %v %+v %v", err, v, x)
+		}
 		if !errors.Is(err, errStoreRefused) || v.Detail["record"] != "none" || v.Detail["bind_sent"] != "false" || v.Detail["lease"] != "" {
 			t.Fatalf("%v %+v", err, v)
 		}
@@ -362,7 +365,7 @@ func TestBeginDurability(t *testing.T) {
 	})
 }
 
-// Claim (F8, "an acknowledged end with childKnown=false is classified per
+// Claim (D4, "an acknowledged end with childKnown=false is classified per
 // codes.go, never a zero Verdict with nil error"): End with an exact ack but
 // an unknown child status returns codes.ErrUnclassified with the record
 // ended and the outcome acknowledged; the neighbour with a known child
@@ -385,7 +388,7 @@ func TestEndAckUnknownChild(t *testing.T) {
 	}
 }
 
-// Claim (F8, "surface runrecord.MustExit"): when the failed durable step
+// Claim (journal sync failure requires exit): when the failed durable step
 // wraps the journal's sync failure, the launcher error satisfies
 // launcher.MustExit, the outcome says MustExit and the verdict detail carries
 // must_exit=true, for End and for Begin; the neighbour with an ordinary store

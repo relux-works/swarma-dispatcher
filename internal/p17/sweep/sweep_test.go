@@ -155,7 +155,7 @@ func TestQuarantineRelease(t *testing.T) {
 	operator := sweep.StaticOperatorRelease{}
 	q := sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: exportEvidence, Operator: operator}}
 	const run = "run-a"
-	if err := q.Lease(ri); err != nil {
+	if err := q.Lease(ri, run); err != nil {
 		t.Fatal(err)
 	}
 	if err := q.Lease(ri); !errors.Is(err, sweep.ErrQuarantined) {
@@ -165,7 +165,7 @@ func TestQuarantineRelease(t *testing.T) {
 	if !proved.Proved() {
 		t.Fatal("setup: empty tree not proved")
 	}
-	refuse := func(name string, d sweep.ReleaseDecision, err error) {
+	refuse := func(t *testing.T, name string, d sweep.ReleaseDecision, err error) {
 		t.Helper()
 		if !errors.Is(err, sweep.ErrQuarantined) || d.Release || !q.Held(ri) {
 			t.Fatalf("%s: released: %+v err=%v", name, d, err)
@@ -173,7 +173,7 @@ func TestQuarantineRelease(t *testing.T) {
 	}
 	// Zero processes and end ACK, but no export or operator release.
 	d, err := q.Release(run, ri, true, proved)
-	refuse("no export or operator release", d, err)
+	refuse(t, "no export or operator release", d, err)
 	if d.WorkProductExportSatisfied || d.OperatorReleased || !d.Proved || !d.EndAcknowledged {
 		t.Fatalf("decision inputs %+v", d)
 	}
@@ -193,7 +193,7 @@ func TestQuarantineRelease(t *testing.T) {
 			t.Fatalf("setup: %+v", unreadable)
 		}
 		d, err := q.Release(run, ri, true, unreadable)
-		refuse("export with an unreadable pid", d, err)
+		refuse(t, "export with an unreadable pid", d, err)
 		if !d.WorkProductExportSatisfied || d.Proved {
 			t.Fatalf("decision inputs %+v", d)
 		}
@@ -203,28 +203,28 @@ func TestQuarantineRelease(t *testing.T) {
 	})
 	// Export and proof, but no end ACK.
 	d, err = q.Release(run, ri, false, sweep.Enumerate(p.View(), ri))
-	refuse("export without end ACK", d, err)
+	refuse(t, "export without end ACK", d, err)
 	// Export and ACK, but a live child under R_i.
 	add(t, p, 50, [4]uint32{ri, ri, ri, ri})
 	d, err = q.Release(run, ri, true, sweep.Enumerate(p.View(), ri))
-	refuse("live child", d, err)
+	refuse(t, "live child", d, err)
 	if err := p.Remove(50); err != nil {
 		t.Fatal(err)
 	}
 	// Proof for another uid, and a failed enumeration.
 	d, err = q.Release(run, ri, true, sweep.Enumerate(p.View(), ri+1))
-	refuse("another uid's proof", d, err)
+	refuse(t, "another uid's proof", d, err)
 	d, err = q.Release(run, ri, true, sweep.Enumerate(sweep.View{ProcRoot: p.Root + "/missing", MountInfo: p.MountInfoPath()}, ri))
-	refuse("failed enumeration", d, err)
+	refuse(t, "failed enumeration", d, err)
 	// Failed export status, and the refusing default.
 	broken := sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: failingWorkProductExport{errors.New("export evidence unavailable")}, Operator: operator}}
-	broken.Hold(ri)
+	broken.Hold(ri, run)
 	d, err = broken.Release(run, ri, true, sweep.Enumerate(p.View(), ri))
 	if !errors.Is(err, sweep.ErrQuarantined) || d.Release || d.WorkProductExportSatisfied || d.WorkProductExportErr == nil || !broken.Held(ri) {
 		t.Fatalf("unreadable export evidence: %+v err=%v", d, err)
 	}
 	var unpinned sweep.Quarantine
-	unpinned.Hold(ri)
+	unpinned.Hold(ri, run)
 	d, err = unpinned.Release(run, ri, true, sweep.Enumerate(p.View(), ri))
 	if !errors.Is(err, sweep.ErrQuarantined) || d.Release || !codes.IsUnpinned(d.WorkProductExportErr) || !codes.IsUnpinned(d.OperatorErr) || !unpinned.Held(ri) {
 		t.Fatalf("unpinned seams: %+v err=%v", d, err)
@@ -237,7 +237,7 @@ func TestQuarantineRelease(t *testing.T) {
 	if err != nil || !d.Release || q.Held(ri) {
 		t.Fatalf("positive control: %+v err=%v", d, err)
 	}
-	if err := q.Lease(ri); err != nil {
+	if err := q.Lease(ri, run); err != nil {
 		t.Fatalf("lease after release: %v", err)
 	}
 	// Operator release: proof plus an explicit release for this run and uid,
@@ -246,17 +246,17 @@ func TestQuarantineRelease(t *testing.T) {
 	delete(exportEvidence, run)
 	operator[run] = ri + 1
 	d, err = q.Release(run, ri, false, sweep.Enumerate(p.View(), ri))
-	refuse("operator release for another uid", d, err)
+	refuse(t, "operator release for another uid", d, err)
 	operator[run] = ri
 	d, err = q.Release(run, ri, false, sweep.Enumerate(p.View(), ri))
 	if err != nil || !d.Release || !d.OperatorReleased || q.Held(ri) {
 		t.Fatalf("operator release: %+v err=%v", d, err)
 	}
 	// Operator release never bypasses the proof.
-	q.Hold(ri)
+	q.Hold(ri, run)
 	add(t, p, 51, [4]uint32{0, ri, 0, 0})
 	d, err = q.Release(run, ri, false, sweep.Enumerate(p.View(), ri))
-	refuse("operator release with a live process", d, err)
+	refuse(t, "operator release with a live process", d, err)
 }
 
 // Claim: ReleaseAllowed is proof AND (operator OR (ACK AND export)); every other combination is false.

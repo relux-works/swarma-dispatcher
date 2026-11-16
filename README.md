@@ -368,13 +368,17 @@ codec respectively, at the exact versions in `go.mod`. Nil wires still select
 generation reader, work-product export and operator release seams also refuse
 by default. The Source adapter implements its documented closed protocol
 without importing any upstream internal package. The packages follow the P17
-hook interface text r2.13 (sha256
-`6849a4edc98b8aa4b257498f5c5c1efa9d5b25d09187474ee7ef284c89eb607a`).
+hook interface text r2.15 (sha256
+`5b804ba49187df4e7e823703b2e65b569b3dd63cc370f5989e86436b05415246`).
 
 The native Keymaker hello is negotiated eagerly at connect, before the durable
 binding record. A connect or hello failure is `run_bind_unavailable` with no
 run record, and the next attempt starts from a fresh Source prepare. A
-successful bind must become durably bound before input can be released. The
+successful bind must become durably bound before input can be released.
+A bind that cannot start within `keymaker.BindStartWindow` (1500 ms after
+hello) is never written and durably becomes terminal `unsent`; only a
+never-called write qualifies, while short, failed and timed-out writes
+(including zero reported bytes) remain `binding`, HELD, exit 17. The
 no-effect refusal table is empty until the pinned Keymaker registry explicitly
 publishes it: correlation and nonretryability alone never make a refusal
 terminal. All such native bind refusals currently remain HELD, exit 17, with
@@ -392,8 +396,25 @@ A uid leased before any run record exists returns to the pool on a failure
 only when the privilege-drop helper was never invoked for that lease and the
 zero-process proof succeeds on a qualified procfs view; otherwise it is
 quarantined. The input principal's uid must equal the leased uid.
+Quarantine, lease ownership and helper marks are durable in a separate
+state-directory ledger; `Begin`, `BeginChild` and `RetryEnd` refuse until
+`Restart` completes, and no uid with a non-terminal record is leased.
+The opt-in Keymaker Unix dialer checks protected ancestors, symlinks, exact
+socket owner/group/mode, post-connect identity and kernel peer uid before
+any byte is sent; a nil dialer is a definite named unpinned refusal.
 
-A uid leaves quarantine only with the zero-process proof AND (operator release
+Every launcher of one L must share `Deps.Quarantine` and `Deps.Records`, and
+all `launcher.New` calls must precede runs. `Restart` holds `launcher.lock`
+until the shared quarantine's `Close`; the reaper must acquire that lock
+before opening the record store, in addition to the journal's own lock.
+`runrecord.Initialize` validates without creating anything; wiring must keep
+an out-of-band durable fresh/established installation fact and choose
+`Initialize` again after a restart before the first real record, not infer
+that entry from missing files.
+
+A terminal `refused` or `unsent` record uses the same helper-never-invoked
+and zero-process rule as a pre-record failure; no end is owed.
+Other used leases leave quarantine only with the zero-process proof AND (operator release
 OR (acknowledged end AND work-product export)). The export seam reports exactly
 `exported`, explicit `no_working_copy`, or `not_proved`. The first two satisfy
 the export obligation; missing, zero-value, unknown, partial or failed evidence

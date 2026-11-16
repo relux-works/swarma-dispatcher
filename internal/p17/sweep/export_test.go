@@ -2,6 +2,8 @@ package sweep_test
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/relux-works/swarma-dispatcher/internal/p17/sweep"
@@ -42,7 +44,7 @@ func TestWorkProductExport(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			q := sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: c.seam, Operator: sweep.StaticOperatorRelease{}}}
-			q.Hold(ri)
+			q.Hold(ri, "run")
 			d, err := q.Release("run", ri, true, proof)
 			if d.Release != c.want || d.WorkProductExportSatisfied != c.want || q.Held(ri) == c.want || (c.want && err != nil) || (!c.want && !errors.Is(err, sweep.ErrQuarantined)) {
 				t.Fatalf("decision %+v error %v", d, err)
@@ -58,6 +60,15 @@ func TestWorkProductExport(t *testing.T) {
 func TestExportReleaseGates(t *testing.T) {
 	p := tree(t)
 	proof := sweep.Enumerate(p.View(), ri)
+	add(t, p, 60, [4]uint32{ri, ri, ri, ri})
+	live := sweep.Enumerate(p.View(), ri)
+	if err := os.WriteFile(filepath.Join(p.Root, "60", "status"), []byte("invalid status"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	unreadable := sweep.Enumerate(p.View(), ri)
+	if !proof.Proved() || !live.Qualified() || len(live.Matched) != 1 || !unreadable.Qualified() || len(unreadable.Unreadable) != 1 {
+		t.Fatal("fixture scans not qualified")
+	}
 	for _, c := range []struct {
 		name          string
 		ack, operator bool
@@ -67,9 +78,9 @@ func TestExportReleaseGates(t *testing.T) {
 		{"export-and-ack", true, false, proof, true},
 		{"export-no-ack", false, false, proof, false},
 		{"operator-no-ack", false, true, proof, true},
-		{"export-live", true, false, sweep.Enumeration{UID: ri, Matched: []int{1}}, false},
-		{"operator-live", false, true, sweep.Enumeration{UID: ri, Matched: []int{1}}, false},
-		{"operator-unreadable", false, true, sweep.Enumeration{UID: ri, Unreadable: []int{1}}, false},
+		{"export-live", true, false, live, false},
+		{"operator-live", false, true, live, false},
+		{"operator-unreadable", false, true, unreadable, false},
 		{"operator-wrong-uid", false, true, sweep.Enumeration{UID: ri + 1}, false},
 		{"export-failed-proof", true, false, sweep.Enumeration{UID: ri, Err: errors.New("synthetic proof failure")}, false},
 	} {
@@ -79,7 +90,7 @@ func TestExportReleaseGates(t *testing.T) {
 				operator["run"] = ri
 			}
 			q := sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: sweep.StaticWorkProductExport{"run": sweep.Exported}, Operator: operator}}
-			q.Hold(ri)
+			q.Hold(ri, "run")
 			d, err := q.Release("run", ri, c.ack, c.proof)
 			if d.Release != c.want || q.Held(ri) == c.want || (c.want && err != nil) || (!c.want && !errors.Is(err, sweep.ErrQuarantined)) {
 				t.Fatalf("decision %+v error %v", d, err)

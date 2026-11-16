@@ -7,8 +7,8 @@
 // H5; Restart is the H6 startup sweep and the reaper's table. Nothing here
 // spawns a process, reads policy, or dispatches; those stay with S2-M0.
 //
-// Hook text of record: P17 Curator-side hook interface r2.13 (sha256
-// 6849a4edc98b8aa4b257498f5c5c1efa9d5b25d09187474ee7ef284c89eb607a).
+// Hook text of record: P17 Curator-side hook interface r2.15 (sha256
+// 5b804ba49187df4e7e823703b2e65b569b3dd63cc370f5989e86436b05415246).
 //
 // Order of H2 (steps 4 and 5): validate on Source, then one fresh
 // Keymaker connection WITH its eager hello, then the durable binding record,
@@ -36,6 +36,7 @@ import (
 	"errors"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/runorigin"
@@ -52,7 +53,10 @@ import (
 // Config is the launcher's own configuration. The bind attempt limit is not
 // here: it is the fixed constant keymaker.BindAttemptLimit.
 type Config struct {
-	LauncherUID uint32
+	// StateDirectory is the private launcher directory. Empty uses the concrete
+	// runrecord.Store directory; RecordStore decorators must supply it explicitly.
+	StateDirectory string
+	LauncherUID    uint32
 	// Station is the complete current station registration number.
 	Station string
 	// RequestTimeout is the Keymaker per-request timeout (1..2000 ms).
@@ -101,8 +105,10 @@ type Deps struct {
 
 // Launcher is L.
 type Launcher struct {
-	cfg Config
-	d   Deps
+	cfg       Config
+	d         Deps
+	ready     atomic.Bool
+	restartMu sync.Mutex
 }
 
 var (
@@ -127,13 +133,13 @@ var (
 // package that wraps a journal sync failure means the process must exit and
 // must not continue with state I/O. Refusals built here also carry
 // Detail["must_exit"]="true" in that case.
-func MustExit(err error) bool { return runrecord.MustExit(err) }
+func MustExit(err error) bool { return runrecord.MustExit(err) || errors.Is(err, sweep.ErrNotDurable) }
 
 // durable builds the refusal for a failed durable step and marks the
 // process-exit duty.
 func durable(code codes.Code, op string, cause error) *codes.Refusal {
 	r := codes.Refuse(code, op, cause)
-	if runrecord.MustExit(cause) {
+	if MustExit(cause) {
 		r.With("must_exit", "true")
 	}
 	return r
@@ -149,7 +155,12 @@ func defaultNonce() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// New validates the composition.
+// New validates the composition. All New calls sharing a Quarantine must
+// happen before any run: they configure its Gate and record guard. Every
+// launcher of one L must share both the Quarantine and the RecordStore.
+// The wiring must call Restart before Begin or RetryEnd and close the shared
+// Quarantine only when L exits. Restart owns launcher.lock even before the
+// first journal transition; a reaper takes that lock BEFORE opening the store.
 func New(cfg Config, d Deps) (*Launcher, error) {
 	if d.Source == nil || d.Records == nil || d.Incarnations == nil {
 		return nil, errors.New("launcher: source client, record store and incarnation reader are required")
@@ -188,7 +199,26 @@ func New(cfg Config, d Deps) (*Launcher, error) {
 		d.OperatorRelease = sweep.UnpinnedOperatorRelease{}
 	}
 	if d.Quarantine == nil {
-		d.Quarantine = &sweep.Quarantine{}
+		return nil, errors.New("launcher: shared quarantine required")
+	}
+	if cfg.StateDirectory == "" {
+		if s, ok := d.Records.(interface{ StateDirectory() string }); ok {
+			cfg.StateDirectory = s.StateDirectory()
+		}
+	}
+	if cfg.StateDirectory == "" {
+		return nil, errors.New("launcher: state directory required")
+	}
+	d.Quarantine.Guard = func(uid uint32, except string) bool {
+		for _, key := range d.Records.Keys() {
+			if key == except {
+				continue
+			}
+			if r, ok := d.Records.Get(key); ok && r.ChildUID == uid && (r.Validate() != nil || !r.Terminal()) {
+				return true
+			}
+		}
+		return false
 	}
 	if d.Quarantine.Gate.WorkProductExport == nil {
 		d.Quarantine.Gate.WorkProductExport = d.WorkProductExport
@@ -199,21 +229,28 @@ func New(cfg Config, d Deps) (*Launcher, error) {
 	if d.Nonce == nil {
 		d.Nonce = defaultNonce
 	}
-	// Every sweep-mode helper invocation is recorded against the uid's lease.
-	d.Killer = helperKiller{k: d.Killer, q: d.Quarantine}
 	return &Launcher{cfg: cfg, d: d}, nil
 }
 
 // helperKiller records every sweep-mode invocation of the privilege-drop
 // helper in the quarantine before it runs.
 type helperKiller struct {
-	k sweep.Killer
-	q *sweep.Quarantine
+	k   sweep.Killer
+	q   *sweep.Quarantine
+	key string
 }
 
 func (h helperKiller) KillAll(ctx context.Context, uid uint32) error {
-	h.q.MarkHelper(uid)
+	if err := h.q.MarkHelper(uid, h.key); err != nil {
+		return err
+	}
 	return h.k.KillAll(ctx, uid)
+}
+
+func (l *Launcher) sweepUID(ctx context.Context, uid uint32, key string) sweep.Outcome {
+	return l.d.Quarantine.WithLease(uid, key, func() sweep.Outcome {
+		return sweep.Sweep(ctx, l.view(), uid, helperKiller{k: l.d.Killer, q: l.d.Quarantine, key: key}, l.cfg.SweepBudget)
+	})
 }
 
 // Run is one bound run owned by this launcher process.
@@ -270,16 +307,20 @@ func (l *Launcher) BeginChild(ctx context.Context, parent *Run, inputPrincipal k
 	return l.begin(ctx, nil, inputPrincipal, rec)
 }
 
-// returnLease handles a lease on a Begin path that ends before a run record
-// exists. The lease is returned only when the privilege-drop helper was never
+// returnLease handles a pre-record lease or the explicit terminal Refused
+// and Unsent paths, neither of which owes a Keymaker end. The lease is returned only when the privilege-drop helper was never
 // invoked for it AND the D5a enumeration on a qualified view shows zero
 // processes; the proof is never skipped, and a helper invocation is never
 // excused by a clean proof. Otherwise the uid is quarantined; the Begin
 // error keeps its code and reports that in its detail.
-func (l *Launcher) returnLease(uid uint32, err error) error {
+func (l *Launcher) returnLease(uid uint32, key string, err error) error {
 	e := sweep.Enumerate(l.view(), uid)
-	if l.d.Quarantine.ReturnUnused(uid, e) == nil {
+	rerr := l.d.Quarantine.ReturnUnused(uid, e, key)
+	if rerr == nil {
 		return err
+	}
+	if MustExit(rerr) {
+		return durable(codes.IsolationUnqualified, "quarantine is not durable; process must exit", errors.Join(err, rerr))
 	}
 	reason := "enumeration failed or procfs view not qualified"
 	switch {
@@ -291,6 +332,9 @@ func (l *Launcher) returnLease(uid uint32, err error) error {
 	case len(e.Unreadable) > 0:
 		reason = "unreadable pid"
 	}
+	if nerr := l.d.Quarantine.Note(uid, key, reason); nerr != nil {
+		return durable(codes.IsolationUnqualified, "quarantine is not durable; process must exit", errors.Join(err, nerr))
+	}
 	var r *codes.Refusal
 	if errors.As(err, &r) && r != nil {
 		r.With("lease", "quarantined").With("lease_uid", utoa(uid)).With("lease_reason", reason)
@@ -300,6 +344,9 @@ func (l *Launcher) returnLease(uid uint32, err error) error {
 }
 
 func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPrincipal keymaker.Principal, parent *runrecord.Record) (_ *Run, err error) {
+	if !l.ready.Load() {
+		return nil, codes.Refuse(codes.IsolationUnqualified, "launcher Restart has not completed", nil)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -315,8 +362,12 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 	if err != nil {
 		return nil, err
 	}
-	if err := l.d.Quarantine.Lease(dec.ChildUID); err != nil {
-		return nil, codes.Refuse(codes.IsolationUnqualified, "child uid quarantined", err)
+	leaseKey, err := l.nonce()
+	if err != nil {
+		return nil, err
+	}
+	if err := l.d.Quarantine.Lease(dec.ChildUID, leaseKey); err != nil {
+		return nil, durable(codes.IsolationUnqualified, "child uid quarantined; quarantine is not durable if process exit is required", err)
 	}
 	// From here until a run record exists the lease is returned on every
 	// return path (after the zero-process proof), so that a retryable
@@ -324,7 +375,7 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 	recorded := false
 	defer func() {
 		if err != nil && !recorded {
-			err = l.returnLease(dec.ChildUID, err)
+			err = l.returnLease(dec.ChildUID, leaseKey, err)
 		}
 	}()
 	// The input principal is R_i: its uid must be the leased uid. This is
@@ -394,10 +445,10 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 		return nil, err
 	}
 	// H2 step 4: one fresh direct Keymaker connection and its hello, then the
-	// durable record. Hello carries no mutation: a connect or hello failure
-	// is run_bind_unavailable with no record.
+	// durable record. Hello is a native request that the holder checks and
+	// audits; this path promises no run record and no bind.
 	if l.d.Keymaker == nil {
-		return nil, codes.Refuse(codes.BindUnavailable, "no keymaker dialer", nil)
+		return nil, codes.Unpinned("keymaker dialer", keymaker.Pin)
 	}
 	km, err := keymaker.Open(ctx, l.d.Keymaker, l.d.KeymakerWire, l.cfg.RequestTimeout)
 	if err != nil {
@@ -448,8 +499,13 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 		case errors.Is(err, source.ErrOrigin):
 			return nil, codes.Refuse(codes.OriginRefused, "origin not encodable as an admission origin", err)
 		}
-		return nil, codes.Refuse(codes.BindUnknown, "bind request not encodable; nothing sent", err).With("record", "none").With("bind_sent", "false")
+		return nil, codes.Refuse(codes.OriginRefused, "bind request not encodable; nothing sent", err).With("record", "none").With("bind_sent", "false")
 	}
+	if err := l.d.Quarantine.Transfer(dec.ChildUID, leaseKey, nonce); err != nil {
+		_ = km.Close()
+		return nil, durable(codes.IsolationUnqualified, "quarantine is not durable", err)
+	}
+	leaseKey = nonce
 	if err := l.d.Records.Create(rec); err != nil {
 		_ = km.Close()
 		_, exists := l.d.Records.Get(nonce)
@@ -459,23 +515,26 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 			recorded = true
 			return nil, durable(codes.BindUnknown, "binding record commit failed; bind not sent", err).With("key", nonce).With("record", "uncertain").With("bind_sent", "false")
 		}
-		return nil, durable(codes.BindUnknown, "binding record refused; bind not sent", err).With("record", "none").With("bind_sent", "false")
+		return nil, durable(codes.BindUnavailable, "binding record refused; bind not sent", err).With("record", "none").With("bind_sent", "false")
 	}
 	recorded = true
 	// H2 step 5 and 6. The bind frame is written only now.
 	res, _, err := km.Bind(bindID, req)
 	if err != nil {
 		_ = km.Close()
+		if errors.Is(err, keymaker.ErrUnsent) && !km.BindWriteStarted() {
+			if _, uerr := l.d.Records.Update(nonce, func(r *runrecord.Record) error { r.State = runrecord.Unsent; return nil }); uerr != nil {
+				return nil, durable(codes.BindUnknown, "unsent update not durable; record stays binding", uerr).With("key", nonce)
+			}
+			return nil, l.returnLease(dec.ChildUID, nonce, codes.Refuse(codes.BindUnavailable, "bind not started within post-hello guard", err))
+		}
 		if errors.Is(err, keymaker.ErrRefused) && codes.Is(err, codes.BindRefused) {
 			if _, uerr := l.d.Records.Update(nonce, func(r *runrecord.Record) error { r.State = runrecord.Refused; return nil }); uerr != nil {
 				// The record is still binding: restart will HOLD it.
 				return nil, durable(codes.BindUnknown, "no-effect bind refusal not durably recorded; record stays binding", errors.Join(uerr, err)).With("key", nonce)
 			}
-			// Nothing was bound or spawned, but the uid still passes the release
-			// gate: proof plus an operator release, since no end and no export
-			// can exist for a run that never ran.
-			_, _ = l.d.Quarantine.Release(nonce, dec.ChildUID, false, sweep.Enumerate(l.view(), dec.ChildUID))
-			return nil, err
+			// A terminal refusal with no bind uses the explicit pre-record rule.
+			return nil, l.returnLease(dec.ChildUID, nonce, err)
 		}
 		// HELD: the record stays binding.
 		if _, ok := codes.CodeOf(err); !ok {
@@ -520,7 +579,9 @@ func (r *Run) Spawn(spawn func(childUID uint32) (incarnation.Incarnation, error)
 		return errors.New("launcher: child already recorded")
 	}
 	// spawn is the helper's spawn mode: recorded before it runs.
-	r.l.d.Quarantine.MarkHelper(r.ChildUID)
+	if err := r.l.d.Quarantine.MarkHelper(r.ChildUID, r.Key); err != nil {
+		return err
+	}
 	child, err := spawn(r.ChildUID)
 	if err != nil {
 		return err
@@ -703,10 +764,14 @@ func (r *Run) End(ctx context.Context, childStatus int, childKnown bool, teardow
 	out.Acknowledged, endErr = l.recordEnd(r.Key, runID, ackRead, endErr, &out)
 
 	// The uid sweep and the quarantine evaluation, on every path.
-	out.Sweep = sweep.Sweep(ctx, l.view(), r.ChildUID, l.d.Killer, l.cfg.SweepBudget)
+	out.Sweep = l.sweepUID(ctx, r.ChildUID, r.Key)
 	var rerr error
 	out.Release, rerr = l.d.Quarantine.Release(r.Key, r.ChildUID, out.Acknowledged, out.Sweep.Final)
 	out.UIDReleased = rerr == nil
+	if MustExit(rerr) || MustExit(out.Sweep.Err) {
+		out.MustExit = true
+		endErr = endUnknown("quarantine is not durable; process must exit", errors.Join(endErr, rerr, out.Sweep.Err), r.Key, runID)
+	}
 
 	v, verr := codes.Exit(endErr, childStatus, childKnown)
 	if verr != nil {
@@ -723,6 +788,9 @@ func (r *Run) End(ctx context.Context, childStatus int, childKnown bool, teardow
 // recorded exact request. Teardown here is the uid sweep. Every failure of a
 // durable step is run_end_unknown with the cause.
 func (l *Launcher) RetryEnd(ctx context.Context, key string) (EndOutcome, error) {
+	if !l.ready.Load() {
+		return EndOutcome{}, codes.Refuse(codes.IsolationUnqualified, "launcher Restart has not completed", nil)
+	}
 	rec, ok := l.d.Records.Get(key)
 	if !ok || rec.State != runrecord.Ending {
 		return EndOutcome{}, errors.New("launcher: retry end requires an ending record")
@@ -748,11 +816,15 @@ func (l *Launcher) finishEnd(ctx context.Context, key string, rec *runrecord.Rec
 			_ = km.Close()
 		}
 	}
-	out.Sweep = sweep.Sweep(ctx, l.view(), rec.ChildUID, l.d.Killer, l.cfg.SweepBudget)
+	out.Sweep = l.sweepUID(ctx, rec.ChildUID, key)
 	out.Acknowledged, endErr = l.recordEnd(key, rec.RunID, ackRead, endErr, &out)
 	var rerr error
 	out.Release, rerr = l.d.Quarantine.Release(key, rec.ChildUID, out.Acknowledged, out.Sweep.Final)
 	out.UIDReleased = rerr == nil
+	if MustExit(rerr) || MustExit(out.Sweep.Err) {
+		out.MustExit = true
+		endErr = endUnknown("quarantine is not durable; process must exit", errors.Join(endErr, rerr, out.Sweep.Err), key, rec.RunID)
+	}
 	if endErr != nil {
 		v, verr := codes.Exit(endErr, 0, false)
 		if verr != nil {
@@ -778,32 +850,40 @@ type Report struct {
 }
 
 // releaseTerminal re-evaluates, at restart, a uid on which every record is
-// terminal. The quarantine is in memory, so without this every uid a
-// previous process had released would stay unleasable. Every input is
-// re-derived: a fresh zero-process proof, and for each ended record the
-// release gate with its recorded acknowledgement. A refused record never
-// reached bound, so nothing ever ran under its lease: the proof alone
-// returns it. One failing record keeps the uid quarantined.
+// terminal. The durable hold is removed only after re-deriving a fresh
+// zero-process proof and, for ended records, the release gate with their
+// recorded acknowledgements. Refused and Unsent explicitly use the
+// helper-never-invoked AND zero-process rule; they owe no Keymaker end.
+// One failing record keeps the uid quarantined.
 func (l *Launcher) releaseTerminal(uid uint32, recs []*runrecord.Record) bool {
 	e := sweep.Enumerate(l.view(), uid)
 	if !e.Proved() {
 		return false
 	}
-	endedKey := ""
+	entry, ok := l.d.Quarantine.Entry(uid)
+	if !ok {
+		return false
+	}
+	var owned *runrecord.Record
 	for _, rec := range recs {
-		if rec.State != runrecord.Ended {
-			continue
+		if rec.Key == entry.Holder {
+			owned = rec
 		}
-		if !l.d.Quarantine.Gate.Decide(rec.Key, uid, rec.EndAcknowledged, e).Release {
+		if rec.State == runrecord.Ended && !l.d.Quarantine.Gate.Decide(rec.Key, uid, rec.EndAcknowledged, e).Release {
 			return false
 		}
-		endedKey = rec.Key
 	}
-	if endedKey != "" {
-		_, err := l.d.Quarantine.Release(endedKey, uid, true, e)
+	// Historical terminal records do not own the current lease. In particular,
+	// lexical record order must never choose whose hold is removed. An entry
+	// with no covering record remains an operator-recovery quarantine.
+	if owned == nil {
+		return false
+	}
+	if owned.State == runrecord.Ended {
+		_, err := l.d.Quarantine.Release(owned.Key, uid, owned.EndAcknowledged, e)
 		return err == nil
 	}
-	return l.d.Quarantine.ReturnUnused(uid, e) == nil
+	return l.d.Quarantine.ReturnUnused(uid, e, owned.Key) == nil
 }
 
 // Restart is H6: the startup sweep and the reaper table. Every persisted run
@@ -814,8 +894,14 @@ func (l *Launcher) releaseTerminal(uid uint32, recs []*runrecord.Record) bool {
 // is then re-evaluated (releaseTerminal); a uid with any binding, bound or
 // ending record stays held unless the end path of this restart releases it.
 func (l *Launcher) Restart(ctx context.Context) []Report {
+	l.restartMu.Lock()
+	defer l.restartMu.Unlock()
+	l.ready.Store(false)
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := l.d.Quarantine.Start(l.cfg.StateDirectory); err != nil {
+		return []Report{{Code: codes.IsolationUnqualified, Err: durable(codes.IsolationUnqualified, "launcher quarantine startup refused; all pool uids held", err)}}
 	}
 	keys := l.d.Records.Keys()
 	recs := make(map[string]*runrecord.Record, len(keys))
@@ -827,7 +913,9 @@ func (l *Launcher) Restart(ctx context.Context) []Report {
 			continue
 		}
 		recs[key] = rec
-		l.d.Quarantine.Hold(rec.ChildUID)
+		if err := l.d.Quarantine.Hold(rec.ChildUID, key); err != nil {
+			return []Report{{Code: codes.IsolationUnqualified, Err: durable(codes.IsolationUnqualified, "quarantine is not durable", err)}}
+		}
 		if rec.Validate() == nil && rec.Terminal() {
 			terminal[rec.ChildUID] = append(terminal[rec.ChildUID], rec)
 		} else {
@@ -868,7 +956,7 @@ func (l *Launcher) Restart(ctx context.Context) []Report {
 				rep.Code, _ = codes.CodeOf(err)
 			}
 		case runrecord.ActionRetryEnd:
-			out, err := l.RetryEnd(ctx, key)
+			out, err := l.finishEnd(ctx, key, rec, nil)
 			rep.Outcome = &out
 			rep.Err = err
 			if err != nil {
@@ -881,6 +969,10 @@ func (l *Launcher) Restart(ctx context.Context) []Report {
 		}
 		reports = append(reports, rep)
 	}
+	if err := l.d.Quarantine.Error(); err != nil {
+		return append(reports, Report{Code: codes.IsolationUnqualified, Err: durable(codes.IsolationUnqualified, "quarantine is not durable; startup incomplete", err)})
+	}
+	l.ready.Store(true)
 	return reports
 }
 

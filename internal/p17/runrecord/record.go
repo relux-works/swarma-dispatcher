@@ -1,5 +1,5 @@
 // Package runrecord is the durable P17 run record on internal/journal: one
-// record per run, the states of r2.6, and atomic transitions. Each transition
+// record per run, the states of r2.15, and atomic transitions. Each transition
 // is a journal frame followed by the materialized record file. Every record
 // loaded at restart starts out fenced.
 //
@@ -16,9 +16,14 @@ import (
 	"github.com/relux-works/swarma-dispatcher/internal/p17/incarnation"
 )
 
-// State is a run record state. Refused is a repository addition for an exact,
-// definite Keymaker refusal of the bind on the live connection: the run was
-// never bound and is never adopted. The four r2.6 states are unchanged.
+// State is an H6 record state. Refused certifies a correlated no-effect bind
+// refusal. Unsent certifies that this process never called write for the bind
+// frame because its post-hello guard elapsed. An attempted short, failed or
+// timed-out write, even reporting zero bytes, can never justify Unsent.
+// Neither state owes a Keymaker end or is adopted; native hello audit entries
+// may still exist. Death before the durable Unsent update leaves Binding,
+// HELD. Both terminal states return their uid only under the explicit
+// helper-never-invoked AND qualified zero-process rule.
 type State string
 
 const (
@@ -27,19 +32,20 @@ const (
 	Ending  State = "ending"
 	Ended   State = "ended"
 	Refused State = "refused"
+	Unsent  State = "unsent"
 )
 
 // Known reports whether s is a record state.
 func (s State) Known() bool {
 	switch s {
-	case Binding, Bound, Ending, Ended, Refused:
+	case Binding, Bound, Ending, Ended, Refused, Unsent:
 		return true
 	}
 	return false
 }
 
 // Terminal reports whether s admits no further transition.
-func (s State) Terminal() bool { return s == Ended || s == Refused }
+func (s State) Terminal() bool { return s == Ended || s == Refused || s == Unsent }
 
 // Kind and Version identify the record schema.
 const (
@@ -47,7 +53,7 @@ const (
 	Version = 1
 )
 
-// Record is the durable run record (r2.6 H2 step 4 and D2).
+// Record is the durable run record (r2.15 H2 step 4 and D2).
 type Record struct {
 	Version int    `json:"v"`
 	Kind    string `json:"kind"`
@@ -140,7 +146,7 @@ func (r *Record) Validate() error {
 		}
 	}
 	switch r.State {
-	case Binding, Refused:
+	case Binding, Refused, Unsent:
 		if r.RunID != "" || r.Child != nil || r.InputReleased || r.EndRequestID != "" || len(r.EndRequestBody) != 0 || r.EndAcknowledged {
 			return invalid(string(r.State) + " record carries later facts")
 		}
@@ -190,7 +196,7 @@ func CheckTransition(old, next *Record) error {
 	}
 	switch old.State {
 	case Binding:
-		if next.State != Bound && next.State != Refused {
+		if next.State != Bound && next.State != Refused && next.State != Unsent {
 			return forbidden("binding -> " + string(next.State))
 		}
 	case Bound:
@@ -275,7 +281,7 @@ const (
 	ActionOwned RestartAction = "owned"
 	// ActionRetryEnd: ending; retry the end.
 	ActionRetryEnd RestartAction = "retry-end"
-	// ActionNeverAdopt: ended, refused, unknown or incomplete.
+	// ActionNeverAdopt: ended, refused, unsent, unknown or incomplete.
 	ActionNeverAdopt RestartAction = "never-adopt"
 	// ActionUndetermined: liveness of the recorded launcher could not be
 	// read. Nothing is adopted and nothing is ended on that basis.

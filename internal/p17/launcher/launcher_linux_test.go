@@ -112,6 +112,11 @@ func (e *env) nonce() (string, error) {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	e := &env{t: t, jcfg: journalCfg(t)}
+	t.Cleanup(func() {
+		if e.quar != nil {
+			_ = e.quar.Close()
+		}
+	})
 	st, err := runrecord.Initialize(e.jcfg)
 	must(t, err)
 	t.Cleanup(func() { _ = st.Close() })
@@ -134,6 +139,7 @@ func newEnv(t *testing.T) *env {
 	e.quar = &sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: e.exportEvidence, Operator: e.operator}}
 	e.placement = isolation.Fixed(cuid)
 	e.cfg = launcher.Config{
+		StateDirectory: e.jcfg.Directory,
 		LauncherUID:    luid,
 		Station:        "1",
 		RequestTimeout: 100 * time.Millisecond,
@@ -172,7 +178,8 @@ func principalFor(uid uint32) keymaker.Principal {
 // the scenario at the call site.
 type fixtureLauncher struct {
 	*launcher.Launcher
-	e *env
+	e     *env
+	start sync.Once
 }
 
 func (l *fixtureLauncher) nextUID() uint32 {
@@ -185,9 +192,11 @@ func (l *fixtureLauncher) nextUID() uint32 {
 	return cuid
 }
 func (l *fixtureLauncher) Begin(ctx context.Context, _ string) (*launcher.Run, error) {
+	l.start.Do(func() { l.Restart(ctx) })
 	return l.Launcher.Begin(ctx, event, principalFor(l.nextUID()))
 }
 func (l *fixtureLauncher) BeginChild(ctx context.Context, parent *launcher.Run, _ string) (*launcher.Run, error) {
+	l.start.Do(func() { l.Restart(ctx) })
 	return l.Launcher.BeginChild(ctx, parent, principalFor(l.nextUID()))
 }
 
@@ -206,7 +215,7 @@ func (e *env) build() *fixtureLauncher {
 	e.deps.Quarantine = e.quar
 	l, err := launcher.New(e.cfg, e.deps)
 	must(e.t, err)
-	e.l = &fixtureLauncher{l, e}
+	e.l = &fixtureLauncher{Launcher: l, e: e}
 	return e.l
 }
 
@@ -214,6 +223,8 @@ func (e *env) build() *fixtureLauncher {
 func (e *env) reopen() {
 	e.t.Helper()
 	must(e.t, e.store.Close())
+	must(e.t, e.quar.Close())
+	e.quar = &sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: e.exportEvidence, Operator: e.operator}}
 	st, err := runrecord.Open(e.jcfg)
 	must(e.t, err)
 	e.t.Cleanup(func() { _ = st.Close() })
@@ -345,7 +356,7 @@ func TestInputGates(t *testing.T) {
 
 const lateBy = 120 * time.Millisecond // RequestTimeout (100 ms) + 20 ms
 
-// Claim (F1 scenario b at the launcher): a bind success that arrives 20 ms
+// Claim (H2 late reply): a bind success that arrives 20 ms
 // after the request's timeout_ms binds the run with exactly ONE bind frame
 // and no byte written while the reply was owed; the end on the same live
 // connection is then acknowledged, the launcher exits with the child's
@@ -366,7 +377,7 @@ func TestLateBindSuccessThenEnd(t *testing.T) {
 	}
 }
 
-// Claim (F1 scenario a and the positive control "a read correlated retryable
+// Claim (H2 exact retry and the positive control "a read correlated retryable
 // refusal, then the exact retry succeeds"): a correlated
 // request_deadline_exceeded that arrives 20 ms after timeout_ms is read, the
 // identical bind is then written again on the same connection and the run
@@ -465,8 +476,8 @@ func TestBindConnectionGoneHeld(t *testing.T) {
 }
 
 // Claim: an exact Keymaker refusal of the bind is definite; the record moves
-// to refused, which the restart table never adopts; the never-used uid stays
-// quarantined until an operator release with the zero-process proof.
+// to refused, which the restart table never adopts; the never-used uid
+// returns under the helper-never-invoked and zero-process rule.
 func TestBindRefusedDefinite(t *testing.T) {
 	e := newEnv(t)
 	e.km.BindMode = "refuse"
@@ -476,19 +487,13 @@ func TestBindRefusedDefinite(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	keys := e.store.Keys()
-	if len(keys) != 1 || e.record(keys[0]).State != runrecord.Refused || !e.quar.Held(cuid) {
+	if len(keys) != 1 || e.record(keys[0]).State != runrecord.Refused || e.quar.Held(cuid) {
 		t.Fatalf("keys %v held=%v", keys, e.quar.Held(cuid))
 	}
 	// The test wire certifies a test-only no-effect refusal, not a native code.
 	v, exitErr := codes.Exit(err, 0, true)
 	if exitErr != nil || v.Status != 16 || e.record(keys[0]).InputReleased || e.record(keys[0]).Child != nil || len(e.km.Binds()) != 1 {
 		t.Fatalf("no-effect refusal: %+v %v", v, exitErr)
-	}
-	// Only an explicit operator release frees the never-used uid (no end and
-	// no export evidence can exist for it), and only with the zero-process proof.
-	e.operator[keys[0]] = cuid
-	if d, err := e.quar.Release(keys[0], cuid, false, sweep.Enumerate(e.proc.View(), cuid)); err != nil || !d.Release || e.quar.Held(cuid) {
-		t.Fatalf("operator release: %+v %v", d, err)
 	}
 	e.reopen()
 	l = e.build()
@@ -681,7 +686,7 @@ func endBody(t *testing.T, id, runID string) []byte {
 // record whose recorded launcher is alive is owned and left alone. Release
 // gate: the swept uids with export evidence are released, the one without
 // stays quarantined although its end was acknowledged and its child killed.
-// Terminal records (F10): the uid of a record that was already ended is
+// Terminal records (H6): the uid of a record that was already ended is
 // released again from the record, its export evidence and a fresh
 // zero-process proof (2006), and the uid of a refused record after the proof
 // alone (2010); their neighbours with a live process under the uid (2009
@@ -993,7 +998,7 @@ func TestSourceRefusalsNoKeymaker(t *testing.T) {
 // Claim (seams refuse by name, never fall back): with the Keymaker codec
 // unpinned the eager hello refuses by name before any frame or record, and the unused lease is returned; with the sweep helper unpinned an acknowledged
 // end leaves the uid quarantined; with no Keymaker dialer the launch fails
-// with run_bind_unavailable after Source validated and before any record.
+// with a definite named unpinned refusal after Source validated and before any record.
 func TestUnpinnedSeams(t *testing.T) {
 	e := newEnv(t)
 	e.deps.KeymakerWire = nil
@@ -1017,7 +1022,7 @@ func TestUnpinnedSeams(t *testing.T) {
 	e.deps.Keymaker = nil
 	l = e.build()
 	_, err = l.Begin(context.Background(), "input-1")
-	if !codes.Is(err, codes.BindUnavailable) || len(e.store.Keys()) != 0 {
+	if !codes.IsUnpinned(err) || len(e.store.Keys()) != 0 {
 		t.Fatalf("no dialer: %v", err)
 	}
 	if _, _, validates, _ := e.src.Counts(); validates != 1 {

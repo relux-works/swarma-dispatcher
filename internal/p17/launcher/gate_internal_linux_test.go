@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -14,7 +15,40 @@ import (
 	"github.com/relux-works/swarma-dispatcher/internal/p17/incarnation"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/runrecord"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/source"
+	"github.com/relux-works/swarma-dispatcher/internal/p17/sweep"
 )
+
+type countKiller struct{ calls int }
+
+func (k *countKiller) KillAll(context.Context, uint32) error { k.calls++; return nil }
+
+// Claim: the sweep helper is marked before invocation while its own lease is held, and prevents unused return despite a zero-process proof; no invocation permits return.
+func TestSweepHelperMark(t *testing.T) {
+	p, err := fakes.NewProcTree(t.TempDir(), "boot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invoke := range []bool{true, false} {
+		q := &sweep.Quarantine{}
+		if err := q.Lease(2001, "lease"); err != nil {
+			t.Fatal(err)
+		}
+		k := &countKiller{}
+		if invoke {
+			if err := (helperKiller{k: k, q: q, key: "lease"}).KillAll(context.Background(), 2001); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := q.ReturnUnused(2001, sweep.Enumerate(p.View(), 2001), "lease")
+		if invoke {
+			if err == nil || !q.HelperInvoked(2001) || k.calls != 1 {
+				t.Fatalf("helper invocation lost: %v calls=%d", err, k.calls)
+			}
+		} else if err != nil || q.Held(2001) {
+			t.Fatalf("unused control: %v", err)
+		}
+	}
+}
 
 // Claim (H3 plant, "no input before a durable bound record"): a Run whose
 // record is still binding, constructed here with package access because no
@@ -54,7 +88,7 @@ func TestGatesRefuseBindingAndFenced(t *testing.T) {
 	if err := st.Create(rec); err != nil {
 		t.Fatal(err)
 	}
-	l, err := New(Config{LauncherUID: uid, Station: "s"}, Deps{Source: &source.Client{}, Records: st, Incarnations: incarnation.Proc{}})
+	l, err := New(Config{LauncherUID: uid, Station: "s"}, Deps{Source: &source.Client{}, Records: st, Incarnations: incarnation.Proc{}, Quarantine: &sweep.Quarantine{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +111,7 @@ func TestGatesRefuseBindingAndFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st2.Close()
-	l2, err := New(Config{LauncherUID: uid, Station: "s"}, Deps{Source: &source.Client{}, Records: st2, Incarnations: incarnation.Proc{}})
+	l2, err := New(Config{LauncherUID: uid, Station: "s"}, Deps{Source: &source.Client{}, Records: st2, Incarnations: incarnation.Proc{}, Quarantine: &sweep.Quarantine{}})
 	if err != nil {
 		t.Fatal(err)
 	}

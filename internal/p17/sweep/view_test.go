@@ -163,7 +163,7 @@ func TestUnqualifiedViewNeverReleases(t *testing.T) {
 	if err := q.ReturnUnused(ri, out.Final); err != nil || q.Held(ri) {
 		t.Fatalf("neighbour lease not returned: %v", err)
 	}
-	q.Hold(ri)
+	q.Hold(ri, run)
 	if d, err := q.Release(run, ri, true, out.Final); err != nil || !d.Release || q.Held(ri) {
 		t.Fatalf("neighbour release: %+v %v", d, err)
 	}

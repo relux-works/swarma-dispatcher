@@ -5,16 +5,15 @@
 // client still selects Unpinned and refuses. The codec grants no authority:
 // peer/current-generation authentication remains the dialer's responsibility.
 //
-// Hook text of record: P17 Curator-side hook interface r2.13 (sha256
-// 6849a4edc98b8aa4b257498f5c5c1efa9d5b25d09187474ee7ef284c89eb607a).
+// Hook text of record: P17 Curator-side hook interface r2.15 (sha256
+// 5b804ba49187df4e7e823703b2e65b569b3dd63cc370f5989e86436b05415246).
 //
 // Channel discipline (pin B spec/keymaker.md section 7: "One request is in
 // flight per connection; no unsolicited replies or pipelining"):
 //
-//   - Open connects and negotiates hello eagerly, inside HelloBudget. Hello
-//     carries no mutation, so a failed Open has no effect and no record.
-//   - Every started request waits its own timeout_ms (1..2000 ms) plus
-//     HolderFrameReportBudget plus ReadMargin for the one reply it is owed.
+//   - Open fails before any bind request; hello is a native request that the
+//     holder checks and audits; this path promises no run record and no bind.
+//   - Every started request waits ReadBudget(timeout_ms) for its one reply.
 //     A local timeout beyond that budget makes the channel ambiguous: the
 //     connection is closed and the run is HELD. A second request is never
 //     written while a reply is owed.
@@ -144,8 +143,8 @@ var ErrRefused = errors.New("keymaker: refused")
 // Wire is the codec seam. Encode is deterministic for a given request so that
 // a retry sends the identical bytes. Frames are the native framing.
 type Wire interface {
-	// Hello negotiates the protocol on a fresh connection within budget. It
-	// carries no mutation and authenticates no peer.
+	// Hello is a native request checked and audited by the holder. It
+	// negotiates the protocol within budget, but authenticates no peer.
 	Hello(c net.Conn, budget time.Duration) error
 	Encode(req Request) ([]byte, error)
 	WriteFrame(w io.Writer, b []byte) error

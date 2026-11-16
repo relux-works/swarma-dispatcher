@@ -115,7 +115,7 @@ The worker-plan/executor intake, exec-profile, catalog provenance/install and
 receiver-internal encodings must be fully published and jointly selected before
 use. A reference is not permission to admit an unpublished body as opaque bytes.
 
-The [DRAFT executor-entry /1 proposal](m0-executor-entry.md) separately specifies a closed finite FD3 input and deterministic existing runner mapping. It remains pending owning selection and does not enable opaque plan bodies or settle Result authority. Protected equality belongs to D before handoff; bound timing, proposed PATH narrowing and native exec/feeder/status attribution remain owning selection and qualification gates.
+The [DRAFT executor-entry /1 proposal](m0-executor-entry.md) separately specifies a closed finite FD3 input and deterministic existing runner mapping. It remains pending owning selection and does not enable opaque plan bodies or settle Result authority. Protected equality belongs to D before handoff; bound timing, proposed PATH narrowing and native exec/stdin-pipe/status attribution remain owning selection and qualification gates.
 
 Use registrar [CCJ-1 §2.1 at 5f44ebf][ccj], with its public [ccj][codec] and
 [envelope][envelope] boundaries, **not Keymaker native JSON spelling**. Reject

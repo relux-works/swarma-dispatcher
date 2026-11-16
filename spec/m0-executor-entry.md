@@ -192,13 +192,25 @@ duplicate option, injected flag, prompt-file, resume or credential/config flag:
  "--timeout", decimal(T)]
 ```
 
-**Claude runner variant.** The runner command (element 2) is an immutable
-literal of the adapter artifact, bound to the installation tuple together with
-E and H: either `run-codex` or `run-claude`. Nothing in the entry, the
-environment or the arguments selects it, and `run-claude` never falls back to
-`run-codex`. A Claude installation is a different artifact and tuple from a
-Codex one. For `run-claude`, argv is the same 19 elements in the same order,
-with only element 2 changed:
+**Claude runner variant (PROPOSED, not launchable).** The runner command
+(element 2) is an immutable literal of the adapter artifact, bound to the
+installation tuple together with E and H: either `run-codex` or `run-claude`.
+Nothing in the entry, the environment or the arguments selects it, and
+`run-claude` never falls back to `run-codex`. A Claude installation is a
+different artifact and tuple from a Codex one.
+
+The `run-claude` argv below is **PROPOSED**, pending the credential-broker
+contract for the Claude runner (broker slice S3a) at a named commit. No such
+commit is pinned in this spec: the only broker pin is the `run-codex` revision
+in §1. **Normative now:** until that pin is recorded in this spec, an artifact
+whose tuple names `run-claude` is refused before exec with adapter status 78,
+with no pipe write and no exec. Like every 78 in this spec, it is attributable
+only per §5: 78 only with trustworthy original fate evidence of no runner
+start, otherwise UNKNOWN with the original debt. The argv text below, the
+status requirement and a `run-claude` mapping witness are amended at that pin;
+until then this text follows no unnamed or future broker revision. The
+proposed shape is the same 19 elements in the same order, with only element 2
+changed:
 
 ```text
 [E, "run-claude", "--account", input.account,
@@ -208,21 +220,66 @@ with only element 2 changed:
  "--timeout", decimal(T)]
 ```
 
-The same bounds, derivations (J/L/W/O, T), environment, FD3 handling, stdin
-pipe and pre-exec refusal 78 apply unchanged. The adapter adds no
-Claude-specific flag, environment variable or file; in particular it never sets
-`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, a
-settings path or a config directory. The secret-free gateway endpoint and any
-placeholder credential are runner-internal: the broker builds the vendor
-environment, as it does for Codex. A token, endpoint or credential-like value
-in the adapter's argv or environment is a pre-exec refusal.
-`input.reasoning_effort` passes through unchanged as a `CatalogString`; an
-unsupported value is the runner's refusal, never an adapter remap. The broker
-owns the exact `run-claude` option set and its post-exec statuses (broker
-slice S3a); where they differ from the Codex shape, this text follows the
-pinned broker contract. Qualification is per tuple: a `run-claude` tuple needs
-its own broker qualification and native negatives, and Codex evidence does not
-carry over.
+The same bounds, derivations (J/L/W/O, T), environment, FD3 handling and stdin
+pipe are proposed unchanged. The adapter adds no Claude-specific flag,
+environment variable or file; in particular it never sets `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, a settings path or a config
+directory. `input.reasoning_effort` passes through unchanged as a
+`CatalogString`; an unsupported value is the runner's refusal, never an adapter
+remap. The broker owns the exact `run-claude` option set and its post-exec
+statuses. Qualification is per tuple: a `run-claude` tuple needs its own broker
+qualification and native negatives, and Codex evidence does not carry over.
+
+**run-claude admission gate.** Independently of the argv pin, a `run-claude`
+tuple is inadmissible until the pinned broker contract and native evidence
+show all of the following:
+
+1. The vendor process and every descendant hold no vendor-valid credential in
+   argv, in the environment, or in any file under L, W or J or at the settings
+   path (every settings or config path the vendor reads).
+2. The vendor's only credential is a placeholder bound to this execution,
+   generation and lease. The gateway refuses it for any other run: another
+   execution, generation or lease, and after stop, expiry or release.
+3. The gateway endpoint and the settings file are not worker-writable and not
+   worker-redirectable: no worker-prepared setting, environment variable or
+   helper selects or changes them. A settings file inside worker-prepared
+   content does not satisfy this item.
+
+The gateway endpoint and the placeholder are runner-internal and never adapter
+inputs. Codex external token delivery ([v0 §6][v0]) is **not** the model for
+`run-claude` and is no evidence for this gate. Missing evidence for any item
+refuses qualification and admission; passing the adapter-side rules above
+proves none of them.
+
+**Runner status set per tuple.** For every admitted tuple, the pinned runner's
+status set MUST exclude the adapter refusal status 78. §5 shows this only for
+the pinned `run-codex` set. No `run-claude` status set is pinned; a tuple
+whose runner status set is unpinned or includes 78 is inadmissible, because 78
+would then be ambiguous between an adapter pre-exec refusal and a runner
+post-exec exit.
+
+**Denied-literal set.** The adapter cannot decide whether a value "looks like"
+a credential, so the refusal rule is literal. The installation's denied-literal
+set is a deployment input, bound to the adapter artifact and the installation
+tuple like E and H. This spec names its REQUIRED members and their meaning,
+never their values:
+
+- the **Keymaker marker**: the literal that identifies Keymaker custody
+  material or its endpoint;
+- the **denied path prefix**: the absolute path prefix of the protected
+  credential area that no worker argument or variable may name;
+- the **origin socket marker**: the literal that identifies the credential
+  origin socket.
+
+A missing or empty REQUIRED member refuses. For both runner variants, the
+bytewise occurrence of any member in any argv element or in any environment
+name or value is an adapter pre-exec refusal with no exec (78 only with
+trustworthy original fate evidence of no runner start, otherwise UNKNOWN with
+the original debt). Argv values are otherwise only the closed entry fields
+under D's catalog equality (§2, §3), and the environment is only the closed
+six names below: an environment name outside those six is likewise a refusal,
+never a silent clear. A deployment may add members to the denied-literal set
+but never remove a REQUIRED one.
 
 Actual argv UTF-8 storage, sum of each element's byte length plus one NUL, is
 <=8192 bytes; each element <=1024 bytes, and OS exec representation/pointer/env
@@ -259,19 +316,34 @@ pipe**. Never reopen it by path.
 **Pre-filled stdin pipe (no feeder).** M0 has no feeder process or thread. After
 closing the plan, the adapter creates one fresh pipe with `pipe2(O_CLOEXEC)`,
 reads its capacity with `F_GETPIPE_SZ` and requires capacity >= the exact decoded
-Prompt byte length (at most 24576). It never raises capacity with `F_SETPIPE_SZ`:
-a pipe shrunk by the per-user pipe-buffer soft limit must refuse, not adapt. It
-sets the write end `O_NONBLOCK` and writes the exact decoded Prompt UTF-8 bytes
-once, in a single pass, then closes the write end, so the runner reads exactly
-those bytes and then EOF. No added LF, normalization, truncation, home input,
-second prompt or lease retry is allowed. A failed `F_GETPIPE_SZ`, insufficient
-capacity, `EAGAIN`, a short write or any write error is a known pre-exec refusal
-(78) with no exec; a blocking write is never used, so no pre-exec step waits for
-a reader.
+Prompt byte length (at most 24576): capacity equal to the length is accepted,
+capacity one byte below the length is refused. It never raises capacity with
+`F_SETPIPE_SZ`: a pipe shrunk by the per-user pipe-buffer soft limit must
+refuse, not adapt. It sets the write end `O_NONBLOCK` with `F_SETFL` and writes
+the exact decoded Prompt UTF-8 bytes in one whole write, then closes the write
+end, so the runner reads exactly those bytes and then EOF. The read end stays
+open in the adapter across the write, so the write can neither fail with
+`EPIPE` nor raise `SIGPIPE`. No added LF, normalization, truncation, home
+input, second prompt or lease retry is allowed. A blocking write is never used,
+so no pre-exec step waits for a reader.
 
-The adapter installs the pipe read end as 0 with `dup2`, closes both original
-pipe descriptors and every descriptor except 0–2, verifies by kernel object
-identity that 0–2 are the only remaining descriptors and that no pipe write end
+The refusal set is closed. A failure of any of these steps is an adapter
+pre-exec refusal with status 78 and no exec: `pipe2`; `F_GETPIPE_SZ`, including
+capacity below the length; `F_SETFL`; the write; `close`; `dup2`; and the
+identity and access-mode check below. The write fails when it returns an error
+(`EAGAIN` included) or fewer bytes than the Prompt length. It is retried on
+`EINTR` ONLY when zero bytes were written; any partial write is a refusal and
+nothing is retried after it. Each of these refusals is attributable only per
+§5: 78 only with trustworthy original fate evidence of no runner start,
+otherwise UNKNOWN with the original debt.
+
+The adapter installs the pipe read end as 0 with `dup2` and closes both
+original pipe descriptors. Every descriptor other than 0–2 is closed or
+close-on-exec. Before exec the adapter verifies, by kernel object identity AND
+access mode, that only 0–2 lack `FD_CLOEXEC`, that fd 0 is the read-only end of
+this pipe, and that no other inherited descriptor names the pipe or the plan
+object. Identity alone cannot tell the two ends of a pipe apart, so the
+access-mode check is what shows that no pipe write end
 survives, and directly `execve(E, argv, unchanged_environment)`: the **same
 process becomes the pinned runner**, with no surviving adapter supervisor. Only 0–2
 reach the runner. The adapter's userland prompt copy ends with the replaced
@@ -364,10 +436,12 @@ Intent 0/detection 20 requires completion 290, real P7 deadline 280 requires 280
 Original bootstrap t_B+120/B0–B5 and proposed 2 MiB work/32 dependency/512 KiB
 retained inventory budgets remain [separate unchanged gates](m0-bootstrap-budget.md).
 
-Runner's statuses 0, 1, 64, 69, 75, 124, 130 and [phase precedence][runner] remain
+The pinned `run-codex` runner's statuses 0, 1, 64, 69, 75, 124, 130 and
+[phase precedence][runner] remain
 runner-owned after successful exec; there is no wrapper remap. This leaf proposes
 reserved **adapter pre-exec refusal 78**, disjoint from that pinned set, pending
-owning changed-surface review; it is not an upstream status extension. A known
+owning changed-surface review; it is not an upstream status extension.
+Disjointness is required per tuple (§4) and is shown here for no other runner. A known
 attributable adapter refusal emits 78 only after confirmed no runner start (exec not
 attempted or failed). It preserves the original spent
 claim/debit and any preparation/cleanup debt; it does not assert universal no-effect.

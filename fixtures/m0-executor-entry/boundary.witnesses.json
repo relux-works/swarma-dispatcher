@@ -154,7 +154,7 @@
   },
   "process": {
     "status": "INERT proposed process/status boundary, pending owning review; no native execution",
-    "model": "Native adapter directly execve-replaces itself with absolute pinned run-codex; no surviving adapter supervisor",
+    "model": "Native adapter directly execve-replaces itself with the absolute pinned runner; no surviving adapter supervisor",
     "reserved_adapter_preexec_status": 78,
     "runner_statuses": [
       0,
@@ -165,9 +165,10 @@
       124,
       130
     ],
+    "runner_statuses_scope": "Pinned run-codex set only. Per tuple the runner status set must exclude 78; no run-claude set is pinned, and a run-claude artifact refuses before exec until the broker contract is pinned",
     "plan_object_in_runner": false,
-    "closure": "Close plan object/all copies before creating the stdin pipe; no feeder exists; runner inherits only 0-2, verified by kernel object identity",
-    "lifecycle": "No feeder and no pre-exec wait: pipe2(O_CLOEXEC), F_GETPIPE_SZ capacity >= exact prompt length (no F_SETPIPE_SZ raise), one O_NONBLOCK single-pass write, write end closed before exec; any capacity/EAGAIN/short/error refuses 78 with no exec. Qualification of this mechanism remains UNQUALIFIED",
+    "closure": "Close plan object/all copies before creating the stdin pipe; no feeder exists; every descriptor other than 0-2 is closed or close-on-exec; fd 0 is the read-only end of the pipe and no other inherited descriptor names the pipe or the plan object, verified by kernel object identity and access mode",
+    "lifecycle": "No feeder and no pre-exec wait: pipe2(O_CLOEXEC), F_GETPIPE_SZ capacity >= exact prompt length (no F_SETPIPE_SZ raise), F_SETFL O_NONBLOCK, one whole write with the read end still open (EINTR retried only with zero bytes written), write end closed before exec, dup2 to 0. A failure of pipe2, F_GETPIPE_SZ or the capacity check, F_SETFL, the write (EAGAIN, short or error), close, dup2 or the identity and access-mode check is an adapter pre-exec refusal with no exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. Qualification of this mechanism remains UNQUALIFIED",
     "prompt_deliveries_max": 1,
     "cases": [
       {
@@ -218,7 +219,7 @@
         "id": "unknown-exec",
         "actor": "unresolved adapter/runner",
         "phase": "exec boundary unresolved",
-        "observation": "Exec/start outcome",
+        "observation": "Exec/start outcome unobserved",
         "observed_status": null,
         "runner_started": "unknown",
         "pipe_write_end": "unknown",
@@ -260,5 +261,55 @@
       }
     ],
     "limit": "Numeric 78 alone authenticates neither actor, phase nor absence; no Result/read authority, no new upstream status or implemented observer mechanism"
+  },
+  "valid_neighbors": {
+    "status": "INERT valid neighbor witnesses for forbidden-controls.json; each control names at least one by id. Hypothetical controls only; no execution, qualification or admission",
+    "cases": [
+      {
+        "id": "matching-control",
+        "control": "Unchanged entry.specimen.json and mapping.witness.json (pinned run-codex tuple) with hypothetical matching authenticated durable originals and a complete current qualified tuple",
+        "expected": "Shape-positive entry and exact 19-element argv mapping; hypothetical admission only"
+      },
+      {
+        "id": "pipe-valid-lifecycle",
+        "control": "Fresh pipe2(O_CLOEXEC) pipe, capacity read once with F_GETPIPE_SZ and never raised, write end O_NONBLOCK, the exact prompt accepted by one whole write, write end closed, no feeder process or thread",
+        "expected": "Exec proceeds; the runner reads exactly the prompt bytes and then EOF"
+      },
+      {
+        "id": "pipe-capacity-equals-length",
+        "control": "F_GETPIPE_SZ capacity equal to the exact decoded prompt length",
+        "expected": "Accepted: capacity >= length holds; the whole write and exec proceed"
+      },
+      {
+        "id": "pipe-write-end-closed-eof",
+        "control": "Write end closed before exec; fd 0 is the read-only end of the pipe and no other inherited descriptor names the pipe",
+        "expected": "Identity and access-mode check passes; the runner observes EOF after the exact prompt bytes"
+      },
+      {
+        "id": "prompt-24576-bytes",
+        "control": "Prompt of exactly 24576 decoded UTF-8 bytes whose encoded and canonical forms fit their bounds",
+        "expected": "Accepted by the decoded-size check; pipe creation proceeds"
+      },
+      {
+        "id": "claude-placeholder-only",
+        "control": "Vendor process and descendants hold only the run-bound placeholder; no vendor-valid credential in argv, environment or any file under L, W, J or the settings path",
+        "expected": "Admission gate item satisfied. Hypothetical after the broker contract for run-claude is pinned; before that pin every run-claude artifact refuses before exec"
+      },
+      {
+        "id": "claude-placeholder-same-run",
+        "control": "Placeholder of execution X, with its generation and lease, presented during X before stop, expiry and release",
+        "expected": "Gateway accepts for X only. Hypothetical after the broker contract for run-claude is pinned; before that pin every run-claude artifact refuses before exec"
+      },
+      {
+        "id": "claude-protected-settings",
+        "control": "Gateway endpoint and settings file come only from protected, non-worker-writable installation content; no worker-prepared setting, environment variable or helper selects or redirects them",
+        "expected": "Admission gate item satisfied. Hypothetical after the broker contract for run-claude is pinned; before that pin every run-claude artifact refuses before exec"
+      },
+      {
+        "id": "runner-status-set-excludes-78",
+        "control": "Tuple whose pinned runner status set is published and excludes 78, as the pinned run-codex set 0, 1, 64, 69, 75, 124, 130 does",
+        "expected": "Adapter status 78 stays disjoint for that tuple; attribution still requires original fate evidence"
+      }
+    ]
   }
 }

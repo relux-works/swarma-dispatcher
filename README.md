@@ -63,9 +63,12 @@ A separate [DRAFT closed executor-entry proposal](spec/m0-executor-entry.md)
 defines one finite FD3 input and deterministic existing `run-codex` argv/UTF-8
 stdin mapping, with [inert specimens](fixtures/m0-executor-entry/README.md).
 D-side protected equality, bound deadline/slack and direct native exec with a
-capacity-checked pre-filled stdin pipe (no feeder) are proposed only. PATH narrowing and adapter refusal status 78
-await owning selection. Typed catalog/installation, native qualification and
-authenticated Result joins remain gates; no adapter runtime is supplied.
+capacity-checked pre-filled stdin pipe (no feeder) are proposed only. A
+`run-claude` runner variant is PROPOSED text only: it is refused before exec
+until the credential-broker contract is pinned. PATH narrowing and adapter
+refusal status 78 await owning selection. Typed catalog/installation, native
+qualification and authenticated Result joins remain gates; no adapter runtime
+is supplied.
 
 ## Principles
 

@@ -53,14 +53,19 @@ there is no surviving adapter supervisor. Close FD3's kernel object and every
 duplicate before creating the stdin pipe. The runner must lack that object;
 only 0–2 reach runner. There is no feeder: the adapter writes the exact prompt
 once, non-blocking, into a fresh `pipe2(O_CLOEXEC)` pipe whose `F_GETPIPE_SZ`
-capacity covers it, closes the write end and refuses 78 on any capacity or
-write failure, without raising capacity. Pipe-capacity, order and
+capacity covers it (capacity equal to the length is accepted, one byte below is
+refused) and closes the write end, without raising capacity. A failure of
+`pipe2`, `F_GETPIPE_SZ`, `F_SETFL`, the write, `close`, `dup2` or the identity
+and access-mode check is an adapter pre-exec refusal: 78 only with trustworthy
+original fate evidence of no runner start, otherwise UNKNOWN with the original
+debt. Pipe-capacity, order and
 descriptor-identity qualification remain UNQUALIFIED, including whole-account
 absence after exec. No second prompt/start
 or lease replay is permitted after unknown effect.
 
 Status 78 is a proposed reserved adapter pre-exec refusal, pending owning review,
-disjoint from pinned runner statuses 0, 1, 64, 69, 75, 124, 130. Only trustworthy
+disjoint from pinned `run-codex` runner statuses 0, 1, 64, 69, 75, 124, 130;
+every admitted tuple's runner status set must exclude 78. Only trustworthy
 original fate evidence binding actor/process/artifact/execution/generation,
 exclusive pre-exec phase, and no runner start could
 support that attribution. The mechanism is unsupported here. Numeric 78 alone,
@@ -82,12 +87,32 @@ observation/disposition is separate. Unknown retains original publication/Result
 effect and cleanup debt. Bytes/mode 0600 grant no read/consumption, disposition
 or fresh admission. No Result protocol, ACL, quota or wipe authority is added.
 
-`forbidden-controls.json` preserves the original 42 controls and the two qualification/publication
-additions in relative order, with nine additional controls (53 total). Descriptive spacing and
-actor-specific expectations were revised; these strings are not preserved-byte
-claims. Each control has the unchanged matching hypothetical control as neighbor;
+`forbidden-controls.json` preserves the original 42 controls and the two
+qualification/publication additions in relative order, with 22 additional
+controls (66 total). Descriptive spacing and actor-specific expectations were
+revised; these strings are not preserved-byte claims. The pipe controls are one
+mutation each (`stdin-pipe-blocking-write`, `stdin-pipe-partial-write`,
+`stdin-pipe-capacity-raise`, `stdin-pipe-write-end-survives`, `stdin-feeder`,
+`stdin-pipe-capacity-short`), and `prompt-decoded-size` pins 24577 decoded
+bytes against the accepted 24576.
+
+The `run-claude` runner variant is PROPOSED and not launchable:
+`runner-variant-unpinned` refuses every such artifact before exec until the
+credential-broker contract is pinned in the spec. `runner-variant-selection`
+and `claude-credential-in-adapter` are adapter-side controls;
+`claude-vendor-valid-credential`, `claude-placeholder-not-run-bound` and
+`claude-worker-settings` are the admission-gate controls, and
+`status-collision-run-claude` requires a runner status set without 78. Their
+valid neighbors are hypothetical until that pin.
+
+Each control lists in `neighbors` at least one valid neighbor witness by id;
+the witnesses are the `valid_neighbors` cases in `boundary.witnesses.json`.
+`matching-control` is the unchanged matching hypothetical control;
 lexical changes apply to raw bytes, protected identity changes hold originals
-fixed. Native substitutions require a qualified tuple, never supplied here.
+fixed. A repository test checks only that control ids are unique, that every
+neighbor id resolves and that the total stated here equals the file. That
+check is documentary consistency evidence, not conformance or production
+coverage. Native substitutions require a qualified tuple, never supplied here.
 These are review vectors, not executable tests: valid JSON is no conformance
 verdict. Local static JSON/hash/arithmetic/link/diff checks and bounded instrument
 plants provide documentary consistency evidence only.

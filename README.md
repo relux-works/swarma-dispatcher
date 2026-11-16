@@ -349,6 +349,42 @@ real-peer control ([PR #31](https://github.com/relux-works/swarma-dispatcher/pul
 an end-to-end test of this tool against it follows once that change has landed,
 so these tests do not qualify the real serve loop or a deployed daemon.
 
+## P17 launcher clients (Linux, standalone, not wired)
+
+`internal/p17/` holds the launcher-side clients of the P17 hook interface, in
+which the dispatcher is launcher L: `codes` (the closed code set and D4 exit
+classes), `isolation` (H0), `source` (H1 and the validate step of H2),
+`keymaker` (`j7_run_bind`, `j7_run_end`), `runrecord` (the durable run record
+on `internal/journal`, with the H6 table), `incarnation` (D2 kernel
+incarnations from procfs), `sweep` (the D5a zero-process proof, D5b kill by
+uid and lease quarantine), `hygiene` (the H3 descriptor/argv/env assertion)
+and `launcher` (the composition the M0 launch path calls). `fakes` is test
+support only. No daemon command uses these packages yet.
+
+The Source origin codec (a2a-swarm `runorigin`) and the Keymaker lifecycle
+codec (swarma-keymaker `j7lifecycle`) are seams whose default implementations
+refuse by name with the exact pin they wait for; so do the privilege-drop
+helper (spawn and sweep modes), the authoritative generation reader, and the
+two R_i release seams (work-product archival evidence and operator release).
+A uid leaves quarantine only with the zero-process proof AND either archival
+evidence with an acknowledged end or an explicit operator release; unknown or
+unreadable evidence keeps it quarantined. The clients never substitute a local
+spelling of either wire.
+
+```sh
+go test -v -count=1 -timeout=20m ./internal/p17/...
+go vet ./internal/p17/...
+gofmt -l internal/p17/
+SWARMA_KEYMAKER_VECTORS=/path/to/j7lifecycle/testdata/wire-v1/vectors.json go test -run PinnedVectors ./internal/p17/keymaker/
+```
+
+Tests are hermetic: fake Source and Keymaker servers over socket pairs, a
+fake procfs tree, temporary journal fixtures. Journal-backed tests print an
+explicit skip reason on filesystems other than ext4/XFS; the pinned vector
+digest test is UNRUN unless the corpus path is supplied. Results go to the
+test/CI log. Nothing here qualifies a deployment, a helper or a real Source
+or Keymaker.
+
 ## Demo tools (not production)
 
 The separate [demo contract](spec/demo-launch.md) defines protected configuration,

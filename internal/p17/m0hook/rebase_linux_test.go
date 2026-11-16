@@ -36,8 +36,19 @@ func TestStopMatchesOriginalExecution(t *testing.T) {
 			case "missing-execution":
 				req.ExecutionID = ""
 			}
-			_, err := h.Stop(context.Background(), req)
-			must(t, err)
+			_, before := e.inner.counts()
+			receipt, err := h.Stop(context.Background(), req)
+			_, after := e.inner.counts()
+			if after != before+1 || !receipt.Absent || string(receipt.Evidence) != "synthetic fenced absence" {
+				t.Fatalf("identity Stop skipped Inner: receipt=%+v stops=%d->%d", receipt, before, after)
+			}
+			if name == "missing-execution" {
+				if !errors.Is(err, m0hook.ErrExecutionRequired) {
+					t.Fatalf("empty Stop execution: %v", err)
+				}
+			} else {
+				must(t, err)
+			}
 			if e.only().State != runrecord.Bound || len(e.km.Ends()) != 0 {
 				t.Fatal("a foreign or missing identity ended the original run")
 			}
@@ -165,8 +176,13 @@ func TestH3PersistenceFailures(t *testing.T) {
 	}
 }
 
-// Claim: native HELD details survive the decorator unchanged and release no input; control: TestBoundRunStartsOnceAndStopsEnded.
+// Claim: native HELD details survive unchanged and release no input; the adjacent bound start is the positive control.
 func TestHeldNativeDetailsRetained(t *testing.T) {
+	t.Run("bound", TestBoundRunStartsOnceAndStopsEnded)
+	t.Run("held", heldNativeDetailsRetained)
+}
+
+func heldNativeDetailsRetained(t *testing.T) {
 	e := newEnv(t)
 	e.km.BindMode = "busy"
 	h := e.build()

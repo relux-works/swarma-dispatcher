@@ -35,6 +35,7 @@ package m0hook
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 
 	"github.com/relux-works/a2a-swarm/runorigin"
@@ -77,7 +78,9 @@ type RunEvents interface {
 
 // StopRequests supplies M0's emergency-stop identity and metadata for an
 // execution. This package never derives an effect id from the start id.
-// The returned request must name that same execution and worker.
+// The returned request must be the full runtime-shaped request for that same
+// execution and worker, including original obligations and the earliest ceiling.
+// This layer writes no durable intent for the emergency call.
 type StopRequests interface {
 	StopRequest(m0.StartRequest) (m0.StopRequest, error)
 }
@@ -123,6 +126,9 @@ func (UnpinnedStopRequests) StopRequest(m0.StartRequest) (m0.StopRequest, error)
 // it owns its durable flip after the first successful Quarantine.Start, before
 // any Begin (independently of the journal fact). Nothing here infers either fact.
 // A nil Inner is m0.UnpinnedLauncher{}; the other nil seams refuse by name.
+// Seams run under the effect lock: none may call Start, Stop or Observe on this
+// wiring for the same run. Context-preserving callbacks from Inner fail fast;
+// context-free evidence seams must enforce the rule themselves.
 type Deps struct {
 	Installation sweep.Installation
 	Stops        StopRequests
@@ -145,8 +151,14 @@ var (
 	ErrExecutionRequired = errors.New("m0hook: execution id required")
 	// ErrStopAmbiguous leaves H5 untouched and is retained on every candidate.
 	ErrStopAmbiguous = errors.New("m0hook: stop matches multiple effects")
-	// ErrStopIdentity refuses a malformed emergency-stop request from its seam.
+	// ErrStopIdentity refuses malformed emergency-stop identity or metadata.
 	ErrStopIdentity = errors.New("m0hook: emergency-stop identity differs from the execution")
+	// ErrStopUnconfirmed retains an emergency receipt that proves no absence.
+	ErrStopUnconfirmed = errors.New("m0hook: emergency stop did not confirm absence")
+	// ErrStopped refuses a claimed Start overtaken by its Stop before it began.
+	ErrStopped = errors.New("m0hook: effect stopped before start")
+	// ErrReentrant refuses a context-preserving callback for the same run.
+	ErrReentrant = errors.New("m0hook: reentrant call for the same run")
 	// ErrInstallationRequired refuses an absent or invalid explicit ledger fact.
 	ErrInstallationRequired = errors.New("m0hook: explicit quarantine installation fact required")
 	// ErrEffectKnown refuses a second Start for an effect this process has
@@ -187,6 +199,7 @@ type Attempt struct {
 	// with a nonnil error explicitly means no inner stop was possible.
 	InnerStopAttempted bool
 	InnerStopErr       error
+	InnerStopReceipt   m0.StopReceipt
 	// EndErr is the H5 refusal, run_end_unknown included. It is nil after an
 	// acknowledged, durably recorded end.
 	EndErr error
@@ -200,6 +213,8 @@ type effect struct {
 	execution string
 	worker    m0.Worker
 	done      bool
+	stopped   bool
+	retired   bool
 	held      bool
 	run       *launcher.Run
 	a         Attempt
@@ -226,6 +241,11 @@ type Hooked struct {
 	order []string
 	// exit is the latched process-exit duty; it is never cleared.
 	exit error
+
+	// Optional lock-boundary observers are used only by deterministic tests.
+	afterClaim func()
+	lockWait   func()
+	beforeStep func(string)
 }
 
 // New composes the decorator and runs H6 once: L.Restart(ctx) before any
@@ -400,13 +420,50 @@ func (h *Hooked) lookupStop(req m0.StopRequest) []*effect {
 			found = append(found, e)
 		}
 	}
+	sort.Slice(found, func(i, j int) bool { return found[i].id < found[j].id })
 	return found
+}
+
+// lock orders known effects before any inner stop, including ambiguous ones.
+func (h *Hooked) lock(e *effect) {
+	if e.mu.TryLock() {
+		return
+	}
+	if h.lockWait != nil {
+		h.lockWait()
+	}
+	e.mu.Lock()
+}
+
+type callKey struct{}
+type activeCall struct {
+	h       *Hooked
+	effects []*effect
+}
+
+func (h *Hooked) reentrant(ctx context.Context, id, execution string, worker m0.Worker) bool {
+	if ctx == nil {
+		return false
+	}
+	c, _ := ctx.Value(callKey{}).(activeCall)
+	if c.h == h {
+		for _, e := range c.effects {
+			if id == e.id || (execution != "" && execution == e.execution && worker == e.worker) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // retire records a terminal effect (no live run, not HELD) and evicts the
 // oldest terminal effects beyond maxRetained. Callers hold e.mu; only
 // terminal effects are ever listed here, so eviction needs no other lock.
 func (h *Hooked) retire(e *effect) {
+	if e.retired {
+		return
+	}
+	e.retired = true
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.order = append(h.order, e.id)
@@ -443,6 +500,9 @@ func principalOf(req m0.StartRequest) keymaker.Principal {
 // fatal duty instead forbids further launcher state I/O. An error carrying it is
 // returned in the M0 fatal class on every path.
 func (h *Hooked) Start(ctx context.Context, req m0.StartRequest, gate m0.CommitGate) (m0.StartReceipt, error) {
+	if h.reentrant(ctx, req.EffectID, req.ExecutionID, req.Worker) {
+		return m0.StartReceipt{}, ErrReentrant
+	}
 	if cause := h.ExitCause(); cause != nil {
 		// The process must exit: no new H1, no contact, no state I/O.
 		return m0.StartReceipt{}, cause
@@ -459,16 +519,26 @@ func (h *Hooked) Start(ctx context.Context, req m0.StartRequest, gate m0.CommitG
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return h.startEffect(ctx, h.claim(req), req, gate)
+	e := h.claim(req)
+	if h.afterClaim != nil {
+		h.afterClaim()
+	}
+	return h.startEffect(ctx, e, req, gate)
 }
 
 // startEffect orders a claimed effect with Stop, including callers that waited
 // for its lock while another effect latched fatal duty.
 func (h *Hooked) startEffect(ctx context.Context, e *effect, req m0.StartRequest, gate m0.CommitGate) (m0.StartReceipt, error) {
-	e.mu.Lock()
+	h.lock(e)
 	defer e.mu.Unlock()
-	if cause := h.ExitCause(); cause != nil {
+	if cause := h.checkExit(e); cause != nil {
 		return m0.StartReceipt{}, cause
+	}
+	if e.stopped {
+		e.done = true
+		e.a.Err = ErrStopped
+		h.retire(e)
+		return m0.StartReceipt{}, ErrStopped
 	}
 	if e.done {
 		// One run per effect id. A HELD effect reports its retained refusal;
@@ -481,6 +551,7 @@ func (h *Hooked) startEffect(ctx context.Context, e *effect, req m0.StartRequest
 			h.retire(e)
 		}
 	}()
+	ctx = context.WithValue(ctx, callKey{}, activeCall{h, []*effect{e}})
 	receipt, err := h.start(ctx, e, req, gate)
 	return receipt, h.surface(err)
 }
@@ -489,12 +560,18 @@ func (h *Hooked) startEffect(ctx context.Context, e *effect, req m0.StartRequest
 func (h *Hooked) start(ctx context.Context, e *effect, req m0.StartRequest, gate m0.CommitGate) (m0.StartReceipt, error) {
 	// The retained event of this start, before any contact. A refusal here
 	// launched and contacted nothing: definite.
+	if err := h.checkStep(e, "event"); err != nil {
+		return m0.StartReceipt{}, err
+	}
 	event, err := h.events.Event(req)
 	if err != nil {
 		e.a = Attempt{Err: err}
 		return m0.StartReceipt{Committed: false}, h.refusal(e, err)
 	}
 
+	if err := h.checkExit(e); err != nil {
+		return m0.StartReceipt{}, err
+	}
 	run, err := h.l.Begin(ctx, event, principalOf(req))
 	if err != nil {
 		e.a = Attempt{Err: err}
@@ -507,45 +584,16 @@ func (h *Hooked) start(ctx context.Context, e *effect, req m0.StartRequest, gate
 		if errors.As(err, &record) {
 			e.a.Key = record.RecordKey()
 		}
-		if fatal := h.refusal(e, err); fatal != nil {
-			return m0.StartReceipt{}, fatal
-		}
 		if record != nil {
-			// Under uncertainty the state is ATTEMPTED, not a durable fact.
-			if record.RecordUncertain() {
-				e.held = true
-				return m0.StartReceipt{}, err
-			}
-			switch record.RecordState() {
-			case runrecord.Unsent:
-				if code == codes.BindUnavailable {
-					return m0.StartReceipt{Committed: false}, nil
-				}
-			case runrecord.Refused:
-				if code == codes.BindRefused {
-					return m0.StartReceipt{Committed: false}, nil
-				}
-			}
-			// A record that is not certainly terminal cannot be a no-start.
-			e.held = true
-			return m0.StartReceipt{}, err
+			return m0.StartReceipt{}, h.beginFailure(e, err, record)
 		}
-		switch {
-		case ok && code == codes.BindUnknown:
-			e.held = true
-			return m0.StartReceipt{}, err
-		case ok:
-			if cl, known := code.Class(); known && cl != codes.Unknown {
-				return m0.StartReceipt{Committed: false}, nil
-			}
-			return m0.StartReceipt{}, err
-		case codes.IsUnpinned(err):
-			// A seam refusing by name launched nothing: definite.
-			return m0.StartReceipt{Committed: false}, nil
-		}
-		return m0.StartReceipt{}, err
+		return m0.StartReceipt{}, h.beginFailure(e, err, nil)
 	}
 	e.a = Attempt{Key: run.Key}
+	e.run = run
+	if err := h.checkExit(e); err != nil {
+		return m0.StartReceipt{}, err
+	}
 
 	// H0 in the concrete launcher already enforces worker uid == leased uid.
 	// Do not add a dead second guard: principalOf forwards the exact worker.
@@ -559,12 +607,18 @@ func (h *Hooked) start(ctx context.Context, e *effect, req m0.StartRequest, gate
 		return m0.StartReceipt{Committed: false}, h.end(ctx, e, run, err)
 	}
 
+	if err := h.checkExit(e); err != nil {
+		return m0.StartReceipt{}, err
+	}
 	var (
 		receipt  m0.StartReceipt
 		innerErr error
 		started  bool
 	)
 	spawnErr := run.Spawn(func(childUID uint32) (incarnation.Incarnation, error) {
+		if err := h.checkStep(e, "inner"); err != nil {
+			return incarnation.Incarnation{}, err
+		}
 		started = true
 		receipt, innerErr = h.innerOf().Start(ctx, req, gate)
 		if innerErr != nil {
@@ -573,6 +627,9 @@ func (h *Hooked) start(ctx context.Context, e *effect, req m0.StartRequest, gate
 		if !receipt.Committed {
 			return incarnation.Incarnation{}, ErrNotCommitted
 		}
+		if err := h.checkStep(e, "incarnation"); err != nil {
+			return incarnation.Incarnation{}, err
+		}
 		inc, err := h.incarnations.Child(req, receipt)
 		if err != nil {
 			return incarnation.Incarnation{}, errors.Join(ErrUnproved, err)
@@ -580,8 +637,14 @@ func (h *Hooked) start(ctx context.Context, e *effect, req m0.StartRequest, gate
 		if !inc.Valid() || inc.UID != childUID {
 			return incarnation.Incarnation{}, errors.Join(ErrUnproved, errors.New("m0hook: child incarnation incomplete or under another uid"))
 		}
+		if err := h.checkExit(e); err != nil {
+			return incarnation.Incarnation{}, err
+		}
 		return inc, nil
 	})
+	if fatal := h.checkExit(e); fatal != nil {
+		return receipt, fatal
+	}
 	switch {
 	case spawnErr == nil:
 		// Bookkeeping only: atomic Inner.Start already received its input.
@@ -592,7 +655,9 @@ func (h *Hooked) start(ctx context.Context, e *effect, req m0.StartRequest, gate
 			err = errors.Join(err, h.stopInner(ctx, e, req))
 			return receipt, withFatal(err, h.end(ctx, e, run, err))
 		}
-		e.run = run
+		if fatal := h.checkExit(e); fatal != nil {
+			return receipt, fatal
+		}
 		return receipt, nil
 	case !started:
 		// The spawn gate refused before any inner call: nothing launched.
@@ -610,14 +675,85 @@ func (h *Hooked) start(ctx context.Context, e *effect, req m0.StartRequest, gate
 	return receipt, withFatal(spawnErr, h.end(ctx, e, run, spawnErr))
 }
 
+type beginRecord interface {
+	RecordState() runrecord.State
+	RecordUncertain() bool
+}
+
+// beginFailure maps the client's typed evidence, never its diagnostic text.
+func (h *Hooked) beginFailure(e *effect, err error, record beginRecord) error {
+	if fatal := h.refusal(e, err); fatal != nil {
+		return fatal
+	}
+	if fatal := h.checkExit(e); fatal != nil {
+		return fatal
+	}
+	code, ok := codes.CodeOf(err)
+	if record != nil {
+		// Under uncertainty the state is ATTEMPTED, not a durable fact.
+		if record.RecordUncertain() {
+			return h.holdBind(e, err)
+		}
+		switch record.RecordState() {
+		case runrecord.Unsent:
+			if code == codes.BindUnavailable {
+				return nil
+			}
+		case runrecord.Refused:
+			if code == codes.BindRefused {
+				return nil
+			}
+		}
+		return h.holdBind(e, err)
+	}
+	switch {
+	case ok && code == codes.BindUnknown:
+		return h.holdBind(e, err)
+	case ok:
+		if cl, known := code.Class(); known && cl != codes.Unknown {
+			return nil
+		}
+	case codes.IsUnpinned(err):
+		return nil
+	}
+	return err
+}
+
+func (h *Hooked) holdBind(e *effect, err error) error {
+	code, ok := codes.CodeOf(err)
+	if cl, known := code.Class(); !ok || !known || cl != codes.Unknown {
+		err = codes.Refuse(codes.BindUnknown, "record outcome is not certainly terminal", err)
+	}
+	e.held, e.a.Err = true, err
+	return err
+}
+
+// checkStep permits tests to force a latch at an otherwise atomic boundary.
+func (h *Hooked) checkStep(e *effect, step string) error {
+	if h.beforeStep != nil {
+		h.beforeStep(step)
+	}
+	return h.checkExit(e)
+}
+
+// checkExit retains the run and refusal without performing launcher state I/O.
+func (h *Hooked) checkExit(e *effect) error {
+	if fatal := h.ExitCause(); fatal != nil {
+		e.held, e.a.Err = true, fatal
+		return fatal
+	}
+	return nil
+}
+
 // refusal is the single fatal check for errors about to become nil-error
 // no-starts. e.mu is held; ordinary refusals stay retained in Attempt.Err.
 func (h *Hooked) refusal(e *effect, err error) error {
 	if launcher.MustExit(err) {
 		e.held = true
+		e.a.Err = err
 		return h.surface(err)
 	}
-	return nil
+	return h.checkExit(e)
 }
 
 // stopInner uses only the request supplied by M0. With no valid identity no
@@ -625,15 +761,54 @@ func (h *Hooked) refusal(e *effect, err error) error {
 // backstop. e.mu is held.
 func (h *Hooked) stopInner(ctx context.Context, e *effect, req m0.StartRequest) error {
 	stop, err := h.stops.StopRequest(req)
-	if err == nil && (stop.EffectID == "" || stop.EffectID == req.EffectID || stop.ExecutionID != req.ExecutionID || stop.Worker != req.Worker) {
+	if err == nil && !validStop(req, stop) {
 		err = ErrStopIdentity
 	}
 	if err == nil {
 		e.a.InnerStopAttempted = true
-		_, err = h.innerOf().Stop(ctx, stop)
+		e.a.InnerStopReceipt, err = h.innerOf().Stop(ctx, stop)
+		if !e.a.InnerStopReceipt.Absent {
+			err = errors.Join(err, ErrStopUnconfirmed)
+		}
 	}
 	e.a.InnerStopErr = err
 	return err
+}
+
+// validStop checks identity and every metadata field against the start's bounds.
+// Event provenance itself is supplied by M0, not reconstructed here.
+func validStop(start m0.StartRequest, stop m0.StopRequest) bool {
+	if stop.EffectID == "" || stop.EffectID == start.EffectID || stop.ExecutionID != start.ExecutionID || stop.Worker != start.Worker || len(stop.Obligations) == 0 {
+		return false
+	}
+	first := stop.Obligations[0]
+	if stop.Event != first.Event || stop.Detection != first.Detection {
+		return false
+	}
+	seen := make(map[string]bool)
+	var ceiling int64
+	for _, o := range stop.Obligations {
+		if seen[o.Source] || o.Event < 0 || o.Detection < 0 {
+			return false
+		}
+		seen[o.Source] = true
+		switch o.Source {
+		case "cancel", "removal":
+		case "expiry":
+			if o.Event != start.Deadlines.Expiry {
+				return false
+			}
+		default:
+			return false
+		}
+		if o.Event > 0 && o.Detection > 0 {
+			c := m0.StopCeiling(o.Event, o.Detection, start.Deadlines.DetectSeconds, start.Deadlines.StopSeconds)
+			if ceiling == 0 || c < ceiling {
+				ceiling = c
+			}
+		}
+	}
+	return stop.Ceiling == ceiling
 }
 
 // end runs H5 for the run and retains the outcome. e.mu is held. It is the
@@ -683,9 +858,11 @@ func (h *Hooked) end(ctx context.Context, e *effect, run *launcher.Run, cause er
 	return err
 }
 
-// Stop looks up the execution first and locks a unique known effect before
-// Inner.Stop, ordering it with Start. Unknown effects remain unlocked. Inner
-// always runs, even before successful restart or after the fatal latch; in
+// Stop looks up the execution first and locks all candidates in effect-ID
+// order before Inner.Stop, including ambiguous matches. Unknown effects remain
+// unlocked. A claimed but not yet begun Start is fenced by its Stop; a Stop
+// before claim cannot order a future unknown Start. Non-reentrant calls always
+// reach Inner, even before successful restart or after the fatal latch; in
 // those cases no launcher state I/O follows and the gate error is returned.
 // Empty effect ids are refused AFTER Inner.Stop. Ambiguity is retained on
 // every candidate and returned loudly, without choosing one run for H5.
@@ -693,46 +870,71 @@ func (h *Hooked) Stop(ctx context.Context, req m0.StopRequest) (m0.StopReceipt, 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	matches := h.lookupStop(req)
+	if h.reentrant(ctx, req.EffectID, req.ExecutionID, req.Worker) {
+		return m0.StopReceipt{}, ErrReentrant
+	}
+	candidates := h.lookupStop(req)
+	var matches []*effect
+	for _, candidate := range candidates {
+		h.lock(candidate)
+		defer candidate.mu.Unlock()
+		// Only an in-flight claim or live/held run can own this stop.
+		if !candidate.done || candidate.run != nil || candidate.held {
+			if !candidate.done {
+				candidate.stopped = true
+			}
+			matches = append(matches, candidate)
+		}
+	}
 	var e *effect
 	if len(matches) == 1 {
 		e = matches[0]
-		e.mu.Lock()
-		defer e.mu.Unlock()
 	}
+	ctx = context.WithValue(ctx, callKey{}, activeCall{h, candidates})
 	receipt, err := h.innerOf().Stop(ctx, req)
 	err = h.surface(err)
 	if req.EffectID == "" {
 		err = errors.Join(err, ErrEffectRequired)
 	}
+	if req.ExecutionID == "" {
+		err = errors.Join(err, ErrExecutionRequired)
+	}
 	if len(matches) > 1 {
 		for _, candidate := range matches {
-			candidate.mu.Lock()
 			candidate.a.Err = errors.Join(candidate.a.Err, ErrStopAmbiguous)
-			candidate.mu.Unlock()
 		}
 		err = errors.Join(err, ErrStopAmbiguous)
 	}
 	if fatal := h.ExitCause(); fatal != nil {
+		if e != nil {
+			err = errors.Join(e.a.EndErr, e.a.Err, err)
+		}
 		return receipt, errors.Join(err, fatal)
 	}
 	if !h.restarted || h.l == nil {
 		return receipt, errors.Join(err, ErrNotRestarted)
 	}
-	if req.EffectID == "" || e == nil {
+	if req.EffectID == "" || req.ExecutionID == "" || e == nil {
 		return receipt, err
+	}
+	if e.held {
+		// Restart in the next process is the only retry path for held debt.
+		return receipt, errors.Join(e.a.EndErr, e.a.Err, err)
 	}
 	if e.run != nil {
 		endErr := h.end(ctx, e, e.run, nil)
 		if !e.held {
 			h.retire(e)
 		}
-		return receipt, withFatal(err, endErr)
+		return receipt, withFatal(endErr, err)
 	}
 	return receipt, err
 }
 
 // Observe passes through to Inner. It contacts neither Source nor Keymaker.
 func (h *Hooked) Observe(ctx context.Context, q m0.EffectQuery) (m0.Observation, error) {
+	if h.reentrant(ctx, q.EffectID, "", m0.Worker{}) {
+		return m0.ObservationUnknown, ErrReentrant
+	}
 	return h.innerOf().Observe(ctx, q)
 }

@@ -284,9 +284,9 @@ type stopRequestFunc func(m0.StartRequest) (m0.StopRequest, error)
 
 func (f stopRequestFunc) StopRequest(r m0.StartRequest) (m0.StopRequest, error) { return f(r) }
 
-// Claim: emergency stops use only the supplied M0 request and retain its error; unpinned or invalid identity sends no inner stop and relies on H5 (valid request beside them).
+// Claim: emergency stops validate the full request and retain receipt/error evidence; unpinned or malformed requests send nothing, and confirmed absence is the adjacent control.
 func TestEmergencyStopIdentity(t *testing.T) {
-	for _, name := range []string{"valid", "inner-error", "unpinned", "empty", "start-id", "execution", "worker"} {
+	for _, name := range []string{"valid", "inner-error", "unconfirmed", "unpinned", "empty", "start-id", "execution", "worker", "event", "detection", "obligations", "source", "duplicate-source", "expiry", "negative-event", "negative-detection", "ceiling"} {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
 			e.reader.err = errStoreRefused
@@ -305,7 +305,29 @@ func TestEmergencyStopIdentity(t *testing.T) {
 					case "execution":
 						q.ExecutionID = "foreign"
 					case "worker":
-						q.Worker.UID++
+						q.Worker.UID = 30002
+					case "event":
+						q.Event = 1700000099
+					case "detection":
+						q.Detection = 1700000102
+					case "obligations":
+						q.Obligations = nil
+					case "source":
+						q.Obligations[0].Source = "foreign"
+					case "duplicate-source":
+						q.Obligations = append(q.Obligations, q.Obligations[0])
+					case "expiry":
+						q.Obligations[0].Source = "expiry"
+					case "negative-event":
+						q.Obligations[0].Event = -1
+						q.Event = -1
+						q.Ceiling = 0
+					case "negative-detection":
+						q.Obligations[0].Detection = -1
+						q.Detection = -1
+						q.Ceiling = 0
+					case "ceiling":
+						q.Ceiling = 1700000200
 					}
 					return q, nil
 				})
@@ -313,11 +335,14 @@ func TestEmergencyStopIdentity(t *testing.T) {
 			if name == "inner-error" {
 				e.inner.stopErr = stopErr
 			}
+			if name == "unconfirmed" {
+				e.inner.stopReceipt = &m0.StopReceipt{Absent: false, Evidence: []byte("not confirmed")}
+			}
 			h, err := m0hook.New(context.Background(), d)
 			must(t, err)
 			receipt, err := h.Start(context.Background(), startReq(effectA, cuid), e.gate)
 			a, _ := h.Last(effectA)
-			attempted := name == "valid" || name == "inner-error"
+			attempted := name == "valid" || name == "inner-error" || name == "unconfirmed"
 			if !receipt.Committed || !errors.Is(err, m0hook.ErrUnproved) || a.InnerStopAttempted != attempted || !a.Ended || e.only().State != runrecord.Ended {
 				t.Fatalf("receipt %+v error %v attempt %+v", receipt, err, a)
 			}
@@ -331,8 +356,12 @@ func TestEmergencyStopIdentity(t *testing.T) {
 			}
 			switch name {
 			case "valid":
-				if a.InnerStopErr != nil || e.inner.stops[0].EffectID != "stop-"+effectA {
+				if a.InnerStopErr != nil || e.inner.stops[0].EffectID != "stop-"+effectA || !a.InnerStopReceipt.Absent || string(a.InnerStopReceipt.Evidence) != "synthetic fenced absence" {
 					t.Fatalf("valid identity: %+v", a)
+				}
+			case "unconfirmed":
+				if !errors.Is(err, m0hook.ErrStopUnconfirmed) || !errors.Is(a.InnerStopErr, m0hook.ErrStopUnconfirmed) || a.InnerStopReceipt.Absent || string(a.InnerStopReceipt.Evidence) != "not confirmed" {
+					t.Fatal("unconfirmed emergency receipt lost")
 				}
 			case "inner-error":
 				if !errors.Is(err, stopErr) || !errors.Is(a.InnerStopErr, stopErr) {

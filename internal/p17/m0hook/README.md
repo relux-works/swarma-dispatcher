@@ -39,7 +39,12 @@ when certain and consistent with its typed code. Under uncertainty the state
 is the **attempted** state, not durable truth. Such an outcome remains HELD,
 even if the attempted state is unsent or refused. Pre-record failures expose
 no key. No detail-string parsing, guessed nonce, request-ID substitution or
-live-run Restart is used.
+live-run Restart is used. Both directions of state/code agreement are required:
+a terminal state without its proper code, or a terminal code on a nonterminal
+record, is HELD unknown. For a genuinely pre-record definite error, the client
+must preserve its wrap discipline: every post-record Begin failure carries
+BeginRecordError. The converse cannot be inferred if the client omits that
+wrapper; it remains a launcher-client contract to pin explicitly.
 
 A certain unsent owes no end. Stop sends no end for it; H6 never adopts it.
 Only the launcher applies the helper-never-invoked AND qualified zero-process
@@ -53,21 +58,32 @@ committed history. The decorator does not roll it back or override recovery.
 An ordinary pre-spawn or non-committed refusal is clean only if H5 was
 acknowledged and durably recorded. A failed End is returned, not swallowed
 into a nil-error refusal. Unknown End leaves `ending` fenced and quarantined;
-only the next process's H6 retries it. The live Run pointer is dropped on the
-first End, never called twice, and its first outcome remains retained.
+only the next process's H6 retries it. Until that next-process restart pass
+(the only end retry path; Stop never calls RetryEnd), every Stop returns the
+retained unknown refusal, the dispatch stays unresolved at M0, the record stays
+`ending` or `binding`, and the account stays held. The live Run pointer is
+dropped on the first End, never called twice, and its first outcome remains
+retained; dropping it never drops the refusal. A `binding` record still needs
+operator recovery; H6 never guesses its run identity.
 `Attempt.ChildStatusKnown` is explicitly false: M0 receipts supply no child
 exit status, so End.Verdict.Status zero is not a known exit 0.
 
 Stop first looks up execution ID and the exact worker tuple, not the distinct
-stop effect ID. A unique known effect is locked **before** Inner.Stop, ordering
-it with Start. Inner.Stop precedes H5. Unknown effects keep unlocked
-pass-through. An ambiguous match returns `ErrStopAmbiguous`, retains it on
-both candidates and chooses neither for H5. Start requires nonempty effect
-and execution IDs. An empty Stop effect is refused with `ErrEffectRequired`
-**after** Inner.Stop, with no H5.
+stop effect ID. All matching candidates are locked in effect-ID order **before**
+Inner.Stop, including ambiguity. Only an in-flight claim or a live/held run
+counts toward ambiguity; terminal run-less refusals cannot block a live run.
+A Stop that acquires a claimed effect before Start marks it stopped: Start
+returns `ErrStopped` before even the event seam. Inner.Stop precedes H5.
+A Stop that predates claim cannot fence a future unknown Start; M0's durable
+commit/cancel gate owns that case. Unknown effects keep unlocked pass-through.
+An ambiguous match returns `ErrStopAmbiguous`, retains it on every run-owning
+candidate and chooses none for H5. Start requires nonempty effect and execution
+IDs. Empty Stop identities are refused with `ErrEffectRequired` or
+`ErrExecutionRequired` **after** Inner.Stop, with no H5.
 
-Stop's deliberate startup/latch exception: it always calls Inner.Stop, even
-before successful restart or after the fatal latch, because stopping a child
+Stop's deliberate startup/latch exception: non-reentrant calls always reach
+Inner.Stop, even before successful restart or after the fatal latch, because
+stopping a child
 is never refused. It then returns the gate/fatal error and performs **no
 launcher state I/O**. A sync-carrying Inner.Stop error also latches and skips
 H5. Receipts and all available inner/end error causes are preserved.
@@ -78,21 +94,43 @@ execution and worker. The default refuses by name. A missing/invalid identity
 never sends a made-up stop; `Attempt.InnerStopAttempted == false` together
 with `InnerStopErr` explicitly records that no inner stop was possible. The
 returned error retains this cause, and the ordinary failure path relies on
-H5's uid sweep. A supplied emergency stop's own error is joined and retained.
+H5's uid sweep. The full request is checked: identities, the first obligation's
+event/detection, allowed unique sources, expiry against the original deadline,
+nonnegative times and the earliest ceiling computed from the start's fixed
+bounds. External event provenance remains the seam producer's assertion;
+Start carries no cancel/removal event against which to cross-check it.
+`Attempt.InnerStopReceipt` retains the emergency receipt; a non-absent receipt
+returns `ErrStopUnconfirmed`, and its own error is also joined and retained.
+This layer writes **no durable intent** for that emergency call. Before
+activation, the daemon must authorize consumption of its stop effect outside
+M0's journaled stop pass and ensure repeated consumption is safe.
 Fatal errors instead preserve the held run and exit duty without further
 launcher state I/O; a fatal duty is never a clean refusal.
 
 The bounded diagnostic cache retains 256 terminal attempts; live and HELD
 attempts are not evicted. A separate process-life seen set is never evicted:
 one entry per distinct attempted effect until process exit. Diagnostic
-eviction never allows a second Begin for an old effect.
+eviction never allows a second Begin for an old effect. Duplicate suppression
+is per process; across restarts it rests on M0's durable intent and its one
+dispatch per ledger.
+
+## Named limit: emergency stop after fatal duty
+
+With a latched exit duty and an unpinned or failing stop-identity seam, no
+emergency inner stop can be sent, and fatal duty forbids H5 and its uid sweep.
+Nothing here stops that child until the next process's restart pass; no
+identity is invented and no extra kill path is added. **Activation precondition:
+the stop-identity seam must be pinned before this wiring is activated.** The
+process owner must also enforce the fatal exit duty below.
 
 ## Daemon composition obligations
 
 - Supply **two independent durable installation facts**: the quarantine
   ledger's and the journal's. `Deps.Installation` is required and must be the
   same boot fact passed as `launcher.Config.Installation` and to Start;
-  zero/invalid values refuse. This package neither infers nor persists it.
+  zero/invalid values refuse. Equality is caller-asserted: this constructor
+  cannot inspect the already-built launcher's private installation fact.
+  This package neither infers nor persists it.
 - Take the shared quarantine lifetime lock with
   `Quarantine.Start(directory, sweep.Fresh or sweep.Established)` **before**
   initializing/opening the record store. Immediately after the first
@@ -130,8 +168,14 @@ recorded. A real gate requires separate spawn-held and release seams. Neither
 the tests nor the durable flag prove actual input withholding in this
 composition.
 
-Observe is a pure pass-through. Nothing activates this package; the daemon
-stays on `m0.DefaultSeams()`. No M0 frame, record, code or receipt is changed.
+Seams run while the effect lock is held. A seam must not call Start, Stop or
+Observe of the same wiring for the same run. Context-preserving Inner callbacks
+fail fast with `ErrReentrant`; context-free evidence seams and callbacks that
+discard the context must enforce the rule themselves. This is not goroutine
+identity detection.
+
+Observe is otherwise a pure pass-through. Nothing activates this package; the
+daemon stays on `m0.DefaultSeams()`. No M0 frame, record, code or receipt is changed.
 Tests use hermetic clients, qualified procfs fixtures, counting inner seams
 and real ext4/XFS journals (with explicit filesystem skips if unqualified).
 These fixtures do not qualify a deployment, live holder or privilege helper.

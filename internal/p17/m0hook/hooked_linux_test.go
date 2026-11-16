@@ -79,6 +79,7 @@ type innerFake struct {
 	pid         int
 	startErr    error
 	stopErr     error
+	stopReceipt *m0.StopReceipt
 	uncommitted bool
 	observation m0.Observation
 	// atStop runs inside Stop, before the count; tests use it to observe
@@ -118,6 +119,9 @@ func (f *innerFake) Stop(_ context.Context, req m0.StopRequest) (m0.StopReceipt,
 		f.atStop()
 	}
 	f.stops = append(f.stops, req)
+	if f.stopReceipt != nil {
+		return *f.stopReceipt, f.stopErr
+	}
 	return m0.StopReceipt{Absent: true, Evidence: []byte("synthetic fenced absence")}, f.stopErr
 }
 
@@ -391,7 +395,10 @@ func (e *env) build() *m0hook.Hooked {
 type stopRequestsFake struct{}
 
 func (stopRequestsFake) StopRequest(req m0.StartRequest) (m0.StopRequest, error) {
-	return m0.StopRequest{EffectID: "stop-" + req.EffectID, ExecutionID: req.ExecutionID, Worker: req.Worker}, nil
+	return m0.StopRequest{EffectID: "stop-" + req.EffectID, ExecutionID: req.ExecutionID, Worker: req.Worker,
+		Event: 1700000100, Detection: 1700000101,
+		Obligations: []m0.StopObligation{{Source: "cancel", Event: 1700000100, Detection: 1700000101}},
+		Ceiling:     m0.StopCeiling(1700000100, 1700000101, req.Deadlines.DetectSeconds, req.Deadlines.StopSeconds)}, nil
 }
 
 func (e *env) hookDeps() m0hook.Deps {
@@ -439,6 +446,7 @@ func startReq(effect string, uid uint32) m0.StartRequest {
 		ExecProfile:     "profile",
 		Entry:           []byte("{}"),
 		EntryDigest:     "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		Deadlines:       m0.Deadlines{ReservedAt: 1700000000, Expiry: 1700000200, DetectSeconds: 5, StopSeconds: 10, DeadlineMs: 1700000200000},
 	}
 }
 
@@ -545,8 +553,13 @@ func TestPreBoundRefusalsZeroInner(t *testing.T) {
 	}
 }
 
-// Claim: HELD stays binding with no start, commit, rebind or end, even on repeated calls; control: TestBoundRunStartsOnceAndStopsEnded.
+// Claim: HELD stays binding and every Stop retains run_bind_unknown without a rebind or end; acknowledged End is the adjacent control.
 func TestHeldBindNeverStartsOrRebinds(t *testing.T) {
+	t.Run("acknowledged", TestBoundRunStartsOnceAndStopsEnded)
+	t.Run("held", heldBindNeverStartsOrRebinds)
+}
+
+func heldBindNeverStartsOrRebinds(t *testing.T) {
 	e := newEnv(t)
 	e.km.BindMode = "close"
 	h := e.build()
@@ -570,12 +583,14 @@ func TestHeldBindNeverStartsOrRebinds(t *testing.T) {
 	if starts != 0 || len(e.km.Binds()) != 1 || e.kmDialer.Dials() != 1 || len(e.store.Keys()) != 1 || e.only().State != runrecord.Binding {
 		t.Fatalf("second start bound again: starts=%d binds=%d dials=%d keys=%v", starts, len(e.km.Binds()), e.kmDialer.Dials(), e.store.Keys())
 	}
-	// Stop for a HELD effect is Inner.Stop only: the binding record is not
-	// touched and no end is sent.
-	_, err = h.Stop(context.Background(), stopReq(effectA, cuid))
-	must(t, err)
-	if _, stops := e.inner.counts(); stops != 1 || len(e.km.Ends()) != 0 || e.only().State != runrecord.Binding {
-		t.Fatalf("stop on held: stops=%d ends=%d record %+v", stops, len(e.km.Ends()), e.only())
+	for i := 1; i <= 3; i++ {
+		r, err := h.Stop(context.Background(), stopReq(effectA, cuid))
+		if !codes.Is(err, codes.BindUnknown) || !r.Absent || string(r.Evidence) != "synthetic fenced absence" {
+			t.Fatalf("Stop %d lost held bind refusal: %+v %v", i, r, err)
+		}
+		if _, stops := e.inner.counts(); stops != i || len(e.km.Ends()) != 0 || e.only().State != runrecord.Binding {
+			t.Fatalf("stop on held: stops=%d ends=%d record %+v", stops, len(e.km.Ends()), e.only())
+		}
 	}
 }
 
@@ -649,8 +664,13 @@ func TestInnerFailuresEndThroughH5(t *testing.T) {
 	}
 }
 
-// Claim: a lost end ACK preserves the inner result, exact ending intent and quarantine without retrying End; control: TestBoundRunStartsOnceAndStopsEnded.
+// Claim: a lost end ACK retains run_end_unknown on every Stop, ending intent and quarantine without retry; acknowledged End is the adjacent control.
 func TestLostEndAckStaysEndingQuarantined(t *testing.T) {
+	t.Run("acknowledged", TestBoundRunStartsOnceAndStopsEnded)
+	t.Run("lost", lostEndAckStaysEndingQuarantined)
+}
+
+func lostEndAckStaysEndingQuarantined(t *testing.T) {
 	e := newEnv(t)
 	e.km.EndMode = "close"
 	h := e.build()
@@ -672,11 +692,14 @@ func TestLostEndAckStaysEndingQuarantined(t *testing.T) {
 	if code, ok := h.Code(effectA); !ok || code != codes.EndUnknown || !a.Ended || !codes.Is(a.EndErr, codes.EndUnknown) || a.End == nil || a.End.Acknowledged {
 		t.Fatalf("code %q ok=%v attempt %+v", code, ok, a)
 	}
-	// The same run is never ended twice from here: a second Stop is Inner.Stop only.
-	_, err = h.Stop(context.Background(), stopReq(effectA, cuid))
-	must(t, err)
-	if _, stops := e.inner.counts(); stops != 2 || len(e.km.Ends()) != 1 || e.record(a.Key).State != runrecord.Ending {
-		t.Fatalf("second stop stops=%d ends=%d", stops, len(e.km.Ends()))
+	for i := 2; i <= 3; i++ {
+		r, err := h.Stop(context.Background(), stopReq(effectA, cuid))
+		if !codes.Is(err, codes.EndUnknown) || !r.Absent || string(r.Evidence) != "synthetic fenced absence" {
+			t.Fatalf("Stop %d lost retained end refusal: %+v %v", i, r, err)
+		}
+		if _, stops := e.inner.counts(); stops != i || len(e.km.Ends()) != 1 || e.record(a.Key).State != runrecord.Ending {
+			t.Fatalf("repeated stop stops=%d ends=%d", stops, len(e.km.Ends()))
+		}
 	}
 }
 
@@ -836,7 +859,7 @@ func TestHygieneViolationRefusesBeforeInner(t *testing.T) {
 	}
 }
 
-// Claim: concurrent Start/Stop plus a final Stop end once in the scripted state with no child/live Run, for acknowledged and lost End neighbours.
+// Claim: forced in-flight Start/Stop interleavings bind and end once; second and third Stop retain unknown End debt or return nil after acknowledged End.
 func TestConcurrentStartStopOneBind(t *testing.T) {
 	for _, mode := range []string{"", "close"} {
 		name := "ack"
@@ -850,22 +873,42 @@ func TestConcurrentStartStopOneBind(t *testing.T) {
 func concurrentStartStop(t *testing.T, mode string) {
 	e := newEnv(t)
 	e.km.EndMode = mode
-	h := e.build()
+	d := e.hookDeps()
+	s := waitingEvents{make(chan struct{}), make(chan struct{})}
+	d.Events = s
+	h, err := m0hook.New(context.Background(), d)
+	must(t, err)
 	const n = 8
+	waiting := make(chan struct{}, 2*n)
+	m0hook.OnEffectWait(h, func() { waiting <- struct{}{} })
+	firstDone := make(chan error, 1)
+	go func() { _, err := h.Start(context.Background(), startReq(effectA, cuid), e.gate); firstDone <- err }()
+	<-s.entered
 	var wg sync.WaitGroup
 	errs := make([]error, n)
+	stopErrs := make([]error, n)
 	for i := 0; i < n; i++ {
 		wg.Add(2)
 		go func(i int) {
 			defer wg.Done()
 			_, errs[i] = h.Start(context.Background(), startReq(effectA, cuid), e.gate)
 		}(i)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
-			_, _ = h.Stop(context.Background(), stopReq(effectA, cuid))
-		}()
+			_, stopErrs[i] = h.Stop(context.Background(), stopReq(effectA, cuid))
+		}(i)
 	}
+	for i := 0; i < 2*n; i++ {
+		<-waiting
+	}
+	close(s.release)
+	must(t, <-firstDone)
 	wg.Wait()
+	for _, err := range stopErrs {
+		if (err == nil) != (mode == "") || codes.Is(err, codes.EndUnknown) != (mode == "close") {
+			t.Fatalf("concurrent Stop lost retained refusal: %v", err)
+		}
+	}
 	starts, _ := e.inner.counts()
 	srcDials, _ := e.srcDialer.Dials()
 	if len(e.km.Binds()) > 1 || e.kmDialer.Dials() > 1 || starts > 1 || srcDials > 1 || len(e.store.Keys()) > 1 {
@@ -877,10 +920,10 @@ func concurrentStartStop(t *testing.T, mode string) {
 			first++
 		}
 	}
-	if first != 1 {
-		t.Fatalf("%d starts were not refused as a known effect, want 1: %v", first, errs)
+	if first != 0 {
+		t.Fatalf("%d duplicate starts were not refused as a known effect: %v", first, errs)
 	}
-	_, err := h.Stop(context.Background(), stopReq("final-stop", cuid))
+	_, err = h.Stop(context.Background(), stopReq("final-stop", cuid))
 	if err != nil && !(mode == "close" && codes.Is(err, codes.EndUnknown)) {
 		t.Fatalf("final Stop: %v", err)
 	}
@@ -896,8 +939,12 @@ func concurrentStartStop(t *testing.T, mode string) {
 		t.Fatal("child survived concurrent Stop")
 	}
 	kills := len(e.killer.UIDs())
-	_, err = h.Stop(context.Background(), stopReq("later-stop", cuid))
-	must(t, err)
+	for i := 2; i <= 3; i++ {
+		r, err := h.Stop(context.Background(), stopReq("later-stop", cuid))
+		if (err == nil) != (mode == "") || codes.Is(err, codes.EndUnknown) != (mode == "close") || !r.Absent || string(r.Evidence) != "synthetic fenced absence" {
+			t.Fatalf("Stop %d lost retained refusal: %+v %v", i, r, err)
+		}
+	}
 	if len(e.km.Ends()) != 1 || len(e.killer.UIDs()) != kills {
 		t.Fatal("live run retained after final Stop")
 	}
@@ -1118,14 +1165,18 @@ func TestRunEndedOnce(t *testing.T) {
 				t.Fatalf("first stop: attempt %+v ends=%d", first, len(e.km.Ends()))
 			}
 			kills := len(e.killer.UIDs())
-			_, err = h.Stop(context.Background(), stopReq(effectA, cuid))
-			must(t, err)
-			second, _ := h.Last(effectA)
-			if second.End != first.End || errors.Is(second.EndErr, launcher.ErrEndCalled) || (second.EndErr == nil) != c.acked || second.Code != first.Code {
-				t.Fatalf("second stop ended the run again: first %+v second %+v", first, second)
-			}
-			if _, stops := e.inner.counts(); stops != 2 || len(e.km.Ends()) != 1 || len(e.killer.UIDs()) != kills {
-				t.Fatalf("second stop: stops=%d ends=%d kills %d->%d", stops, len(e.km.Ends()), kills, len(e.killer.UIDs()))
+			for i := 2; i <= 3; i++ {
+				r, err := h.Stop(context.Background(), stopReq(effectA, cuid))
+				if (err == nil) != c.acked || codes.Is(err, codes.EndUnknown) == c.acked || !r.Absent || string(r.Evidence) != "synthetic fenced absence" {
+					t.Fatalf("Stop %d retained refusal: %+v %v", i, r, err)
+				}
+				second, _ := h.Last(effectA)
+				if second.End != first.End || errors.Is(second.EndErr, launcher.ErrEndCalled) || (second.EndErr == nil) != c.acked || second.Code != first.Code {
+					t.Fatalf("repeated stop ended the run again: first %+v second %+v", first, second)
+				}
+				if _, stops := e.inner.counts(); stops != i || len(e.km.Ends()) != 1 || len(e.killer.UIDs()) != kills {
+					t.Fatalf("repeated stop: stops=%d ends=%d kills %d->%d", stops, len(e.km.Ends()), kills, len(e.killer.UIDs()))
+				}
 			}
 		})
 	}

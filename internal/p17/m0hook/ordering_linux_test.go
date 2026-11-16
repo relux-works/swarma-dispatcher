@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/relux-works/a2a-swarm/runorigin"
 	"github.com/relux-works/swarma-dispatcher/internal/journal"
@@ -32,33 +31,30 @@ func TestStopWaitsForKnownStart(t *testing.T) {
 	d := e.hookDeps()
 	s := waitingEvents{make(chan struct{}), make(chan struct{})}
 	d.Events = s
-	reached := make(chan struct{}, 1)
-	e.inner.atStop = func() { reached <- struct{}{} }
 	h, err := m0hook.New(context.Background(), d)
 	must(t, err)
+	waiting := make(chan struct{})
+	m0hook.OnEffectWait(h, func() { close(waiting) })
+	var startReturned atomic.Bool
+	e.inner.atStop = func() {
+		if !startReturned.Load() {
+			t.Error("Inner.Stop overtook a known Start")
+		}
+	}
 	startDone := make(chan error, 1)
 	go func() { _, err := h.Start(context.Background(), startReq(effectA, cuid), e.gate); startDone <- err }()
 	<-s.entered
 	stopDone := make(chan error, 1)
-	scheduled := make(chan struct{})
 	go func() {
-		close(scheduled)
 		_, err := h.Stop(context.Background(), stopReq("stop", cuid))
 		stopDone <- err
 	}()
-	<-scheduled
-	early := false
-	select {
-	case <-reached:
-		early = true
-	case <-time.After(100 * time.Millisecond):
-	}
+	// A contended acquisition, not a scheduling hint or elapsed interval.
+	<-waiting
+	startReturned.Store(true)
 	close(s.release)
 	must(t, <-startDone)
 	must(t, <-stopDone)
-	if early {
-		t.Fatal("Inner.Stop overtook a known Start")
-	}
 	if e.only().State != runrecord.Ended || len(e.km.Ends()) != 1 {
 		t.Fatalf("final state=%s ends=%d", e.only().State, len(e.km.Ends()))
 	}
@@ -148,8 +144,8 @@ func TestRequiredIdentities(t *testing.T) {
 	}
 }
 
-// Claim: ambiguous execution/worker stops return and retain the error on both candidates, with no chosen H5; the unique-match control ends normally.
-func TestAmbiguousStop(t *testing.T) {
+// Claim: a run-less terminal refusal cannot make a unique live run ambiguous; the live run alone is the adjacent control.
+func TestRunlessStopCandidate(t *testing.T) {
 	for _, ambiguous := range []bool{false, true} {
 		t.Run(fmt.Sprint(ambiguous), func(t *testing.T) {
 			e := newEnv(t)
@@ -162,24 +158,9 @@ func TestAmbiguousStop(t *testing.T) {
 				must(t, err)
 			}
 			_, err = h.Stop(context.Background(), stopReq("stop", cuid))
-			if errors.Is(err, m0hook.ErrStopAmbiguous) != ambiguous {
-				t.Fatalf("ambiguous=%v error=%v", ambiguous, err)
-			}
-			if ambiguous {
-				for _, id := range []string{effectA, "effect-b"} {
-					a, ok := h.Last(id)
-					if !ok || !errors.Is(a.Err, m0hook.ErrStopAmbiguous) {
-						t.Fatalf("candidate %s error not retained: %+v", id, a)
-					}
-				}
-				if len(e.km.Ends()) != 0 || e.only().State != runrecord.Bound {
-					t.Fatal("ambiguity selected a run")
-				}
-			} else {
-				must(t, err)
-				if len(e.km.Ends()) != 1 || e.only().State != runrecord.Ended {
-					t.Fatal("matching control not ended")
-				}
+			must(t, err)
+			if len(e.km.Ends()) != 1 || e.only().State != runrecord.Ended {
+				t.Fatal("run-less refusal blocked the unique run's end")
 			}
 		})
 	}

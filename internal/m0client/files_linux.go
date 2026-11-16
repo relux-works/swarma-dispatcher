@@ -152,13 +152,28 @@ func (c *Config) loadPlan(op m0.Op) (*m0.SigningPlan, error) {
 	return plan, nil
 }
 
-// signPreimage reads the 32-byte seed and signs the preimage. The file must
-// be a regular single-link file owned by the effective UID with mode exactly
-// 0600 and size exactly 32, opened without following a symlink. The derived
-// public key must be the association key. The seed and the expanded key are
-// zeroed before return; neither is ever printed, logged or copied elsewhere.
+// signPreimage opens the 32-byte seed through a pinned caller-owned 0700
+// parent and protected root/caller-owned ancestors, without symlinks. The
+// file must be regular, single-link, effective-UID-owned and exactly 0600.
+// Recheck the pinned path after reading, before deriving the associated key
+// or signing. The seed and expanded key are zeroed before return; neither
+// is ever printed, logged or copied elsewhere.
 func signPreimage(c *Config, r *m0.Request) (sig string, reason string, err error) {
-	fd, err := syscall.Open(c.KeyFile, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
+	if !validAbsolute(c.KeyFile) {
+		return "", reasonKeyFileUnsafe, errShape
+	}
+	owner := c.host.effectiveUID()
+	parent := path.Dir(c.KeyFile)
+	dir, err := c.host.pinDirectory(parent, owner)
+	if err != nil {
+		return "", reasonKeyFileUnsafe, err
+	}
+	defer dir.close()
+	leaf := dir.ids[len(dir.ids)-1]
+	if leaf.mode&syscall.S_IFMT != syscall.S_IFDIR || leaf.uid != owner || leaf.mode&permMask != 0700 {
+		return "", reasonKeyFileUnsafe, errShape
+	}
+	fd, err := syscall.Openat(dir.last(), path.Base(c.KeyFile), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", reasonKeyFileUnsafe, err
 	}
@@ -178,6 +193,9 @@ func signPreimage(c *Config, r *m0.Request) (sig string, reason string, err erro
 	}
 	if n != seedBytes {
 		return "", reasonKeyFileUnsafe, errShape
+	}
+	if err := dir.recheck(parent, owner); err != nil {
+		return "", reasonKeyFileUnsafe, err
 	}
 	private := ed25519.NewKeyFromSeed(buf[:seedBytes])
 	defer clear(private)

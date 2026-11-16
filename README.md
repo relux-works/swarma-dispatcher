@@ -288,6 +288,12 @@ Before key access or storage, the effective UID must equal both `caller.uid` and
 the plan's `association.uid` (the real UID must also equal `caller.uid`).
 The key file is a 32-byte Ed25519 seed: regular, one link, effective-UID-owned,
 mode exactly `0600`; its public key must equal the plan's `association.key`.
+Its parent must be caller-owned, mode exactly `0700`, through non-symlink
+root/caller-owned ancestors not writable by group or others. The tool opens the
+key with `openat` and `O_NOFOLLOW` through that pinned parent, then rechecks the
+ancestors after reading and before using the seed. Installation must keep it
+outside every worker home, workspace, export and retention path; the key must
+never enter argv, the environment, logs, a journal, backup or export.
 The tool never creates, repairs, prints or copies a key. Canonical request bytes
 and spellings come from `internal/m0`, not a second canonicalizer.
 
@@ -314,9 +320,11 @@ sent remains exit `17`. This tool activates nothing and qualifies nothing: the
 request is the installed signing plan, and the caller must be on the daemon's
 managed M0 caller list. Managed-caller transport admission is separate work.
 Tests drive the real M0 runtime/extension behind a test Unix-socket listener,
-with modeled protected ownership and managed caller credentials. An end-to-end
-test through the real daemon serve loop belongs to the transport unit, not this
-tool; these tests do not qualify that loop or a deployed daemon.
+modeling root ownership and the managed caller UID through an unexported test
+boundary. Proof with a real kernel caller peer belongs to the transport's
+real-peer control ([PR #31](https://github.com/relux-works/swarma-dispatcher/pull/31));
+an end-to-end test of this tool against it follows once that change has landed,
+so these tests do not qualify the real serve loop or a deployed daemon.
 
 ## Demo tools (not production)
 

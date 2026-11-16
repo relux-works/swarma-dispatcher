@@ -188,7 +188,7 @@ func newEnv(t *testing.T) *env {
 			return st, err
 		}
 		switch {
-		case name == e.keyPath || name == e.stateDir || strings.HasPrefix(name, e.stateDir+"/") || name == e.callerDir:
+		case name == e.keyPath || name == filepath.Dir(e.keyPath) || name == e.stateDir || strings.HasPrefix(name, e.stateDir+"/") || name == e.callerDir:
 			st.Uid = e.policy.Association.UID
 		case name == e.epDir:
 			st.Gid = serviceGID

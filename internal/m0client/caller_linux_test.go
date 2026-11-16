@@ -343,7 +343,9 @@ func TestKeyFileForeignOwner(t *testing.T) {
 	native := c.host.stat
 	c.host.stat = func(fd int) (syscall.Stat_t, error) {
 		st, err := native(fd)
-		st.Uid++
+		if st.Mode&syscall.S_IFMT == syscall.S_IFREG {
+			st.Uid++
+		}
 		return st, err
 	}
 	if _, reason, _ := SignRequest(c, plan); reason != reasonKeyFileUnsafe {

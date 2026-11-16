@@ -166,7 +166,9 @@ func (Pinned) DecodeEndRequest(b []byte) (Request, error) {
 }
 
 // Hello negotiates the native protocol before any bind, within the given
-// budget; it carries no mutation and authenticates no peer.
+// budget. It sends a hello frame but no bind; it creates no run/channel and
+// authenticates neither the peer nor the launcher. The holder checks and audits
+// hello; endpoint pins precede it.
 func (w Pinned) Hello(c net.Conn, timeout time.Duration) error {
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {

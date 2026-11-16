@@ -153,7 +153,7 @@ func TestQuarantineRelease(t *testing.T) {
 	p := tree(t)
 	exportEvidence := sweep.StaticWorkProductExport{}
 	operator := sweep.StaticOperatorRelease{}
-	q := sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: exportEvidence, Operator: operator}}
+	q := newQuarantine(t, sweep.ReleaseGate{WorkProductExport: exportEvidence, Operator: operator})
 	const run = "run-a"
 	if err := q.Lease(ri, run); err != nil {
 		t.Fatal(err)
@@ -217,13 +217,13 @@ func TestQuarantineRelease(t *testing.T) {
 	d, err = q.Release(run, ri, true, sweep.Enumerate(sweep.View{ProcRoot: p.Root + "/missing", MountInfo: p.MountInfoPath()}, ri))
 	refuse(t, "failed enumeration", d, err)
 	// Failed export status, and the refusing default.
-	broken := sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: failingWorkProductExport{errors.New("export evidence unavailable")}, Operator: operator}}
+	broken := newQuarantine(t, sweep.ReleaseGate{WorkProductExport: failingWorkProductExport{errors.New("export evidence unavailable")}, Operator: operator})
 	broken.Hold(ri, run)
 	d, err = broken.Release(run, ri, true, sweep.Enumerate(p.View(), ri))
 	if !errors.Is(err, sweep.ErrQuarantined) || d.Release || d.WorkProductExportSatisfied || d.WorkProductExportErr == nil || !broken.Held(ri) {
 		t.Fatalf("unreadable export evidence: %+v err=%v", d, err)
 	}
-	var unpinned sweep.Quarantine
+	unpinned := newQuarantine(t, sweep.ReleaseGate{})
 	unpinned.Hold(ri, run)
 	d, err = unpinned.Release(run, ri, true, sweep.Enumerate(p.View(), ri))
 	if !errors.Is(err, sweep.ErrQuarantined) || d.Release || !codes.IsUnpinned(d.WorkProductExportErr) || !codes.IsUnpinned(d.OperatorErr) || !unpinned.Held(ri) {

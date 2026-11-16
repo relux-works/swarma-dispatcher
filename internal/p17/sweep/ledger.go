@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -23,20 +24,46 @@ type Entry struct {
 	Helper bool   `json:"helper"`
 }
 
+// priorRecords is an independent fail-closed cross-check, including custom
+// record directories. It does not follow symlinks or read a temporary ledger.
+func priorRecords(directory string) bool {
+	found := false
+	err := filepath.WalkDir(directory, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Name() == "journal" || (!entry.IsDir() && len(entry.Name()) >= 4 && entry.Name()[:4] == "run-") {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found || err != nil
+}
+
+// Crashed .quarantine-* files are deliberately ignored, never replayed as state.
+// Only QuarantineName is authoritative; no broad cache cleanup is authorized.
 type ledger struct {
 	Version int              `json:"version"`
 	Entries map[uint32]Entry `json:"entries"`
 }
 
-// Start takes the lifetime launcher lock, then loads the ledger. A missing
-// ledger is fresh state; every lease is persisted before it can be used.
+// Start takes the lifetime launcher lock before any journal is opened. The
+// caller supplies an explicit installation fact. Missing established state
+// blocks every uid; it is never an invitation to initialize a replacement.
 // A malformed ledger blocks ALL uids, including uids not seen in any record.
 // All launchers of one process must share this Quarantine and call Close only
 // after all runs stop. The reaper must take this lock before opening a journal.
-func (q *Quarantine) Start(directory string) error {
+func (q *Quarantine) Start(directory string, installation ...Installation) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if len(installation) != 1 || (installation[0] != Fresh && installation[0] != Established) {
+		return ErrInstallation
+	}
 	if q.started {
+		if q.installation != installation[0] {
+			return ErrInstallation
+		}
 		if q.directory != directory {
 			return errors.New("sweep: quarantine shared across different state directories")
 		}
@@ -70,12 +97,17 @@ func (q *Quarantine) Start(directory string) error {
 	q.lock = f
 	q.directory = directory
 	q.started = true
+	q.installation = installation[0]
 	if q.held == nil {
 		q.held = map[uint32]Entry{}
 	}
 	path := filepath.Join(directory, QuarantineName)
 	fd, err = syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, os.ErrNotExist) {
+		if installation[0] != Fresh || priorRecords(directory) {
+			q.blocked = errors.Join(ErrQuarantined, errors.New("sweep: missing established ledger; all uids held"))
+			return q.blocked
+		}
 		return q.persistLocked()
 	}
 	if err != nil {
@@ -84,6 +116,10 @@ func (q *Quarantine) Start(directory string) error {
 	}
 	in := os.NewFile(uintptr(fd), QuarantineName)
 	defer in.Close()
+	if installation[0] == Fresh {
+		q.blocked = errors.Join(ErrQuarantined, errors.New("sweep: fresh installation has existing state"))
+		return q.blocked
+	}
 	var fileStat syscall.Stat_t
 	if err = syscall.Fstat(fd, &fileStat); err != nil || fileStat.Mode&syscall.S_IFMT != syscall.S_IFREG || fileStat.Mode&07777 != 0600 || fileStat.Uid != uint32(os.Geteuid()) || fileStat.Nlink != 1 || fileStat.Size > 4<<20 {
 		q.blocked = errors.Join(ErrQuarantined, errors.New("sweep: quarantine protection or size refused; all uids held"), err)
@@ -139,7 +175,8 @@ func (q *Quarantine) Close() error {
 	}
 	err := q.lock.Close()
 	q.lock = nil
-	q.blocked = errors.New("sweep: quarantine closed; all uids held")
+	q.blocked = errors.Join(q.blocked, errors.New("sweep: quarantine closed; all uids held"))
+	q.ready = false
 	return err
 }
 
@@ -147,6 +184,12 @@ func (q *Quarantine) Close() error {
 func (q *Quarantine) Note(uid uint32, key, reason string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if err := q.keyedLocked([]string{key}); err != nil {
+		return err
+	}
+	if reason == "" {
+		return ErrQuarantined
+	}
 	e, ok := q.held[uid]
 	if !ok || e.Holder != key {
 		return ErrQuarantined
@@ -160,6 +203,12 @@ func (q *Quarantine) Note(uid uint32, key, reason string) error {
 func (q *Quarantine) Transfer(uid uint32, old, key string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if err := q.keyedLocked([]string{old}); err != nil {
+		return err
+	}
+	if key == "" {
+		return ErrQuarantined
+	}
 	e, ok := q.held[uid]
 	if !ok || e.Holder != old || q.busy[uid] != 0 {
 		return ErrQuarantined
@@ -173,9 +222,9 @@ func (q *Quarantine) persistLocked() error {
 	if q.blocked != nil {
 		return q.blocked
 	}
-	if q.directory == "" {
-		return nil
-	} // Standalone decision tests; launcher always calls Start.
+	if !q.started || q.directory == "" {
+		return ErrNotStarted
+	}
 	fail := func(err error) error { q.blocked = errors.Join(ErrNotDurable, err); return q.blocked }
 	b, err := json.Marshal(ledger{Version: 1, Entries: q.held})
 	if err != nil {

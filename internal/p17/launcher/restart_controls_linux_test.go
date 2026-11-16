@@ -40,15 +40,17 @@ func freshProcess(t *testing.T, e *env) {
 		must(t, c.Close())
 	}
 	must(t, e.store.Close())
+	e.quar = &sweep.Quarantine{}
+	e.cfg.Installation = sweep.Established
+	must(t, e.quar.Start(e.jcfg.Directory, sweep.Established))
 	var err error
 	if len(e.store.Keys()) == 0 {
 		e.store, err = runrecord.Initialize(e.jcfg)
 	} else {
-		e.store, err = runrecord.Open(e.jcfg)
+		e.store, err = runrecord.Open(e.jcfg, e.quar)
 	}
 	must(t, err)
 	t.Cleanup(func() { _ = e.store.Close() })
-	e.quar = &sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: e.exportEvidence, Operator: e.operator}}
 }
 
 // Claim: a fresh launcher and quarantine retain pre-record process/helper holds; a clean failure returns its lease across restart.
@@ -64,7 +66,8 @@ func TestDurablePreRecordLease(t *testing.T) {
 			e.deps.Nonce = func() (string, error) {
 				calls++
 				if mode == "helper" && calls == 2 {
-					e.quar.MarkHelper(cuid)
+					entry, _ := e.quar.Entry(cuid)
+					must(t, e.quar.MarkHelper(cuid, entry.Holder))
 					must(t, e.killer.KillAll(context.Background(), cuid))
 				}
 				return e.nonce()
@@ -118,7 +121,7 @@ func TestEndingRecordBlocksReuse(t *testing.T) {
 	run := endReady(t, e)
 	e.operator[run.Key] = cuid
 	out, err := run.End(context.Background(), 0, true, nil)
-	if !codes.Is(err, codes.EndUnknown) || !out.UIDReleased || e.record(run.Key).State != runrecord.Ending {
+	if !codes.Is(err, codes.EndUnknown) || out.UIDReleased || e.record(run.Key).State != runrecord.Ending {
 		t.Fatalf("setup %+v %v", out, err)
 	}
 	dials := e.kmDialer.Dials()
@@ -129,8 +132,7 @@ func TestEndingRecordBlocksReuse(t *testing.T) {
 		t.Fatalf("leased over ending record: %v", err)
 	}
 	e.km.SetEndMode("")
-	// Operator recovery restores the old record's hold before retrying its sweep.
-	holdRecord(e.quar, cuid, run.Key)
+	// An unacknowledged end retains its hold, so RetryEnd still owns its sweep.
 	_, err = e.l.RetryEnd(context.Background(), run.Key)
 	must(t, err)
 	_, err = e.l.Begin(context.Background(), "after-ended")
@@ -235,7 +237,7 @@ func parseLastBind(e *env) (string, string, error) {
 	return id, req.InputPrincipal.Generation, err
 }
 
-// Claim: a uid with a live record is rejected even with a fresh empty in-memory quarantine.
+// Claim: an operator proof cannot release a live record's uid, which cannot be re-leased; a different uid still binds.
 func TestLiveRecordLeaseGuard(t *testing.T) {
 	e := newEnv(t)
 	r, err := e.build().Begin(context.Background(), "old")
@@ -243,8 +245,10 @@ func TestLiveRecordLeaseGuard(t *testing.T) {
 	// Exercise the pool's record guard directly, without relying on restart holds.
 	proof := sweep.Enumerate(e.proc.View(), cuid)
 	e.operator[r.Key] = cuid
-	_, err = e.quar.Release(r.Key, cuid, false, proof)
-	must(t, err)
+	d, err := e.quar.Release(r.Key, cuid, false, proof)
+	if !errors.Is(err, sweep.ErrQuarantined) || d.Release || d.Reason != "conflicting non-terminal record" {
+		t.Fatalf("live record released: %+v %v", d, err)
+	}
 	if err = leaseRecord(e.quar, cuid, "new"); !errors.Is(err, sweep.ErrQuarantined) {
 		t.Fatalf("record guard bypassed: %v", err)
 	}

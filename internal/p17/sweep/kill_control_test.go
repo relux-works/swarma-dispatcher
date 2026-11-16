@@ -24,9 +24,19 @@ func TestUnqualifiedViewStillKills(t *testing.T) {
 				}
 			}
 			k := &fakes.Killer{Tree: p}
-			q := sweep.Quarantine{}
-			q.Hold(ri)
-			out := sweep.Sweep(context.Background(), p.View(), ri, k, sweep.Budget{Attempts: 3})
+			q := newQuarantine(t, sweep.ReleaseGate{})
+			if err := q.Hold(ri, "run"); err != nil {
+				t.Fatal(err)
+			}
+			out := q.WithLease(ri, "run", func() sweep.Outcome {
+				if err := q.MarkHelper(ri, "run"); err != nil {
+					t.Fatal(err)
+				}
+				return sweep.Sweep(context.Background(), p.View(), ri, k, sweep.Budget{Attempts: 3})
+			})
+			if !q.HelperInvoked(ri) {
+				t.Fatal("sweep did not use its quarantine")
+			}
 			if hidden {
 				if out.Kills != 3 || out.Final.Proved() || out.Err == nil || !q.Held(ri) {
 					t.Fatalf("hidden view skipped kills or proved: %+v", out)

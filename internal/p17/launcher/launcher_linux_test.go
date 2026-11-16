@@ -136,10 +136,12 @@ func newEnv(t *testing.T) *env {
 	e.killer = &fakes.Killer{Tree: e.proc}
 	e.exportEvidence = sweep.StaticWorkProductExport{}
 	e.operator = sweep.StaticOperatorRelease{}
-	e.quar = &sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: e.exportEvidence, Operator: e.operator}}
+	e.quar = &sweep.Quarantine{}
+	must(t, e.quar.Start(e.jcfg.Directory, sweep.Fresh))
 	e.placement = isolation.Fixed(cuid)
 	e.cfg = launcher.Config{
 		StateDirectory: e.jcfg.Directory,
+		Installation:   sweep.Fresh,
 		LauncherUID:    luid,
 		Station:        "1",
 		RequestTimeout: 100 * time.Millisecond,
@@ -156,11 +158,12 @@ func newEnv(t *testing.T) *env {
 			Generations: source.StaticGenerations{luid: "gen-a"},
 			Budget:      500 * time.Millisecond,
 		},
-		Generations:  source.StaticGenerations{luid: "gen-a"},
-		Keymaker:     e.kmDialer,
-		KeymakerWire: fakes.KeymakerWire{},
-		Incarnations: e.proc.Incarnations(),
-		Nonce:        e.nonce,
+		Generations:       source.StaticGenerations{luid: "gen-a"},
+		Keymaker:          e.kmDialer,
+		KeymakerWire:      fakes.KeymakerWire{},
+		Incarnations:      e.proc.Incarnations(),
+		Nonce:             e.nonce,
+		WorkProductExport: e.exportEvidence, OperatorRelease: e.operator,
 	}
 	return e
 }
@@ -224,8 +227,10 @@ func (e *env) reopen() {
 	e.t.Helper()
 	must(e.t, e.store.Close())
 	must(e.t, e.quar.Close())
-	e.quar = &sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: e.exportEvidence, Operator: e.operator}}
-	st, err := runrecord.Open(e.jcfg)
+	e.quar = &sweep.Quarantine{}
+	e.cfg.Installation = sweep.Established
+	must(e.t, e.quar.Start(e.jcfg.Directory, sweep.Established))
+	st, err := runrecord.Open(e.jcfg, e.quar)
 	must(e.t, err)
 	e.t.Cleanup(func() { _ = st.Close() })
 	e.store = st
@@ -308,8 +313,9 @@ func TestIsolationRefusalZeroContact(t *testing.T) {
 // launch before any contact.
 func TestQuarantinedUIDNeverLeased(t *testing.T) {
 	e := newEnv(t)
-	e.quar.Hold(cuid)
 	l := e.build()
+	l.start.Do(func() { l.Restart(context.Background()) })
+	must(t, e.quar.Hold(cuid, "pre-record"))
 	_, err := l.Begin(context.Background(), "input-1")
 	if !codes.Is(err, codes.IsolationUnqualified) || !errors.Is(err, sweep.ErrQuarantined) {
 		t.Fatalf("%v", err)
@@ -569,7 +575,6 @@ func TestEndAckNoExportKeepsQuarantine(t *testing.T) {
 	e = newEnv(t)
 	e.deps.WorkProductExport = nil
 	e.deps.OperatorRelease = nil
-	e.quar = &sweep.Quarantine{}
 	run = endReady(t, e)
 	out, err = run.End(context.Background(), 0, true, nil)
 	must(t, err)
@@ -998,7 +1003,7 @@ func TestSourceRefusalsNoKeymaker(t *testing.T) {
 // Claim (seams refuse by name, never fall back): with the Keymaker codec
 // unpinned the eager hello refuses by name before any frame or record, and the unused lease is returned; with the sweep helper unpinned an acknowledged
 // end leaves the uid quarantined; with no Keymaker dialer the launch fails
-// with a definite named unpinned refusal after Source validated and before any record.
+// with a definite named unpinned refusal before any Source contact or record.
 func TestUnpinnedSeams(t *testing.T) {
 	e := newEnv(t)
 	e.deps.KeymakerWire = nil
@@ -1025,7 +1030,10 @@ func TestUnpinnedSeams(t *testing.T) {
 	if !codes.IsUnpinned(err) || len(e.store.Keys()) != 0 {
 		t.Fatalf("no dialer: %v", err)
 	}
-	if _, _, validates, _ := e.src.Counts(); validates != 1 {
-		t.Fatal("Source was not validated before the Keymaker refusal")
+	if prepares, _, validates, _ := e.src.Counts(); prepares != 0 || validates != 0 || e.quar.Held(cuid) {
+		t.Fatal("nil dialer contacted Source or retained clean lease")
+	}
+	if n, _ := e.srcDialer.Dials(); n != 0 {
+		t.Fatal("nil dialer connected to Source")
 	}
 }

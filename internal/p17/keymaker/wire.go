@@ -5,8 +5,8 @@
 // client still selects Unpinned and refuses. The codec grants no authority:
 // peer/current-generation authentication remains the dialer's responsibility.
 //
-// Hook text of record: P17 Curator-side hook interface r2.15 (sha256
-// 5b804ba49187df4e7e823703b2e65b569b3dd63cc370f5989e86436b05415246).
+// Hook text of record: P17 Curator-side hook interface r2.16 (sha256
+// 1ff91660ea77af7b0a826c6b8e2978e54770e2a67447f8f5e50bccc2dba922e1).
 //
 // Channel discipline (pin B spec/keymaker.md section 7: "One request is in
 // flight per connection; no unsolicited replies or pipelining"):

@@ -61,6 +61,8 @@ func ReadBudget(timeoutMS int64) time.Duration {
 }
 
 var (
+	// ErrEndpointPin marks a local endpoint pin failure before any application byte.
+	ErrEndpointPin = errors.New("keymaker: endpoint pin check failed")
 	// ErrConnectionGone means the assigned connection is no longer usable.
 	ErrConnectionGone = errors.New("keymaker: assigned connection gone")
 	// ErrLost means the one reply a started request was owed did not arrive
@@ -230,8 +232,8 @@ func (c *Conn) exchange(req Request, b []byte) (Response, error) {
 
 // withNative adds the closed native refusal code and retryable bit of resp, if
 // any, to a HELD refusal for operator reconciliation.
-func withNative(r *codes.Refusal, resp Response) *codes.Refusal {
-	if resp.Refusal == nil {
+func withNative(r *codes.Refusal, resp Response, id string) *codes.Refusal {
+	if resp.Refusal == nil || id == "" || resp.ID != id {
 		return r
 	}
 	return r.With("native_code", resp.Refusal.Code).With("native_retryable", strconv.FormatBool(resp.Refusal.Retryable))
@@ -249,7 +251,7 @@ func (c *Conn) EncodeEnd(id string, req EndRequest) ([]byte, error) {
 	return c.wire.Encode(Request{ID: id, TimeoutMS: c.timeout.Milliseconds(), Method: MethodEnd, End: &req})
 }
 
-// Bind sends j7_run_bind with the given request ID (hooks r2.15, H2 steps 5 and 6).
+// Bind sends j7_run_bind with the given request ID (hooks r2.16, H2 steps 5 and 6).
 //
 // The identical bytes are written again only after a correlated retryable
 // refusal was READ on this same live connection, and at most
@@ -274,7 +276,7 @@ func (c *Conn) Bind(id string, req BindRequest) (BindResult, []byte, error) {
 	held := func(op string, cause error, resp Response) (BindResult, []byte, error) {
 		_ = c.closeLocked()
 		r := codes.Refuse(codes.BindUnknown, op, cause).With("request_id", id).With("requests_written", strconv.Itoa(c.requests))
-		return BindResult{}, b, withNative(r, resp)
+		return BindResult{}, b, withNative(r, resp, id)
 	}
 	var last Response
 	for attempt := 1; ; attempt++ {
@@ -289,7 +291,7 @@ func (c *Conn) Bind(id string, req BindRequest) (BindResult, []byte, error) {
 			last = resp
 		}
 		if resp.Refused {
-			return BindResult{}, b, withNative(codes.Refuse(codes.BindRefused, "correlated no-effect bind refusal", ErrRefused), resp)
+			return BindResult{}, b, withNative(codes.Refuse(codes.BindRefused, "correlated no-effect bind refusal", ErrRefused), resp, id)
 		}
 		if resp.Refusal != nil {
 			// The pinned holder closes after these refusals; never retry them.
@@ -356,7 +358,7 @@ func (c *Conn) endLocked(request Request, b []byte) (EndResult, []byte, error) {
 			_ = c.closeLocked()
 		}
 		r := codes.Refuse(codes.EndUnknown, op, cause).With("request_id", request.ID).With("run_id", request.End.RunID)
-		return EndResult{}, b, withNative(r, resp)
+		return EndResult{}, b, withNative(r, resp, request.ID)
 	}
 	resp, err := c.exchange(request, b)
 	if err != nil {

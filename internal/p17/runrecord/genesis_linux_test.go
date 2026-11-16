@@ -67,7 +67,7 @@ func TestReplayRefusesSyntheticGenesis(t *testing.T) {
 	raw, err := journal.Initialize(c, []byte(`{"v":1,"kind":"p17-run-store/1"}`))
 	must(t, err)
 	must(t, raw.Close())
-	if _, err := runrecord.Open(c); !errors.Is(err, runrecord.ErrReplay) {
+	if _, err := runrecord.Open(c, ownerFor(c)); !errors.Is(err, runrecord.ErrReplay) {
 		t.Fatalf("synthetic genesis adopted: %v", err)
 	}
 	c2 := cfg(t)
@@ -75,7 +75,7 @@ func TestReplayRefusesSyntheticGenesis(t *testing.T) {
 	must(t, err)
 	must(t, st.Create(base("run-a")))
 	must(t, st.Close())
-	st2, err := runrecord.Open(c2)
+	st2, err := runrecord.Open(c2, ownerFor(c2))
 	must(t, err)
 	defer st2.Close()
 	if r, ok := st2.Get("run-a"); !ok || r.State != runrecord.Binding || !st2.Fenced("run-a") {
@@ -94,7 +94,7 @@ func TestInitializationFailureIsSticky(t *testing.T) {
 	st, err := runrecord.Initialize(c)
 	must(t, err)
 	must(t, st.Close())
-	if _, err := runrecord.Open(c); err == nil {
+	if _, err := runrecord.Open(c, ownerFor(c)); err == nil {
 		t.Fatal("a store without any committed record opened as established")
 	}
 	bad := cfg(t)
@@ -111,7 +111,7 @@ func TestInitializationFailureIsSticky(t *testing.T) {
 	if !errors.Is(err, runrecord.ErrCommit) || !runrecord.Uncertain(err) || len(st.Keys()) != 0 {
 		t.Fatalf("failed initialization: %v keys=%v", err, st.Keys())
 	}
-	if err := st.Create(base("run-b")); !errors.Is(err, runrecord.ErrClosed) || runrecord.Uncertain(err) {
+	if err := st.Create(base("run-b")); !errors.Is(err, runrecord.ErrClosed) || !runrecord.Uncertain(err) {
 		t.Fatalf("initialization retried: %v", err)
 	}
 	good := cfg(t)

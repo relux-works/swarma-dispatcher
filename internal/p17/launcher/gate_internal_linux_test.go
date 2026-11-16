@@ -30,6 +30,14 @@ func TestSweepHelperMark(t *testing.T) {
 	}
 	for _, invoke := range []bool{true, false} {
 		q := &sweep.Quarantine{}
+		d := t.TempDir()
+		if err := os.Chmod(d, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.Start(d, sweep.Fresh); err != nil {
+			t.Fatal(err)
+		}
+		defer q.Close()
 		if err := q.Lease(2001, "lease"); err != nil {
 			t.Fatal(err)
 		}
@@ -75,6 +83,11 @@ func TestGatesRefuseBindingAndFenced(t *testing.T) {
 	}
 	m := uint32(0o077)
 	cfg := journal.Config{Directory: d, Records: "records", Inputs: "inputs", DeclaredUmask: &m, SupportedLocalStorage: true, RecoveryPrerequisiteEstablished: true, ConsumerBudget: 64 << 20}
+	q := &sweep.Quarantine{}
+	if err := q.Start(d, sweep.Fresh); err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
 	st, err := runrecord.Initialize(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +101,7 @@ func TestGatesRefuseBindingAndFenced(t *testing.T) {
 	if err := st.Create(rec); err != nil {
 		t.Fatal(err)
 	}
-	l, err := New(Config{LauncherUID: uid, Station: "s"}, Deps{Source: &source.Client{}, Records: st, Incarnations: incarnation.Proc{}, Quarantine: &sweep.Quarantine{}})
+	l, err := New(Config{Installation: sweep.Fresh, LauncherUID: uid, Station: "s"}, Deps{Source: &source.Client{}, Records: st, Incarnations: incarnation.Proc{}, Quarantine: q})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,12 +119,20 @@ func TestGatesRefuseBindingAndFenced(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	st2, err := runrecord.Open(cfg)
+	if err := q.Close(); err != nil {
+		t.Fatal(err)
+	}
+	q = &sweep.Quarantine{}
+	if err := q.Start(d, sweep.Established); err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	st2, err := runrecord.Open(cfg, q)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st2.Close()
-	l2, err := New(Config{LauncherUID: uid, Station: "s"}, Deps{Source: &source.Client{}, Records: st2, Incarnations: incarnation.Proc{}, Quarantine: &sweep.Quarantine{}})
+	l2, err := New(Config{Installation: sweep.Established, LauncherUID: uid, Station: "s"}, Deps{Source: &source.Client{}, Records: st2, Incarnations: incarnation.Proc{}, Quarantine: q})
 	if err != nil {
 		t.Fatal(err)
 	}

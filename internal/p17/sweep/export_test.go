@@ -43,7 +43,7 @@ func TestWorkProductExport(t *testing.T) {
 		{"missing-entry", sweep.StaticWorkProductExport{}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			q := sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: c.seam, Operator: sweep.StaticOperatorRelease{}}}
+			q := newQuarantine(t, sweep.ReleaseGate{WorkProductExport: c.seam, Operator: sweep.StaticOperatorRelease{}})
 			q.Hold(ri, "run")
 			d, err := q.Release("run", ri, true, proof)
 			if d.Release != c.want || d.WorkProductExportSatisfied != c.want || q.Held(ri) == c.want || (c.want && err != nil) || (!c.want && !errors.Is(err, sweep.ErrQuarantined)) {
@@ -62,12 +62,18 @@ func TestExportReleaseGates(t *testing.T) {
 	proof := sweep.Enumerate(p.View(), ri)
 	add(t, p, 60, [4]uint32{ri, ri, ri, ri})
 	live := sweep.Enumerate(p.View(), ri)
+	wrongUID := sweep.Enumerate(p.View(), ri+1)
 	if err := os.WriteFile(filepath.Join(p.Root, "60", "status"), []byte("invalid status"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	unreadable := sweep.Enumerate(p.View(), ri)
 	if !proof.Proved() || !live.Qualified() || len(live.Matched) != 1 || !unreadable.Qualified() || len(unreadable.Unreadable) != 1 {
 		t.Fatal("fixture scans not qualified")
+	}
+	failedProof := proof
+	failedProof.Err = errors.New("synthetic proof failure")
+	if !wrongUID.Proved() || !failedProof.Qualified() {
+		t.Fatal("proof neighbours are not qualified")
 	}
 	for _, c := range []struct {
 		name          string
@@ -81,15 +87,15 @@ func TestExportReleaseGates(t *testing.T) {
 		{"export-live", true, false, live, false},
 		{"operator-live", false, true, live, false},
 		{"operator-unreadable", false, true, unreadable, false},
-		{"operator-wrong-uid", false, true, sweep.Enumeration{UID: ri + 1}, false},
-		{"export-failed-proof", true, false, sweep.Enumeration{UID: ri, Err: errors.New("synthetic proof failure")}, false},
+		{"operator-wrong-uid", false, true, wrongUID, false},
+		{"export-failed-proof", true, false, failedProof, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			operator := sweep.StaticOperatorRelease{}
 			if c.operator {
 				operator["run"] = ri
 			}
-			q := sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: sweep.StaticWorkProductExport{"run": sweep.Exported}, Operator: operator}}
+			q := newQuarantine(t, sweep.ReleaseGate{WorkProductExport: sweep.StaticWorkProductExport{"run": sweep.Exported}, Operator: operator})
 			q.Hold(ri, "run")
 			d, err := q.Release("run", ri, c.ack, c.proof)
 			if d.Release != c.want || q.Held(ri) == c.want || (c.want && err != nil) || (!c.want && !errors.Is(err, sweep.ErrQuarantined)) {

@@ -68,6 +68,7 @@ func (g *gateStore) Update(key string, mutate func(*runrecord.Record) error) (*r
 	})
 }
 func (g *gateStore) Get(key string) (*runrecord.Record, bool) { return g.e.store.Get(key) }
+func (g *gateStore) StateDirectory() string                   { return g.e.store.StateDirectory() }
 func (g *gateStore) Keys() []string                           { return g.e.store.Keys() }
 func (g *gateStore) Fenced(key string) bool                   { return g.e.store.Fenced(key) }
 
@@ -286,8 +287,10 @@ func TestRestartStoreRefuses(t *testing.T) {
 	if e.record("orphan").State != runrecord.Bound || e.record("ending").State != runrecord.Ending || !e.quar.Held(2004) || !e.quar.Held(2005) {
 		t.Fatalf("states %s %s", e.record("orphan").State, e.record("ending").State)
 	}
-	// Positive control: the store accepts updates again.
+	// Positive control: a fresh process recovers once the store accepts updates.
 	g.set(nil)
+	e.reopen()
+	l = e.build()
 	for _, r := range l.Restart(context.Background()) {
 		if r.Err != nil || r.Outcome == nil || !r.Outcome.Acknowledged || !r.Outcome.UIDReleased {
 			t.Fatalf("control restart %s: %+v", r.Key, r)

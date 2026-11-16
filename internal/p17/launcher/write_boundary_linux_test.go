@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -154,7 +155,7 @@ func TestBindWriteBoundary(t *testing.T) {
 	}
 }
 
-// Claim: a failed unsent update leaves binding/HELD with its cause; the successful update returns the unused lease.
+// Claim: a pre-commit unsent refusal leaves binding/HELD with its cause; a successful update returns the unused lease.
 func TestUnsentUpdateDurability(t *testing.T) {
 	for _, fail := range []bool{true, false} {
 		t.Run(map[bool]string{true: "refused", false: "accepted"}[fail], func(t *testing.T) {
@@ -182,6 +183,9 @@ func TestCorruptQuarantineHoldsPool(t *testing.T) {
 	for _, mode := range []string{"corrupt", "version", "unreadable", "valid"} {
 		t.Run(mode, func(t *testing.T) {
 			e := newEnv(t)
+			must(t, e.quar.Close())
+			e.quar = &sweep.Quarantine{}
+			e.cfg.Installation = sweep.Established
 			path := filepath.Join(e.jcfg.Directory, sweep.QuarantineName)
 			data := []byte(`{"version":1,"entries":{}}`)
 			if mode == "corrupt" {
@@ -192,7 +196,13 @@ func TestCorruptQuarantineHoldsPool(t *testing.T) {
 			}
 			must(t, os.WriteFile(path, data, 0600))
 			if mode == "unreadable" {
-				must(t, os.Chmod(path, 0000))
+				if os.Geteuid() == 0 {
+					// Root bypasses mode 0000: O_NOFOLLOW gives a deterministic open error.
+					must(t, os.Remove(path))
+					must(t, os.Symlink(sweep.QuarantineName, path))
+				} else {
+					must(t, os.Chmod(path, 0000))
+				}
 			}
 			l := e.build()
 			reports := l.Restart(context.Background())
@@ -203,6 +213,15 @@ func TestCorruptQuarantineHoldsPool(t *testing.T) {
 			}
 			if len(reports) != 1 || reports[0].Err == nil {
 				t.Fatalf("bad ledger accepted: %+v", reports)
+			}
+			if mode == "unreadable" {
+				want := error(os.ErrPermission)
+				if os.Geteuid() == 0 {
+					want = syscall.ELOOP
+				}
+				if !errors.Is(reports[0].Err, want) {
+					t.Fatalf("read-error branch not exercised: %v", reports[0].Err)
+				}
 			}
 			for _, uid := range []uint32{cuid, cuid + 99} {
 				if !e.quar.Held(uid) || e.quar.Lease(uid, "candidate") == nil {
@@ -220,23 +239,25 @@ func TestCorruptQuarantineHoldsPool(t *testing.T) {
 	}
 }
 
-// Claim: an old RetryEnd cannot sweep or release a newer holder, even under an injected conflicting live record.
+// Claim: RetryEnd for a terminal old run cannot sweep or release its uid after a real new run leases it; an uncontested end releases.
 func TestStaleEndLeavesNewHolderUntouched(t *testing.T) {
 	e := newEnv(t)
-	e.km.EndMode = "close"
 	r := endReady(t, e)
-	e.operator[r.Key] = cuid
-	_, err := r.End(context.Background(), 0, true, nil)
-	if !codes.Is(err, codes.EndUnknown) {
-		t.Fatal(err)
+	e.exportEvidence[r.Key] = sweep.Exported
+	first, err := r.End(context.Background(), 0, true, nil)
+	must(t, err)
+	if !first.UIDReleased {
+		t.Fatal("old run did not release before reuse")
 	}
-	e.km.SetEndMode("")
-	must(t, e.quar.Hold(cuid, "new-holder"))
-	orphan(t, e, "new-record", cuid, 778)
+	current, err := e.l.Begin(context.Background(), "new-record")
+	must(t, err)
+	must(t, current.Spawn(e.spawnChild(778)))
 	before := len(e.killer.UIDs())
 	out, err := e.l.RetryEnd(context.Background(), r.Key)
-	must(t, err)
-	if out.Sweep.Final.Proved() || out.Sweep.Err == nil || out.UIDReleased || len(e.killer.UIDs()) != before || gone(t, e, "778") || !e.quar.Held(cuid) {
+	if !errors.Is(err, launcher.ErrNotBound) {
+		t.Fatalf("terminal retry: %v", err)
+	}
+	if out.Sweep.Final.Proved() || out.UIDReleased || len(e.killer.UIDs()) != before || gone(t, e, "778") || !e.quar.Held(cuid) || e.record(current.Key).State != runrecord.Bound {
 		t.Fatalf("stale end touched new uid: %+v", out)
 	}
 	// Separate qualified end/release positive control.

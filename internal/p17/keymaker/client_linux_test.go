@@ -76,9 +76,7 @@ func TestBindHappy(t *testing.T) {
 	}
 }
 
-// Claim (eager hello): Open negotiates hello before returning; a peer that
-// closes on hello or refuses it fails Open with ErrHello and no request frame
-// is ever written. Positive control: the answering peer opens and binds.
+// Claim: Open sends hello but no bind, creates no run/channel and authenticates no peer; a closing/refusing hello fails, while an answering peer opens and binds.
 func TestOpenHelloEager(t *testing.T) {
 	for _, mode := range []string{"close", "refuse"} {
 		script := &fakes.KeymakerScript{HelloMode: mode}
@@ -205,8 +203,8 @@ func TestBindUncorrelatedRefusalNoRetry(t *testing.T) {
 			t.Fatalf("%s: requests=%d binds=%d live=%v", mode, c.Requests(), len(script.Binds()), c.Live())
 		}
 		var r *codes.Refusal
-		if !errors.As(err, &r) || r.Detail["native_code"] != "busy" || r.Detail["native_retryable"] != "true" {
-			t.Fatalf("%s: detail %v", mode, err)
+		if !errors.As(err, &r) || r.Detail["native_code"] != "" || r.Detail["native_retryable"] != "" {
+			t.Fatalf("%s: uncorrelated response presented as native refusal: %v", mode, err)
 		}
 	}
 	script := &fakes.KeymakerScript{BindMode: "deadline-then-ok"}

@@ -35,7 +35,7 @@ type UnixDialer struct {
 }
 
 func socketRefusal(check string, cause error) error {
-	return codes.Refuse(codes.OriginRefused, "keymaker socket: "+check, cause)
+	return codes.Refuse(codes.BindRefused, "keymaker endpoint pin refused", errors.Join(ErrEndpointPin, cause)).With("check", check)
 }
 
 // check intentionally keeps Source's path walk independent: Keymaker pins
@@ -60,6 +60,9 @@ func (d UnixDialer) check() (os.FileInfo, error) {
 		}
 		fi, err := observe(current)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, codes.Refuse(codes.BindUnavailable, "keymaker endpoint absent", err)
+			}
 			return nil, socketRefusal("lstat", err)
 		}
 		if fi.Mode()&os.ModeSymlink != 0 {
@@ -131,7 +134,7 @@ func (d UnixDialer) Dial(ctx context.Context) (net.Conn, error) {
 	}
 	c, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "unix", d.Path)
 	if err != nil {
-		return nil, err
+		return nil, codes.Refuse(codes.BindUnavailable, "keymaker connect transport failure", err)
 	}
 	fail := func(err error) (net.Conn, error) { _ = c.Close(); return nil, err }
 	if d.afterConnect != nil {
@@ -139,7 +142,10 @@ func (d UnixDialer) Dial(ctx context.Context) (net.Conn, error) {
 	}
 	after, err := d.check()
 	if err != nil {
-		return fail(err)
+		if errors.Is(err, ErrEndpointPin) {
+			return fail(err)
+		}
+		return fail(socketRefusal("identity changed after connect", err))
 	}
 	if !os.SameFile(before, after) {
 		return fail(socketRefusal("identity changed after connect", nil))

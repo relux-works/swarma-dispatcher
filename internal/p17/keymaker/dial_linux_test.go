@@ -133,7 +133,7 @@ func TestUnixDialerPins(t *testing.T) {
 					_ = c.Close()
 				}
 				if bad {
-					if err == nil || !codes.Is(err, codes.OriginRefused) || !strings.Contains(err.Error(), check) {
+					if err == nil || !codes.Is(err, codes.BindRefused) || !strings.Contains(err.Error(), check) {
 						t.Fatalf("%s: %v", check, err)
 					}
 					if v, x := codes.Exit(err, 0, false); x != nil || v.Status != 16 {

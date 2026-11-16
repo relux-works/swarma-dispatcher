@@ -111,8 +111,17 @@ func Initialize(cfg journal.Config) (*Store, error) {
 	return st, nil
 }
 
-// Open replays an established store. Every loaded record is fenced.
-func Open(cfg journal.Config) (*Store, error) {
+// StateOwner proves lifetime launcher ownership before taking the journal lock.
+// sweep.Quarantine implements it; the caller starts it with Established first.
+type StateOwner interface{ OwnsDirectory(string) bool }
+
+// Open replays an established store only under prior launcher ownership.
+// Every loaded record is fenced. The explicit owner token prevents the
+// journal-before-launcher lock inversion; contention can be retried at Start.
+func Open(cfg journal.Config, owners ...StateOwner) (*Store, error) {
+	if len(owners) != 1 || owners[0] == nil || !owners[0].OwnsDirectory(cfg.Directory) {
+		return nil, errors.Join(ErrConfig, errors.New("runrecord: launcher ownership required before journal lock"))
+	}
 	st := newStore()
 	st.recovering = true
 	s, err := journal.OpenEstablished(cfg, st)
@@ -192,7 +201,7 @@ func (st *Store) usableLocked() error {
 		return ErrClosed
 	}
 	if st.initErr != nil {
-		return errors.Join(ErrClosed, st.initErr)
+		return errors.Join(ErrClosed, ErrCommit, st.initErr)
 	}
 	if st.s == nil && !st.pending {
 		return ErrClosed

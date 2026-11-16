@@ -142,7 +142,8 @@ func TestLeaseQuarantinedAfterHelper(t *testing.T) {
 				calls++
 				if during && calls == 2 {
 					// Test Killer while this pre-record lease is held; no older run.
-					must(t, e.quar.MarkHelper(cuid))
+					entry, _ := e.quar.Entry(cuid)
+					must(t, e.quar.MarkHelper(cuid, entry.Holder))
 					must(t, e.killer.KillAll(context.Background(), cuid))
 				}
 				return e.nonce()

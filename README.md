@@ -368,18 +368,27 @@ codec respectively, at the exact versions in `go.mod`. Nil wires still select
 generation reader, work-product export and operator release seams also refuse
 by default. The Source adapter implements its documented closed protocol
 without importing any upstream internal package. The packages follow the P17
-hook interface text r2.15 (sha256
-`5b804ba49187df4e7e823703b2e65b569b3dd63cc370f5989e86436b05415246`).
+hook interface text r2.16 (sha256
+`1ff91660ea77af7b0a826c6b8e2978e54770e2a67447f8f5e50bccc2dba922e1`).
 
 The native Keymaker hello is negotiated eagerly at connect, before the durable
-binding record. A connect or hello failure is `run_bind_unavailable` with no
-run record, and the next attempt starts from a fresh Source prepare. A
-successful bind must become durably bound before input can be released.
+binding record. Transport connect/hello failures (including absent or refused
+sockets) are `run_bind_unavailable`, retryable, with no run record. Endpoint
+pin failures are instead definite `run_bind_refused`, exit 16: the verdict
+names the failed check, sends no endpoint byte, creates no record, and returns
+the uid only under the pre-record rule. Neither outcome makes Begin prepare
+again automatically. A caller-authorized retry starts from a fresh Source
+prepare. A nil dialer refuses by name before any Source contact. A successful
+bind must become durably bound before input can be released.
 A bind that cannot start within `keymaker.BindStartWindow` (1500 ms after
 hello) is never written and durably becomes terminal `unsent`; only a
 never-called write qualifies, while short, failed and timed-out writes
-(including zero reported bytes) remain `binding`, HELD, exit 17. The
-no-effect refusal table is empty until the pinned Keymaker registry explicitly
+(including zero reported bytes) remain `binding`, HELD, exit 17. If an `unsent`
+journal frame commits but record materialization fails, this process returns
+`run_bind_unknown` and keeps the uid HELD. Later replay restores the true
+terminal `unsent` and returns the uid only on the helper-never-invoked and
+qualified zero-process proof. A failed update does not undo committed history;
+there is no rollback. The no-effect refusal table is empty until the pinned Keymaker registry explicitly
 publishes it: correlation and nonretryability alone never make a refusal
 terminal. All such native bind refusals currently remain HELD, exit 17, with
 no input.
@@ -403,14 +412,49 @@ The opt-in Keymaker Unix dialer checks protected ancestors, symlinks, exact
 socket owner/group/mode, post-connect identity and kernel peer uid before
 any byte is sent; a nil dialer is a definite named unpinned refusal.
 
-Every launcher of one L must share `Deps.Quarantine` and `Deps.Records`, and
-all `launcher.New` calls must precede runs. `Restart` holds `launcher.lock`
-until the shared quarantine's `Close`; the reaper must acquire that lock
-before opening the record store, in addition to the journal's own lock.
-`runrecord.Initialize` validates without creating anything; wiring must keep
-an out-of-band durable fresh/established installation fact and choose
-`Initialize` again after a restart before the first real record, not infer
-that entry from missing files.
+Every launcher of one L shares `Deps.Quarantine` and the exact `Deps.Records`
+instance. `New` installs the release seams and record guard under the shared
+quarantine lock; recovery freezes them. Later construction over that same
+store is safe and reuses the first configuration. A different shared store,
+a missing store `StateDirectory()` accessor, or a directory different from
+`Config.StateDirectory` is refused. Decorators must forward that accessor.
+Readiness is shared: exactly one `Restart` performs H6 per quarantine lifetime;
+a second attempt refuses without resetting readiness or touching live runs.
+`Begin`, `BeginChild` and `RetryEnd` cannot pass before the first recovery.
+
+The caller supplies one durable installation fact in `Config.Installation`:
+`sweep.Fresh` or `sweep.Established`, with no default. The same fact is forwarded
+to `Quarantine.Start(directory, fact)` and cannot change during that lifetime.
+Fresh refuses existing ledger state; established refuses a missing ledger and
+holds every uid. Independently, even a claimed fresh installation refuses a
+missing ledger beside any journal or record, including custom record directories.
+Never repair absence by switching entry modes. Crashed `.quarantine-*` temporary
+files are ignored, never replayed or treated as authority; no broad cleanup is
+authorized. H6 reports record-less leases by uid, holder and reason and returns
+them only with no helper invocation and a fresh qualified zero-process proof.
+
+Acquire `launcher.lock` **before** the journal lock: for an established store,
+call `Quarantine.Start(directory, sweep.Established)` first, then
+`runrecord.Open(config, quarantine)`. The live ownership token is required by
+`Open`. On a fresh installation Start can precede the read-only
+`runrecord.Initialize`; its first real Create takes the journal lock lazily.
+Both launcher and reaper use this order. Ownership contention before recovery
+is retryable; do not open a journal to probe ahead of the lifetime lock.
+Close the record store before closing the quarantine, after all runs stop.
+Wiring separately retains the journal's explicit fresh/established fact:
+a ledger can be established before the first record, so such a restart still
+uses `Initialize`, never infers journal entry from a missing file.
+
+When Begin returns no Run after creating a record, use
+`errors.As(err, &beginRecordError)` with `*launcher.BeginRecordError`.
+`RecordKey()` is the actual independent run-record key (not the bind request
+ID); `RecordState()` is the committed state or attempted transition, and
+`RecordUncertain()` distinguishes a failed durable operation. Terminal
+`unsent`/`refused` results preserve their original code, sentinel and error
+chain. An uncertain update exposes its key but remains HELD/unknown; do not
+map its attempted terminal state to a no-start success. Pre-record failures
+have no such typed error. Always honor `launcher.MustExit(err)` before state
+mapping: a durability failure requires process exit and no further state I/O.
 
 A terminal `refused` or `unsent` record uses the same helper-never-invoked
 and zero-process rule as a pre-record failure; no end is owed.
@@ -425,7 +469,9 @@ archived; preserving a home is a separate, explicit operator operation outside
 retirement. A qualified export producer must run a fixed program under the agent
 account to export the work product before home removal. This slice neither
 removes homes nor authorizes removal on partial, unknown or failed evidence.
-Operator release never bypasses the zero-process proof.
+Operator release never bypasses the zero-process proof or any non-terminal
+record, including its own ending record; `UIDReleased` remains false until the
+uid can actually return to the pool.
 
 Source generations are nonzero numeric values; root launcher input generations
 must therefore be canonical positive decimal strings. The native Keymaker

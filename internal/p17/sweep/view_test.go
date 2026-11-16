@@ -131,8 +131,10 @@ func TestViewQualification(t *testing.T) {
 func TestUnqualifiedViewNeverReleases(t *testing.T) {
 	p := tree(t)
 	const run = "run-a"
-	q := sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: sweep.StaticWorkProductExport{run: sweep.Exported}}}
-	q.Hold(ri)
+	q := newQuarantine(t, sweep.ReleaseGate{WorkProductExport: sweep.StaticWorkProductExport{run: sweep.Exported}})
+	if err := q.Hold(ri, run); err != nil {
+		t.Fatal(err)
+	}
 	if err := p.SetMount("proc", "/", "rw,hidepid=2"); err != nil {
 		t.Fatal(err)
 	}
@@ -140,16 +142,16 @@ func TestUnqualifiedViewNeverReleases(t *testing.T) {
 	if out.Final.Proved() || !errors.Is(out.Err, sweep.ErrViewUnqualified) {
 		t.Fatalf("sweep on a hidepid view: %+v", out)
 	}
-	if d, err := q.Release(run, ri, true, out.Final); !errors.Is(err, sweep.ErrQuarantined) || d.Release || d.Proved || !q.Held(ri) {
+	if d, err := q.Release(run, ri, true, out.Final); !errors.Is(err, sweep.ErrQuarantined) || d.Release || d.Proved || d.Reason != "zero-process proof not established" || !q.Held(ri) {
 		t.Fatalf("released from an unqualified view: %+v %v", d, err)
 	}
-	if err := q.ReturnUnused(ri, out.Final); !errors.Is(err, sweep.ErrQuarantined) || !q.Held(ri) {
+	if err := q.ReturnUnused(ri, out.Final, run); !errors.Is(err, sweep.ErrQuarantined) || !q.Held(ri) {
 		t.Fatalf("lease returned from an unqualified view: %v", err)
 	}
 	if (sweep.Enumeration{UID: ri}).Proved() {
 		t.Fatal("a hand-built enumeration is proved")
 	}
-	if err := q.ReturnUnused(ri, sweep.Enumeration{UID: ri}); !errors.Is(err, sweep.ErrQuarantined) || !q.Held(ri) {
+	if err := q.ReturnUnused(ri, sweep.Enumeration{UID: ri}, run); !errors.Is(err, sweep.ErrQuarantined) || !q.Held(ri) {
 		t.Fatalf("lease returned from a hand-built enumeration: %v", err)
 	}
 	// Qualifying neighbour.
@@ -160,7 +162,7 @@ func TestUnqualifiedViewNeverReleases(t *testing.T) {
 	if !out.Final.Proved() || out.Err != nil {
 		t.Fatalf("neighbour sweep: %+v", out)
 	}
-	if err := q.ReturnUnused(ri, out.Final); err != nil || q.Held(ri) {
+	if err := q.ReturnUnused(ri, out.Final, run); err != nil || q.Held(ri) {
 		t.Fatalf("neighbour lease not returned: %v", err)
 	}
 	q.Hold(ri, run)
@@ -174,25 +176,25 @@ func TestUnqualifiedViewNeverReleases(t *testing.T) {
 // proof for another uid each keep it quarantined.
 func TestReturnUnusedNeedsProof(t *testing.T) {
 	p := tree(t)
-	var q sweep.Quarantine
-	if err := q.Lease(ri); err != nil {
+	q := newQuarantine(t, sweep.ReleaseGate{})
+	if err := q.Lease(ri, "run"); err != nil {
 		t.Fatal(err)
 	}
 	add(t, p, 80, [4]uint32{0, 0, ri, 0}) // saved uid only
-	if err := q.ReturnUnused(ri, sweep.Enumerate(p.View(), ri)); !errors.Is(err, sweep.ErrQuarantined) || !q.Held(ri) {
+	if err := q.ReturnUnused(ri, sweep.Enumerate(p.View(), ri), "run"); !errors.Is(err, sweep.ErrQuarantined) || !q.Held(ri) {
 		t.Fatalf("returned with a live process: %v", err)
 	}
-	if err := q.ReturnUnused(ri, sweep.Enumerate(p.View(), ri+1)); !errors.Is(err, sweep.ErrQuarantined) || !q.Held(ri) {
+	if err := q.ReturnUnused(ri, sweep.Enumerate(p.View(), ri+1), "run"); !errors.Is(err, sweep.ErrQuarantined) || !q.Held(ri) {
 		t.Fatalf("returned on another uid's proof: %v", err)
 	}
 	if err := p.Remove(80); err != nil {
 		t.Fatal(err)
 	}
 	// Positive control.
-	if err := q.ReturnUnused(ri, sweep.Enumerate(p.View(), ri)); err != nil || q.Held(ri) {
+	if err := q.ReturnUnused(ri, sweep.Enumerate(p.View(), ri), "run"); err != nil || q.Held(ri) {
 		t.Fatalf("positive control: %v", err)
 	}
-	if err := q.Lease(ri); err != nil {
+	if err := q.Lease(ri, "run"); err != nil {
 		t.Fatalf("lease after return: %v", err)
 	}
 }
@@ -204,30 +206,34 @@ func TestReturnUnusedNeedsProof(t *testing.T) {
 // uid returns; and a new lease starts without the mark.
 func TestReturnUnusedRefusesAfterHelper(t *testing.T) {
 	p := tree(t)
-	var q sweep.Quarantine
-	if err := q.Lease(ri); err != nil {
+	q := newQuarantine(t, sweep.ReleaseGate{})
+	if err := q.Lease(ri, "run"); err != nil {
 		t.Fatal(err)
 	}
-	q.MarkHelper(ri)
+	if err := q.MarkHelper(ri, "run"); err != nil {
+		t.Fatal(err)
+	}
 	proof := sweep.Enumerate(p.View(), ri)
 	if !proof.Proved() {
 		t.Fatalf("setup: %+v", proof)
 	}
-	if err := q.ReturnUnused(ri, proof); !errors.Is(err, sweep.ErrQuarantined) || !q.Held(ri) || !q.HelperInvoked(ri) {
+	if err := q.ReturnUnused(ri, proof, "run"); !errors.Is(err, sweep.ErrQuarantined) || !q.Held(ri) || !q.HelperInvoked(ri) {
 		t.Fatalf("returned after a helper invocation: %v", err)
 	}
-	if err := q.Lease(ri); !errors.Is(err, sweep.ErrQuarantined) {
+	if err := q.Lease(ri, "run"); !errors.Is(err, sweep.ErrQuarantined) {
 		t.Fatalf("quarantined uid leased: %v", err)
 	}
 	// Positive control on a neighbour uid: no helper, zero processes.
-	if err := q.Lease(ri + 1); err != nil {
+	if err := q.Lease(ri+1, "next"); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.ReturnUnused(ri+1, sweep.Enumerate(p.View(), ri+1)); err != nil || q.Held(ri+1) {
+	if err := q.ReturnUnused(ri+1, sweep.Enumerate(p.View(), ri+1), "next"); err != nil || q.Held(ri+1) {
 		t.Fatalf("positive control: %v", err)
 	}
-	q.MarkHelper(ri + 1)
-	if err := q.Lease(ri + 1); err != nil || q.HelperInvoked(ri+1) {
+	if err := q.MarkHelper(ri+1, "next"); !errors.Is(err, sweep.ErrQuarantined) {
+		t.Fatal("unheld helper mark accepted")
+	}
+	if err := q.Lease(ri+1, "next"); err != nil || q.HelperInvoked(ri+1) {
 		t.Fatalf("a new lease kept the old helper mark: %v", err)
 	}
 }

@@ -7,8 +7,8 @@
 // H5; Restart is the H6 startup sweep and the reaper's table. Nothing here
 // spawns a process, reads policy, or dispatches; those stay with S2-M0.
 //
-// Hook text of record: P17 Curator-side hook interface r2.15 (sha256
-// 5b804ba49187df4e7e823703b2e65b569b3dd63cc370f5989e86436b05415246).
+// Hook text of record: P17 Curator-side hook interface r2.16 (sha256
+// 1ff91660ea77af7b0a826c6b8e2978e54770e2a67447f8f5e50bccc2dba922e1).
 //
 // Order of H2 (steps 4 and 5): validate on Source, then one fresh
 // Keymaker connection WITH its eager hello, then the durable binding record,
@@ -36,7 +36,6 @@ import (
 	"errors"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/runorigin"
@@ -53,10 +52,12 @@ import (
 // Config is the launcher's own configuration. The bind attempt limit is not
 // here: it is the fixed constant keymaker.BindAttemptLimit.
 type Config struct {
-	// StateDirectory is the private launcher directory. Empty uses the concrete
-	// runrecord.Store directory; RecordStore decorators must supply it explicitly.
+	// StateDirectory is the private launcher directory. Empty uses the store's
+	// required StateDirectory accessor; decorators must forward that accessor.
 	StateDirectory string
-	LauncherUID    uint32
+	// Installation is the explicit ledger installation fact; there is no default.
+	Installation sweep.Installation
+	LauncherUID  uint32
 	// Station is the complete current station registration number.
 	Station string
 	// RequestTimeout is the Keymaker per-request timeout (1..2000 ms).
@@ -83,8 +84,9 @@ type RecordStore interface {
 }
 
 // Deps are the injected clients and seams. Nil seams are the refusing
-// defaults; Source, Records and Incarnations are required. Source is shared
-// by every run and is never mutated by the launcher.
+// defaults; Source, Records, Incarnations and a shared Quarantine are required.
+// Records must expose StateDirectory; the directory must match Config. Source
+// is shared by every run and is never mutated by the launcher.
 type Deps struct {
 	Placement    isolation.Placement
 	Source       *source.Client
@@ -107,14 +109,13 @@ type Deps struct {
 type Launcher struct {
 	cfg       Config
 	d         Deps
-	ready     atomic.Bool
 	restartMu sync.Mutex
 }
 
 var (
 	// ErrRebindUnsupported: j7_run_rebind is out of v1 (D3).
 	ErrRebindUnsupported = errors.New("launcher: rebind is refused in v1")
-	// ErrNotBound refuses an H3 step before a durable bound record.
+	// ErrNotBound refuses H3 before bound, or RetryEnd without an ending record.
 	ErrNotBound = errors.New("launcher: run record is not durably bound")
 	// ErrFenced refuses input on a fenced run.
 	ErrFenced = errors.New("launcher: run is fenced")
@@ -129,8 +130,8 @@ var (
 	ErrLeaseQuarantined = errors.New("launcher: leased uid quarantined: zero-process proof not established")
 )
 
-// MustExit reports the journal's process-exit duty: an error from this
-// package that wraps a journal sync failure means the process must exit and
+// MustExit reports journal/quarantine process-exit duty: an error wrapping
+// a journal sync failure or quarantine persistence failure requires exit and
 // must not continue with state I/O. Refusals built here also carry
 // Detail["must_exit"]="true" in that case.
 func MustExit(err error) bool { return runrecord.MustExit(err) || errors.Is(err, sweep.ErrNotDurable) }
@@ -155,15 +156,20 @@ func defaultNonce() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// New validates the composition. All New calls sharing a Quarantine must
-// happen before any run: they configure its Gate and record guard. Every
-// launcher of one L must share both the Quarantine and the RecordStore.
+// New validates the composition. The first New configures the shared release
+// seams and record guard; recovery freezes them under the quarantine lock.
+// Later New calls must share that exact RecordStore and reuse the first seams.
+// All launchers of one L share readiness; a second Restart is refused without
+// disturbing live runs or repeating recovery.
 // The wiring must call Restart before Begin or RetryEnd and close the shared
 // Quarantine only when L exits. Restart owns launcher.lock even before the
 // first journal transition; a reaper takes that lock BEFORE opening the store.
 func New(cfg Config, d Deps) (*Launcher, error) {
 	if d.Source == nil || d.Records == nil || d.Incarnations == nil {
 		return nil, errors.New("launcher: source client, record store and incarnation reader are required")
+	}
+	if cfg.Installation != sweep.Fresh && cfg.Installation != sweep.Established {
+		return nil, sweep.ErrInstallation
 	}
 	if cfg.Station == "" {
 		return nil, errors.New("launcher: station registration required")
@@ -201,15 +207,17 @@ func New(cfg Config, d Deps) (*Launcher, error) {
 	if d.Quarantine == nil {
 		return nil, errors.New("launcher: shared quarantine required")
 	}
-	if cfg.StateDirectory == "" {
-		if s, ok := d.Records.(interface{ StateDirectory() string }); ok {
-			cfg.StateDirectory = s.StateDirectory()
-		}
+	s, ok := d.Records.(interface{ StateDirectory() string })
+	if !ok || s.StateDirectory() == "" {
+		return nil, errors.Join(sweep.ErrConfiguration, errors.New("launcher: record store directory accessor required"))
 	}
 	if cfg.StateDirectory == "" {
-		return nil, errors.New("launcher: state directory required")
+		cfg.StateDirectory = s.StateDirectory()
 	}
-	d.Quarantine.Guard = func(uid uint32, except string) bool {
+	if cfg.StateDirectory != s.StateDirectory() {
+		return nil, errors.Join(sweep.ErrConfiguration, errors.New("launcher: state directory differs from record store"))
+	}
+	guard := func(uid uint32, except string) bool {
 		for _, key := range d.Records.Keys() {
 			if key == except {
 				continue
@@ -220,11 +228,8 @@ func New(cfg Config, d Deps) (*Launcher, error) {
 		}
 		return false
 	}
-	if d.Quarantine.Gate.WorkProductExport == nil {
-		d.Quarantine.Gate.WorkProductExport = d.WorkProductExport
-	}
-	if d.Quarantine.Gate.Operator == nil {
-		d.Quarantine.Gate.Operator = d.OperatorRelease
+	if err := d.Quarantine.Configure(d.Records, sweep.ReleaseGate{WorkProductExport: d.WorkProductExport, Operator: d.OperatorRelease}, guard, cfg.Installation); err != nil {
+		return nil, err
 	}
 	if d.Nonce == nil {
 		d.Nonce = defaultNonce
@@ -344,8 +349,15 @@ func (l *Launcher) returnLease(uid uint32, key string, err error) error {
 }
 
 func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPrincipal keymaker.Principal, parent *runrecord.Record) (_ *Run, err error) {
-	if !l.ready.Load() {
-		return nil, codes.Refuse(codes.IsolationUnqualified, "launcher Restart has not completed", nil)
+	var recordError *BeginRecordError
+	defer func() {
+		if err != nil && recordError != nil {
+			recordError.cause = err
+			err = recordError
+		}
+	}()
+	if !l.d.Quarantine.Ready() {
+		return nil, durable(codes.IsolationUnqualified, "launcher Restart has not completed", l.d.Quarantine.Error())
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -383,6 +395,9 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 	if inputPrincipal.UID != dec.ChildUID {
 		return nil, codes.Refuse(codes.IsolationUnqualified, "input principal uid differs from the leased child uid", nil).
 			With("uid", utoa(dec.ChildUID)).With("input_uid", utoa(inputPrincipal.UID))
+	}
+	if l.d.Keymaker == nil {
+		return nil, codes.Unpinned("keymaker dialer", keymaker.Pin)
 	}
 	gen, err := l.d.Generations.Current(l.cfg.LauncherUID)
 	if err != nil {
@@ -447,12 +462,9 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 	// H2 step 4: one fresh direct Keymaker connection and its hello, then the
 	// durable record. Hello is a native request that the holder checks and
 	// audits; this path promises no run record and no bind.
-	if l.d.Keymaker == nil {
-		return nil, codes.Unpinned("keymaker dialer", keymaker.Pin)
-	}
 	km, err := keymaker.Open(ctx, l.d.Keymaker, l.d.KeymakerWire, l.cfg.RequestTimeout)
 	if err != nil {
-		if codes.IsUnpinned(err) {
+		if codes.IsUnpinned(err) || errors.Is(err, keymaker.ErrEndpointPin) {
 			return nil, err
 		}
 		return nil, codes.Refuse(codes.BindUnavailable, "keymaker connect or hello", err)
@@ -509,29 +521,37 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 	if err := l.d.Records.Create(rec); err != nil {
 		_ = km.Close()
 		_, exists := l.d.Records.Get(nonce)
-		if exists || runrecord.Uncertain(err) {
+		if exists || runrecord.Uncertain(err) || errors.Is(err, runrecord.ErrClosed) {
 			// The binding frame may be durable: restart would HOLD it, so the
 			// uid stays quarantined.
 			recorded = true
+			recordError = &BeginRecordError{key: nonce, state: runrecord.Binding, uncertain: true}
 			return nil, durable(codes.BindUnknown, "binding record commit failed; bind not sent", err).With("key", nonce).With("record", "uncertain").With("bind_sent", "false")
 		}
 		return nil, durable(codes.BindUnavailable, "binding record refused; bind not sent", err).With("record", "none").With("bind_sent", "false")
 	}
 	recorded = true
+	recordError = &BeginRecordError{key: nonce, state: runrecord.Binding}
 	// H2 step 5 and 6. The bind frame is written only now.
 	res, _, err := km.Bind(bindID, req)
 	if err != nil {
 		_ = km.Close()
 		if errors.Is(err, keymaker.ErrUnsent) && !km.BindWriteStarted() {
+			recordError.state = runrecord.Unsent
 			if _, uerr := l.d.Records.Update(nonce, func(r *runrecord.Record) error { r.State = runrecord.Unsent; return nil }); uerr != nil {
-				return nil, durable(codes.BindUnknown, "unsent update not durable; record stays binding", uerr).With("key", nonce)
+				// The frame may have committed before materialization failed:
+				// this process stays HELD; replay may restore true terminal unsent.
+				recordError.uncertain = true
+				return nil, durable(codes.BindUnknown, "unsent update uncertain; run HELD", errors.Join(uerr, err)).With("key", nonce)
 			}
 			return nil, l.returnLease(dec.ChildUID, nonce, codes.Refuse(codes.BindUnavailable, "bind not started within post-hello guard", err))
 		}
 		if errors.Is(err, keymaker.ErrRefused) && codes.Is(err, codes.BindRefused) {
+			recordError.state = runrecord.Refused
 			if _, uerr := l.d.Records.Update(nonce, func(r *runrecord.Record) error { r.State = runrecord.Refused; return nil }); uerr != nil {
-				// The record is still binding: restart will HOLD it.
-				return nil, durable(codes.BindUnknown, "no-effect bind refusal not durably recorded; record stays binding", errors.Join(uerr, err)).With("key", nonce)
+				recordError.uncertain = true
+				// This process holds; replay follows committed history, never rollback.
+				return nil, durable(codes.BindUnknown, "no-effect bind refusal update uncertain; run HELD", errors.Join(uerr, err)).With("key", nonce)
 			}
 			// A terminal refusal with no bind uses the explicit pre-record rule.
 			return nil, l.returnLease(dec.ChildUID, nonce, err)
@@ -547,9 +567,11 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 		r.RunID = res.RunID
 		return nil
 	}); err != nil {
-		// Live at Keymaker, binding locally: exactly D4 UNKNOWN, H6 HOLD.
+		recordError.state = runrecord.Bound
+		recordError.uncertain = true
+		// Live at Keymaker, local durability uncertain: D4 UNKNOWN, H6 HOLD.
 		_ = km.Close()
-		return nil, durable(codes.BindUnknown, "Keymaker bound the run but the bound record is not durable; run HELD", err).With("key", nonce).With("run_id", res.RunID)
+		return nil, durable(codes.BindUnknown, "Keymaker bound the run but the local bound update is uncertain; run HELD", err).With("key", nonce).With("run_id", res.RunID)
 	}
 	return &Run{l: l, Key: nonce, RunID: res.RunID, ChildUID: dec.ChildUID, km: km}, nil
 }
@@ -788,12 +810,12 @@ func (r *Run) End(ctx context.Context, childStatus int, childKnown bool, teardow
 // recorded exact request. Teardown here is the uid sweep. Every failure of a
 // durable step is run_end_unknown with the cause.
 func (l *Launcher) RetryEnd(ctx context.Context, key string) (EndOutcome, error) {
-	if !l.ready.Load() {
-		return EndOutcome{}, codes.Refuse(codes.IsolationUnqualified, "launcher Restart has not completed", nil)
+	if !l.d.Quarantine.Ready() {
+		return EndOutcome{}, durable(codes.IsolationUnqualified, "launcher Restart has not completed", l.d.Quarantine.Error())
 	}
 	rec, ok := l.d.Records.Get(key)
 	if !ok || rec.State != runrecord.Ending {
-		return EndOutcome{}, errors.New("launcher: retry end requires an ending record")
+		return EndOutcome{}, errors.Join(ErrNotBound, errors.New("launcher: retry end requires an ending record"))
 	}
 	return l.finishEnd(ctx, key, rec, nil)
 }
@@ -806,10 +828,12 @@ func (l *Launcher) finishEnd(ctx context.Context, key string, rec *runrecord.Rec
 	endErr := intentErr
 	ackRead := false
 	if endErr == nil {
-		if l.d.Keymaker == nil {
-			endErr = codes.Refuse(codes.EndUnknown, "no keymaker dialer", nil).With("run_id", rec.RunID)
-		} else if km, err := keymaker.Open(ctx, l.d.Keymaker, l.d.KeymakerWire, l.cfg.RequestTimeout); err != nil {
-			endErr = codes.Refuse(codes.EndUnknown, "keymaker connect or hello", err).With("run_id", rec.RunID)
+		if km, err := keymaker.Open(ctx, l.d.Keymaker, l.d.KeymakerWire, l.cfg.RequestTimeout); err != nil {
+			if codes.IsUnpinned(err) {
+				endErr = err
+			} else {
+				endErr = codes.Refuse(codes.EndUnknown, "keymaker connect or hello", err).With("run_id", rec.RunID)
+			}
 		} else {
 			_, _, endErr = km.EndExact(rec.EndRequestID, keymaker.EndRequest{RunID: rec.RunID}, rec.EndRequestBody)
 			ackRead = endErr == nil
@@ -837,6 +861,9 @@ func (l *Launcher) finishEnd(ctx context.Context, key string, rec *runrecord.Rec
 
 // Report is one H6 table application.
 type Report struct {
+	// UID and Reason identify a recovered record-less lease as well as recorded runs.
+	UID      uint32
+	Reason   string
 	Key      string
 	State    runrecord.State
 	Action   runrecord.RestartAction
@@ -869,7 +896,7 @@ func (l *Launcher) releaseTerminal(uid uint32, recs []*runrecord.Record) bool {
 		if rec.Key == entry.Holder {
 			owned = rec
 		}
-		if rec.State == runrecord.Ended && !l.d.Quarantine.Gate.Decide(rec.Key, uid, rec.EndAcknowledged, e).Release {
+		if rec.State == runrecord.Ended && !l.d.Quarantine.Decide(rec.Key, uid, rec.EndAcknowledged, e).Release {
 			return false
 		}
 	}
@@ -896,83 +923,107 @@ func (l *Launcher) releaseTerminal(uid uint32, recs []*runrecord.Record) bool {
 func (l *Launcher) Restart(ctx context.Context) []Report {
 	l.restartMu.Lock()
 	defer l.restartMu.Unlock()
-	l.ready.Store(false)
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := l.d.Quarantine.Start(l.cfg.StateDirectory); err != nil {
+	if err := l.d.Quarantine.Start(l.cfg.StateDirectory, l.cfg.Installation); err != nil {
 		return []Report{{Code: codes.IsolationUnqualified, Err: durable(codes.IsolationUnqualified, "launcher quarantine startup refused; all pool uids held", err)}}
 	}
-	keys := l.d.Records.Keys()
-	recs := make(map[string]*runrecord.Record, len(keys))
-	terminal := map[uint32][]*runrecord.Record{}
-	unsettled := map[uint32]bool{}
-	for _, key := range keys {
-		rec, ok := l.d.Records.Get(key)
-		if !ok {
-			continue
-		}
-		recs[key] = rec
-		if err := l.d.Quarantine.Hold(rec.ChildUID, key); err != nil {
-			return []Report{{Code: codes.IsolationUnqualified, Err: durable(codes.IsolationUnqualified, "quarantine is not durable", err)}}
-		}
-		if rec.Validate() == nil && rec.Terminal() {
-			terminal[rec.ChildUID] = append(terminal[rec.ChildUID], rec)
-		} else {
-			unsettled[rec.ChildUID] = true
-		}
-	}
-	released := map[uint32]bool{}
-	for uid, list := range terminal {
-		if !unsettled[uid] {
-			released[uid] = l.releaseTerminal(uid, list)
-		}
-	}
 	var reports []Report
-	for _, key := range keys {
-		rec, ok := recs[key]
-		if !ok {
-			continue
-		}
-		rep := Report{Key: key, State: rec.State}
-		var alive bool
-		var lerr error
-		if rec.Launcher != nil {
-			alive, lerr = incarnation.Alive(l.d.Incarnations, *rec.Launcher)
-		} else {
-			lerr = incarnation.ErrUnreadable
-		}
-		rep.Action = runrecord.Decide(rec, alive, lerr)
-		switch rep.Action {
-		case runrecord.ActionHold:
-			rep.Code = codes.BindUnknown
-			rep.Err = codes.Refuse(codes.BindUnknown, "binding record HELD at restart", nil).With("key", key)
-		case runrecord.ActionEndAndKill, runrecord.ActionEndThenSweep:
-			rep.Orphaned = true
-			out, err := l.endOrphan(ctx, key, rec)
-			rep.Outcome = &out
-			rep.Err = err
-			if err != nil {
-				rep.Code, _ = codes.CodeOf(err)
+	recoveryErr := l.d.Quarantine.Recover(func() error {
+		keys := l.d.Records.Keys()
+		recs := make(map[string]*runrecord.Record, len(keys))
+		terminal := map[uint32][]*runrecord.Record{}
+		unsettled := map[uint32]bool{}
+		for _, key := range keys {
+			rec, ok := l.d.Records.Get(key)
+			if !ok {
+				continue
 			}
-		case runrecord.ActionRetryEnd:
-			out, err := l.finishEnd(ctx, key, rec, nil)
-			rep.Outcome = &out
-			rep.Err = err
-			if err != nil {
-				rep.Code, _ = codes.CodeOf(err)
+			recs[key] = rec
+			if _, held := l.d.Quarantine.Entry(rec.ChildUID); !held {
+				if err := l.d.Quarantine.Hold(rec.ChildUID, key); err != nil {
+					return err
+				}
 			}
-		case runrecord.ActionUndetermined:
-			rep.Err = lerr
-		case runrecord.ActionNeverAdopt:
-			rep.UIDReleased = released[rec.ChildUID]
+			if rec.Validate() == nil && rec.Terminal() {
+				terminal[rec.ChildUID] = append(terminal[rec.ChildUID], rec)
+			} else {
+				unsettled[rec.ChildUID] = true
+			}
 		}
-		reports = append(reports, rep)
+		released := map[uint32]bool{}
+		for uid, list := range terminal {
+			if !unsettled[uid] {
+				released[uid] = l.releaseTerminal(uid, list)
+				if err := l.d.Quarantine.Error(); MustExit(err) {
+					return err
+				}
+			}
+		}
+		for _, entry := range l.d.Quarantine.Entries() {
+			if _, covered := recs[entry.Holder]; covered {
+				continue
+			}
+			err := l.d.Quarantine.ReturnUnused(entry.UID, sweep.Enumerate(l.view(), entry.UID), entry.Holder)
+			rep := Report{Key: entry.Holder, UID: entry.UID, Reason: entry.Reason, Action: runrecord.ActionNeverAdopt, UIDReleased: err == nil}
+			if err != nil {
+				rep.Err = durable(codes.IsolationUnqualified, "record-less lease remains quarantined", err)
+				rep.Code = codes.IsolationUnqualified
+			}
+			reports = append(reports, rep)
+			if MustExit(rep.Err) {
+				return rep.Err
+			}
+		}
+		for _, key := range keys {
+			rec, ok := recs[key]
+			if !ok {
+				continue
+			}
+			rep := Report{Key: key, State: rec.State}
+			var alive bool
+			var lerr error
+			if rec.Launcher != nil {
+				alive, lerr = incarnation.Alive(l.d.Incarnations, *rec.Launcher)
+			} else {
+				lerr = incarnation.ErrUnreadable
+			}
+			rep.Action = runrecord.Decide(rec, alive, lerr)
+			switch rep.Action {
+			case runrecord.ActionHold:
+				rep.Code = codes.BindUnknown
+				rep.Err = codes.Refuse(codes.BindUnknown, "binding record HELD at restart", nil).With("key", key)
+			case runrecord.ActionEndAndKill, runrecord.ActionEndThenSweep:
+				rep.Orphaned = true
+				out, err := l.endOrphan(ctx, key, rec)
+				rep.Outcome = &out
+				rep.Err = err
+				if err != nil {
+					rep.Code, _ = codes.CodeOf(err)
+				}
+			case runrecord.ActionRetryEnd:
+				out, err := l.finishEnd(ctx, key, rec, nil)
+				rep.Outcome = &out
+				rep.Err = err
+				if err != nil {
+					rep.Code, _ = codes.CodeOf(err)
+				}
+			case runrecord.ActionUndetermined:
+				rep.Err = lerr
+			case runrecord.ActionNeverAdopt:
+				rep.UIDReleased = released[rec.ChildUID]
+			}
+			reports = append(reports, rep)
+			if MustExit(rep.Err) {
+				return rep.Err
+			}
+		}
+		return l.d.Quarantine.Error()
+	})
+	if recoveryErr != nil {
+		reports = append(reports, Report{Code: codes.IsolationUnqualified, Err: durable(codes.IsolationUnqualified, "startup recovery refused", recoveryErr)})
 	}
-	if err := l.d.Quarantine.Error(); err != nil {
-		return append(reports, Report{Code: codes.IsolationUnqualified, Err: durable(codes.IsolationUnqualified, "quarantine is not durable; startup incomplete", err)})
-	}
-	l.ready.Store(true)
 	return reports
 }
 

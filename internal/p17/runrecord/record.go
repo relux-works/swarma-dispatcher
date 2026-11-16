@@ -1,5 +1,5 @@
 // Package runrecord is the durable P17 run record on internal/journal: one
-// record per run, the states of r2.15, and atomic transitions. Each transition
+// record per run, the states of r2.16, and atomic transitions. Each transition
 // is a journal frame followed by the materialized record file. Every record
 // loaded at restart starts out fenced.
 //
@@ -53,7 +53,7 @@ const (
 	Version = 1
 )
 
-// Record is the durable run record (r2.15 H2 step 4 and D2).
+// Record is the durable run record (r2.16 H2 step 4 and D2).
 type Record struct {
 	Version int    `json:"v"`
 	Kind    string `json:"kind"`

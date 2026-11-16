@@ -32,6 +32,7 @@ func cfg(t *testing.T) journal.Config {
 	if fs.Type != 0xEF53 && fs.Type != 0x58465342 {
 		t.Skipf("real storage UNRUN: fixture filesystem type %#x is neither ext4 nor XFS", fs.Type)
 	}
+	startOwner(t, d)
 	m := uint32(0o077)
 	return journal.Config{Directory: d, Records: "records", Inputs: "inputs", DeclaredUmask: &m, SupportedLocalStorage: true, RecoveryPrerequisiteEstablished: true, ConsumerBudget: 64 << 20}
 }
@@ -113,7 +114,7 @@ func TestLifecycleAndReplay(t *testing.T) {
 		t.Fatalf("record file differs:\n%s\n%s", onDisk, want)
 	}
 	must(t, st.Close())
-	st2, err := runrecord.Open(c)
+	st2, err := runrecord.Open(c, ownerFor(c))
 	must(t, err)
 	defer st2.Close()
 	got, ok := st2.Get("run-a")
@@ -301,7 +302,7 @@ func TestReplayRejectsForeignFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	must(t, raw.Close())
-	if _, err := runrecord.Open(c); !errors.Is(err, runrecord.ErrReplay) {
+	if _, err := runrecord.Open(c, ownerFor(c)); !errors.Is(err, runrecord.ErrReplay) {
 		t.Fatalf("foreign frame adopted: %v", err)
 	}
 }

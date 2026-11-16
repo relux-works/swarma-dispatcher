@@ -495,18 +495,19 @@ func (g ReleaseGate) Decide(runKey string, uid uint32, endAcknowledged bool, e E
 // Quarantine tracks R_i uids that may not be leased. A uid enters on lease
 // and leaves only through Release when the gate allows it.
 type Quarantine struct {
-	// Gate is configured before any run; launcher.New calls must precede runs.
-	Gate ReleaseGate
-	// Guard reports a non-terminal record on uid, excluding only except.
-	// Configure once before Restart; Lease passes an empty except.
-	Guard     func(uid uint32, except string) bool
-	mu        sync.Mutex
-	held      map[uint32]Entry
-	busy      map[uint32]int
-	started   bool
-	directory string
-	lock      *os.File
-	blocked   error
+	gate         ReleaseGate
+	guard        func(uid uint32, except string) bool
+	scope        any
+	recovery     bool
+	ready        bool
+	installation Installation
+	mu           sync.Mutex
+	held         map[uint32]Entry
+	busy         map[uint32]int
+	started      bool
+	directory    string
+	lock         *os.File
+	blocked      error
 	// syncFile is a private crash-point seam; production always uses File.Sync.
 	syncFile func(*os.File) error
 }
@@ -514,27 +515,23 @@ type Quarantine struct {
 // ErrQuarantined refuses a lease of a held uid, and reports a refused release.
 var ErrQuarantined = errors.New("sweep: uid quarantined")
 
-func holder(keys []string) string {
-	if len(keys) > 0 {
-		return keys[0]
-	}
-	return "standalone"
-}
-
 // Hold restores a record's hold without overwriting another lease.
 func (q *Quarantine) Hold(uid uint32, keys ...string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.blocked != nil {
-		return q.blocked
+	if err := q.keyedLocked(keys); err != nil {
+		return err
 	}
 	if q.held == nil {
 		q.held = map[uint32]Entry{}
 	}
-	if _, ok := q.held[uid]; ok {
+	if e, ok := q.held[uid]; ok {
+		if e.Holder != keys[0] {
+			return ErrQuarantined
+		}
 		return nil
 	}
-	q.held[uid] = Entry{UID: uid, Holder: holder(keys), Reason: "run record"}
+	q.held[uid] = Entry{UID: uid, Holder: keys[0], Reason: "run record"}
 	return q.persistLocked()
 }
 
@@ -543,29 +540,26 @@ func (q *Quarantine) Held(uid uint32) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	_, ok := q.held[uid]
-	return ok || q.blocked != nil
+	return ok || q.blocked != nil || !q.started
 }
 
 // Lease durably records its holder before use, and never erases an older mark.
 func (q *Quarantine) Lease(uid uint32, keys ...string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.started && (len(keys) != 1 || keys[0] == "") {
-		return ErrQuarantined
-	}
-	if q.blocked != nil {
-		return q.blocked
+	if err := q.keyedLocked(keys); err != nil {
+		return err
 	}
 	if _, ok := q.held[uid]; ok {
 		return ErrQuarantined
 	}
-	if q.Guard != nil && q.Guard(uid, "") {
+	if q.guard != nil && q.guard(uid, "") {
 		return ErrQuarantined
 	}
 	if q.held == nil {
 		q.held = map[uint32]Entry{}
 	}
-	q.held[uid] = Entry{UID: uid, Holder: holder(keys), Reason: "leased"}
+	q.held[uid] = Entry{UID: uid, Holder: keys[0], Reason: "leased"}
 	return q.persistLocked()
 }
 
@@ -574,8 +568,11 @@ func (q *Quarantine) Lease(uid uint32, keys ...string) error {
 func (q *Quarantine) MarkHelper(uid uint32, keys ...string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if err := q.keyedLocked(keys); err != nil {
+		return err
+	}
 	e, ok := q.held[uid]
-	if !ok || (len(keys) > 0 && e.Holder != keys[0]) {
+	if !ok || e.Holder != keys[0] {
 		return ErrQuarantined
 	}
 	e.Helper = true
@@ -597,7 +594,7 @@ func (q *Quarantine) HelperInvoked(uid uint32) bool {
 func (q *Quarantine) WithLease(uid uint32, key string, sweep func() Outcome) Outcome {
 	q.mu.Lock()
 	e, ok := q.held[uid]
-	if q.blocked != nil || !ok || e.Holder != key || (q.Guard != nil && q.Guard(uid, key)) {
+	if q.keyedLocked([]string{key}) != nil || !ok || e.Holder != key || (q.guard != nil && q.guard(uid, key)) {
 		q.mu.Unlock()
 		err := errors.Join(ErrQuarantined, errors.New("sweep: uid not held exclusively for this record; not proved, uid untouched"))
 		return Outcome{Final: Enumeration{UID: uid, Err: err}, Err: err}
@@ -621,17 +618,17 @@ func (q *Quarantine) WithLease(uid uint32, key string, sweep func() Outcome) Out
 func (q *Quarantine) ReturnUnused(uid uint32, e Enumeration, keys ...string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.blocked != nil {
-		return q.blocked
+	if err := q.keyedLocked(keys); err != nil {
+		return err
 	}
 	entry, ok := q.held[uid]
-	if !ok || entry.Holder != holder(keys) || q.busy[uid] != 0 {
+	if !ok || entry.Holder != keys[0] || q.busy[uid] != 0 {
 		return ErrQuarantined
 	}
 	if entry.Helper || e.UID != uid || !e.Proved() {
 		return ErrQuarantined
 	}
-	if q.Guard != nil && q.Guard(uid, entry.Holder) {
+	if q.guard != nil && q.guard(uid, "") {
 		return ErrQuarantined
 	}
 	delete(q.held, uid)
@@ -641,16 +638,22 @@ func (q *Quarantine) ReturnUnused(uid uint32, e Enumeration, keys ...string) err
 // Release frees the uid only when the gate allows it for this run; otherwise
 // the uid stays held and ErrQuarantined is returned with the decision.
 func (q *Quarantine) Release(runKey string, uid uint32, endAcknowledged bool, e Enumeration) (ReleaseDecision, error) {
-	d := q.Gate.Decide(runKey, uid, endAcknowledged, e)
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.blocked != nil {
-		return d, q.blocked
+	d := q.gate.Decide(runKey, uid, endAcknowledged, e)
+	if err := q.keyedLocked([]string{runKey}); err != nil {
+		d.Release = false
+		return d, err
 	}
 	entry, ok := q.held[uid]
-	if !ok || entry.Holder != runKey || q.busy[uid] != 0 || (q.Guard != nil && q.Guard(uid, runKey)) {
+	if !ok || entry.Holder != runKey || q.busy[uid] != 0 {
 		d.Release = false
 		d.Reason = "uid not exclusively held for this record"
+		return d, ErrQuarantined
+	}
+	if q.guard != nil && q.guard(uid, "") {
+		d.Release = false
+		d.Reason = "conflicting non-terminal record"
 		return d, ErrQuarantined
 	}
 	if !d.Release {

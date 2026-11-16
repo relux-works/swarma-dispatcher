@@ -18,7 +18,9 @@ import (
 	"github.com/relux-works/swarma-dispatcher/internal/p17/sweep"
 )
 
-type emptyRecords struct{}
+type emptyRecords string
+
+func (e emptyRecords) StateDirectory() string { return string(e) }
 
 func (emptyRecords) Keys() []string                       { return nil }
 func (emptyRecords) Get(string) (*runrecord.Record, bool) { return nil, false }
@@ -48,7 +50,7 @@ func TestBeginQuarantineSyncFailure(t *testing.T) {
 				}
 				q := &sweep.Quarantine{}
 				defer q.Close()
-				l, err := launcher.New(launcher.Config{StateDirectory: dir, Station: "1", LauncherUID: uint32(os.Getuid()), ProcRoot: proc.Root, ProcMountInfo: proc.MountInfoPath()}, launcher.Deps{Source: &source.Client{}, Records: emptyRecords{}, Incarnations: incarnation.Proc{}, Placement: isolation.Fixed(2001), Quarantine: q})
+				l, err := launcher.New(launcher.Config{Installation: sweep.Fresh, StateDirectory: dir, Station: "1", LauncherUID: uint32(os.Getuid()), ProcRoot: proc.Root, ProcMountInfo: proc.MountInfoPath()}, launcher.Deps{Source: &source.Client{}, Records: emptyRecords(dir), Incarnations: incarnation.Proc{}, Placement: isolation.Fixed(2001), Quarantine: q})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -86,17 +88,17 @@ func TestLifetimeLockBeforeFirstRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := &sweep.Quarantine{}
-	if err := q.Start(d); err != nil {
+	if err := q.Start(d, sweep.Fresh); err != nil {
 		t.Fatal(err)
 	}
 	other := &sweep.Quarantine{}
-	if err := other.Start(d); err == nil {
+	if err := other.Start(d, sweep.Established); err == nil {
 		t.Fatal("second launcher took live lock")
 	}
 	if err := q.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := other.Start(d); err != nil {
+	if err := other.Start(d, sweep.Established); err != nil {
 		t.Fatalf("closed owner control: %v", err)
 	}
 	defer other.Close()

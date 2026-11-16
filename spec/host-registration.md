@@ -13,6 +13,21 @@ that no earlier contract named, the naming sentence is in this file and the
 item is marked as defined here; everything else that is not settled is an
 OPEN item in section 11.
 
+Book chapter 7 says (in "Служба, раннер и единственный писатель",
+"Service, runner and the single writer"): "Форматы разрешений и
+аутентификацию `host_start` и `host_stop` задаёт спецификация хоста сессий"
+("The permit formats and the authentication of `host_start` and `host_stop`
+are set by the session-host specification"). This file does not take over
+that assignment. It is the DISPATCHER SIDE of the joint publication that
+[dispatcher §16 question 3](dispatcher.md#16-open-questions) names: the
+pin-only authentication and the dispatcher-side member sets below are
+written for that joint publication, and the Host side of it stays with the
+Host owner (the OPEN H items of section 11.1). Every sentence below that
+prescribes Host-side behaviour (Host acceptance rules, Host-evaluated
+refusals, Host client repeats, the notice of section 6.6) is proposed to
+the Host owner and covered by an H item; rules for the dispatcher's own
+behaviour are this contract's own.
+
 The key words MUST, MUST NOT, MAY and SHOULD have their RFC 2119 meanings.
 Bare imperatives are requirements.
 
@@ -51,9 +66,9 @@ adds. Nothing in this file designs the later versions.
 
 | Source | Pin or location | What this file takes from it | Status at that pin |
 | --- | --- | --- | --- |
-| Swarma book, chapter 7, `book/ru/07-zapusk-i-host-sessiy.md` | swarma-docs `006f653dbe914e23a40d37cd2790528ae795151e` | "Верстак" (registry record holds the launch description); "Пробуждение и перенос контекста" (standing sessions raised through the dispatcher; an operator-stopped session stays stopped); "Диспетчер и транзакция запуска" (one identifier per external effect; a lost start reply reconciles the same effect; unknown outcome is not absence); "Служба, раннер и единственный писатель" ("Service, runner and the single writer": the Host persists intent with delivery closed, then asks the dispatcher for `host_start`; only the configured host service account may call that path); "Разрешение на преемника" ("Permission for a successor": `host_stop` goes through a journaled stop with confirmed absence and grants no next start); "Забор, парковка и перезапуск" ("Fence, parking and restart": the Host itself sends no process signals) | Book text. Section names are cited in Russian with an English rendering where this file first uses them. |
+| Swarma book, chapter 7, `book/ru/07-zapusk-i-host-sessiy.md` | swarma-docs `006f653dbe914e23a40d37cd2790528ae795151e` | "Верстак" (registry record holds the launch description); "Пробуждение и перенос контекста" (standing sessions raised through the dispatcher; an operator-stopped session stays stopped); "Диспетчер и транзакция запуска" (one identifier per external effect; a lost start reply reconciles the same effect; unknown outcome is not absence); "Служба, раннер и единственный писатель" ("Service, runner and the single writer": the Host persists intent with delivery closed, then asks the dispatcher for `host_start`; only the configured host service account may call that path; the permit formats and the authentication of `host_start`/`host_stop` are set by the session-host specification, which is why this file is only the dispatcher side of the joint publication, see the status note above); "Разрешение на преемника" ("Permission for a successor": `host_stop` goes through a journaled stop with confirmed absence and grants no next start); "Забор, парковка и перезапуск" ("Fence, parking and restart": the Host itself sends no process signals) | Book text. Section names are cited in Russian with an English rendering where this file first uses them. |
 | The operator's ruling of 2026-11-16 | Private input to this specification | The ownership table of section 1 and acceptance of this minimal form (static pin in protected configuration plus epoch fencing; dynamic registration later) | Decided. No identifier from it is reproduced here. |
-| station/1, `protocol/station.md` | curator-spec `3463191e69fbc8a3c3c992547fec0fa8a68b4b05` | Actor `DI` (dispatcher: holds the session record, owns physical start and stop authority); `SR1`-`SR6`; records `R03` (phases `lease_requested`, `start_requested`), `R09`, `R10`, `R23`; the `held:start` row and U5 ("never sends a second start request"); codes `station_state_stale` and `station_session_journal_fenced`; the "starter crash" event column; clocks `start_detect` and `end_to_absence` | Unreleased draft. Where it is not settled this file says so and opens an item in section 11 instead of deciding for it. `SR6` is still OPEN OQ18 at this pin; the ruling above is the input that answers it for this contract. |
+| station/1, `protocol/station.md` | curator-spec `3463191e69fbc8a3c3c992547fec0fa8a68b4b05` | Actor `DI` (dispatcher: holds the session record, owns physical start and stop authority); `SR1`-`SR6`; records `R03` (phase `start_requested`; phase `lease_requested` is cited in sections 6.2 and 7 only to state that it is not a dispatcher entry in v1), `R08`, `R09`, `R10`, `R23`, in each case as the station record that a dispatcher journal entry corresponds to, not as the dispatcher entry itself (section 7); the `held:start` row and U5 ("never sends a second start request"); codes `station_state_stale` and `station_session_journal_fenced`; the "starter crash" event column; clocks `start_detect` and `end_to_absence` | Unreleased draft. Where it is not settled this file says so and opens an item in section 11 instead of deciding for it. `SR6` is still OPEN OQ18 at this pin; the ruling above is the input that answers it for this contract. |
 | CIP-0024, `cips/CIP-0024-agent-stations.md` | Same curator-spec pin | Owner decision 9 (registry and lifecycle ownership; the dispatcher retains allocation and execution orchestration); "Ownership and records" (no direct bypass of dispatcher physical-start authority); "Lifecycle and failure handling" (a lost response does not authorize another start; `unknown` retains claims; stopped only after authoritative termination) | Draft; its owner decisions are decided and are not reopened. station/1 is the normative successor of its lifecycle and ownership sections. |
 | Session Host documents | swarma-session-host `b132e5528d4c7648dae632c64668e1cf70d8730e`: `docs/selected-manager-handler.md`, `docs/host-dogfood-composition.md`, `docs/prototype-m2.md` | What the Host side exposes today on its own seams: a private manager socket with durable operation reconciliation, status by exactly one session handle or operation id, unknown start outcomes never resubmitted; and its stated limits (no dispatcher admission, no caller-scoped authentication, no descendant confinement claim in the prototype slices) | No dispatcher-facing Host wire is specified there. Every Host-side member this contract would need beyond the ids and outcome values of section 6 is OPEN for the Host owner (section 11). No Host field is invented here. |
 | [Transport subset `dispatch/1`](transport.md) | This repository | Protected configuration snapshots and canonical bytes; the principal pin (`dev`, `dir`, `ino`, `uid` as one pin); kernel peer uid (`SO_PEERCRED`) and endpoint identity checks; the "Managed M0 callers" exception as the precedent for a separate protected caller file; the configuration digest defined for the daemon configuration unit | Reference subset only. It admits no host operation; section 4 of this file reuses its mechanisms without widening that subset. |
@@ -68,9 +83,21 @@ Both directions are local Unix stream sockets on the same machine. Cross-host
 transport, signed envelopes and leases across hosts are a later version
 (section 10) and are not designed here.
 
+Connection model, stated here: one operation per connection in both
+directions, as the transport subset does. A connection carries exactly one
+request of section 6 and its reply and is then closed; there is no pooling,
+multiplexing or second operation on a connection, and no persistent
+Host connection whose presence or loss could carry attach state. A normal
+close after a reply, and a lost or timed-out reply on an operation other
+than `attach` itself, do not end the registration epoch; the events that
+end it are listed in section 5. This seam is Linux only in v1: the
+kernel peer credential it uses is Linux `SO_PEERCRED`, as in
+[transport.md](transport.md), and no peer-credential or native
+qualification claim is made for any other platform.
+
 | Direction | Connector and listener | Authentication of the caller | Authentication of the receiver before any request byte is written | Operations |
 | --- | --- | --- | --- | --- |
-| Host to dispatcher | The Host connects to the dispatcher's socket (`dispatch/1`) | Kernel peer uid from `SO_PEERCRED` must be the pinned Host service uid, and the pinned principal directory of section 4 must pass the transport pin checks before hello and again before the result. The Host is a pinned principal of the dispatcher's transport and reaches the dispatcher in no other way. | The Host pins the dispatcher endpoint exactly as a transport client does: directory and socket identity, service owner, group, mode and socket type before connect, re-stated after connect, then the service uid from `SO_PEERCRED`. | `host_start`, `host_stop`, `host_liveness` (sections 6.2, 6.3, 6.5) |
+| Host to dispatcher | The Host connects to the dispatcher's socket (`dispatch/1`) | Kernel peer uid from `SO_PEERCRED` must be the pinned Host service uid, and the pinned principal directory of section 4 must pass the transport pin checks before hello and again before the result. The Host is a pinned principal of the dispatcher's transport and reaches the dispatcher in no other way. | The Host pins the dispatcher endpoint exactly as a transport client does: directory and socket identity, service owner, group, mode and socket type before connect, re-stated after connect, then the service uid from `SO_PEERCRED`. | `host_start`, `host_stop`, `host_liveness`, `attach_wanted` (sections 6.2, 6.3, 6.5, 6.6) |
 | Dispatcher to Host | The dispatcher connects to the Host socket named in the registration entry | The dispatcher is the caller; the Host decides its own admission of that peer. What the Host checks is the Host owner's contract (OPEN H2). This file requires the dispatcher to connect only from its service uid and to present no identity inside the request body. | The dispatcher verifies, through a pinned parent directory with no symlink component: the path is a socket, its owner is the configured expected owner, and after connect the kernel peer uid is the pinned Host service uid. Any failure is `host_socket_untrusted` and zero request bytes are written (section 8). | `attach`, `query_operation` (sections 6.1, 6.4) |
 
 Rules that apply to both directions:
@@ -102,11 +129,41 @@ Rules that apply to both directions:
   arguments and journals intent; it releases the lock, makes the call, then
   revalidates epochs and fences before recording the result. A stale late
   result may resolve historical evidence; it cannot admit work, open
-  delivery or resurrect a cancelled start.
+  delivery or resurrect a cancelled start. The wait graph of dispatcher
+  §4.1 therefore gains one edge and stays acyclic: the dispatcher's
+  unlocked call worker calls the Host (`attach`, `query_operation`), and
+  the Host's unlocked call worker calls the dispatcher, but (proposed to
+  the Host owner, OPEN H2) the Host does not issue a synchronous
+  Host-to-dispatcher call from inside its `attach` or `query_operation`
+  handler; `attach_wanted` in particular is sent on its own connection
+  outside any such handler invocation.
 - Every call has a finite monotonic deadline. The numeric deadline values
   for this seam are not defined here (OPEN S3). A timeout after request
   bytes were written is an unknown outcome (section 7), never a refusal
   and never a reason to send the effect again under a new identity.
+
+Host peer admission on `dispatch/1` (Linux only), mirroring the "Managed
+M0 callers" text of [transport.md](transport.md#managed-m0-callers): when
+`--host-config` is attached, the transport snapshots the one Host
+principal of section 4 before listening and asserts no overlap with the
+server `callers` list or the M0 caller pins (the same uid, or the same
+pinned directory identity, in more than one of those sets refuses startup
+or attach locally with zero protocol bytes; the Host principal is
+therefore neither a server caller nor an M0 caller); for the Host kernel
+peer the same accept path applies as for every peer, with the global slot
+taken before peer lookup, the transport per-UID limit of eight connections
+and global limit of 64, the same pin checks before hello and before the
+result, and exactly one operation on the connection; after hello, frames
+are routed by a closed body discriminator as M0 frames are routed by their
+`kind`: every request body of section 6 carries a `kind` member (section
+5, defined here) with exactly the value
+`swarma-dispatcher host-request/1`, only frames with that `kind` from the
+pinned Host peer go to section 6, a frame with that `kind` from any other
+peer admitted for hello refuses under section 8, and any other frame from
+the Host peer is not a section 6 operation and closes without one; with
+no `--host-config` attached there is no Host pin, so a peer in no pin
+closes with zero bytes before hello exactly as an unlisted managed peer
+does.
 
 ## 4. The registration entry: protected configuration
 
@@ -164,12 +221,19 @@ the first accepted attach under that generation. On a later load:
 
 The entry is part of the daemon's protected configuration digest. The
 transport contract defines that digest over the server and M0 files for the
-separate daemon configuration unit. When `--host-config` is attached, this
-file defines the extended form for that unit:
-`SHA-256(CCJ-1({"host_registration":<sha256 hex of the host-registration bytes>,"m0":<sha256 hex of the M0 config bytes>,"server":<sha256 hex of server config bytes>})`.
-Without `--host-config` the existing two-member definition is unchanged.
-The transport-only reference subset, which has no host operation, is
-unaffected either way.
+separate daemon configuration unit. The digest member set contains one
+member per attached protected file and no others, with the member names
+`server`, `m0` and `host_registration`. When both `--host-config` and
+`--m0-config` are attached, this file defines the extended form for that
+unit:
+`SHA-256(CCJ-1({"host_registration":<sha256 hex of the host-registration bytes>,"m0":<sha256 hex of the M0 config bytes>,"server":<sha256 hex of server config bytes>}))`.
+When `--host-config` is attached without `--m0-config`, the form defined
+here has exactly the two members that are attached:
+`SHA-256(CCJ-1({"host_registration":<sha256 hex of the host-registration bytes>,"server":<sha256 hex of server config bytes>}))`;
+no `m0` member with an empty, zero or default value is invented for a file
+that is not attached. Without `--host-config` the existing definitions
+are unchanged. The transport-only reference subset, which has no host
+operation, is unaffected either way.
 
 The dispatcher validates the Host principal pin with the same checks as a
 transport caller pin (`principalPin` in transport terms): at configuration
@@ -179,7 +243,16 @@ acted on. The directory is opened through nonsymlink ancestors owned by
 root or the Host uid and not group/other-writable; `fstat` must show the
 configured device and inode, the Host uid as owner and mode exactly `0700`.
 A missing, unreadable or replaced pin refuses; no new or empty directory is
-accepted as enrollment. Root-controlled enrollment must not recycle the
+accepted as enrollment. Where that failure is found decides its effect: at
+load, before hello or before an operation's intent is journaled it is the
+refusal `caller_not_permitted` of section 8, effect: none; at the
+pre-result recheck after the intent has been journaled (and a downstream
+call may already have been made) it cannot have effect: none, so it is not
+a section 8 refusal of the operation — the result is withheld on that
+connection, the operation stays recorded exactly as journaled, and a
+later conforming replay under a pin that passes returns that record
+(section 6.2); no second intent, claim or effect is created by the
+withholding. Root-controlled enrollment must not recycle the
 configured Host uid while its old pin survives; that non-reuse rule is the
 deployment invariant of the transport contract and applies unchanged.
 
@@ -190,28 +263,52 @@ listed for an operation is required; unknown, missing, cross-operation or
 out-of-bound members refuse with `request_invalid`, effect: none. No member
 is optional in v1 unless its row says so. Container depth is at most 3 (the
 outer object, one array or object inside it, one object inside that), which
-every shape below fits.
+every shape below fits. That depth is this contract's own: the bodies of
+section 6 are a separate body grammar (`host-registration/1`) behind the
+same byte framing, descriptor and deadline gates as the transport subset,
+exactly as M0 validates its own bodies behind the same framing; they do
+not widen the transport subset's own closed wire grammar, whose container
+depth stays 2.
 
 Common members and shared bounds:
 
 | Member | Bound | Meaning |
 | --- | --- | --- |
 | `v` | integer, exactly `1` | Wire version of this contract. |
-| `op` | one of `attach`, `host_start`, `host_stop`, `query_operation`, `host_liveness` | Operation discriminator. `host_start` and `host_stop` are the existing gated rows of dispatcher §8.1; `attach`, `query_operation` and `host_liveness` are operation names defined here. An `op` value sent in the wrong direction refuses `request_invalid`. |
+| `kind` | string, exactly `swarma-dispatcher host-request/1` | Closed routing discriminator of every request body of section 6, defined here (section 3). The string is in the repository-qualified spelling of dispatcher §3.3 (D-WIRE-NAMES), parallel to `swarma-dispatcher m0-request/1`. Any other value is not a section 6 body. Replies carry no `kind`; they use the result envelope below. |
+| `op` | one of `attach`, `host_start`, `host_stop`, `query_operation`, `host_liveness`, `attach_wanted` | Operation discriminator. `host_start` and `host_stop` are the existing gated rows of dispatcher §8.1; `attach`, `query_operation`, `host_liveness` and `attach_wanted` are operation names defined here (`attach_wanted` is also proposed to the Host owner, section 6.6). An `op` value sent in the wrong direction refuses `request_invalid`, effect: none. |
 | `request_id` | string of 1..64 bytes matching `[A-Za-z0-9._:-]`; generated ids are 32 lowercase hex characters | Correlation and replay identity of this request, in the grammar of [transport.md](transport.md). It is scoped to the calling principal. |
-| `registration_generation` | integer `1..9007199254740991` | Must equal `installation_generation` of the accepted entry. On `attach` it is the value being established; on every other operation it must equal the current journaled generation. |
-| `attach_counter` | integer `1..9007199254740991` | The dispatcher's journaled attach counter (below). On `attach` it is the new value; on every other operation it must equal the current journaled counter exactly. |
+| `registration_generation` | integer `1..9007199254740991` | Must equal `installation_generation` of the accepted entry. On `attach` it is the value being established; on every other operation except `attach_wanted`, which carries no registration member at all, it must equal the current journaled generation. |
+| `attach_counter` | integer `1..9007199254740991` | The dispatcher's journaled attach counter (below). On `attach` it is the new value; on every other operation except `attach_wanted` it must equal the current journaled counter exactly. |
 | `state_version` | integer `1..9007199254740991` | The station state version carried as the operation epoch (station/1 SR3, R03). Required on every operation that names a logical session: `host_start`, `host_stop`, `query_operation` and each entry of `host_liveness`. `attach` names no session and carries none; whether station/1 wants a session scope on attach is OPEN S1. |
 | `logical_session_id` | string of 1..64 bytes matching `[A-Za-z0-9._:-]` | The logical session, as named in dispatcher §12. The dispatcher finds the session-scoped host admission permit by this value; the permit reference encoding stays unpublished (§16 question 3) and no permit member is added here. |
 | `execution_id` | string of 1..64 bytes matching `[A-Za-z0-9._:-]` | The execution claim and launcher/stop receipt identity (dispatcher §4.5). This file bounds its spelling on this wire only; its construction stays as §4.5 leaves it. |
 | `controller_epoch` | integer `1..9007199254740991` | The Host's per-session controller fence epoch (dispatcher §12). The integer spelling is defined here for this minimal form; the Host owner must confirm its epoch is a monotonic integer of this range (OPEN H5). |
 | `op_id` | string of 1..64 bytes matching `[A-Za-z0-9._:-]` | The idempotent operation identity of one `host_start` or `host_stop`, the `op_id` of dispatcher §12. The pair (`logical_session_id`, `op_id`) is the durable replay key of that operation. |
 
+Replay comparison set, defined here for `host_start` and `host_stop`: two
+requests are the same recorded operation exactly when their replay key
+(`logical_session_id`, `op_id`) is equal and the compared canonical
+arguments `execution_id`, `controller_epoch` and `state_version` are
+equal. `registration_generation` and `attach_counter` are not part of
+that comparison: they are checked on every request for currency only
+(they must be the pair that is current at the moment of the request,
+section 6 check order), so a repeat after a re-attach carries the new
+current pair and still matches the recorded operation, while bytes that
+carry a dead pair refuse `host_registration_stale`, effect: none, before
+any replay is considered. `request_id` is not a canonical argument
+either; a conforming Host repeat keeps the same `op_id` and the same
+`request_id` as the original request and changes only the registration
+pair to the current one. Where sections 6 and 9 below say "same canonical
+arguments", "identical arguments" or "exact replay" for a `host_start` or
+`host_stop`, they mean this comparison set.
+
 Responses reuse the result envelope of dispatcher §8.2 on both directions:
 `{v, request_id, ok: true, result: {...}}` or
 `{v, request_id, ok: false, error: {code, message}}`, with `request_id`
 echoing the request. `message` is human text of 1..128 bytes in the same
-ASCII subset and carries no semantics; a receiver that acts on message text
+ASCII subset and carries no semantics; that 1..128 bound is defined here
+(dispatcher §8.2 names the member but sets no bound for it); a receiver that acts on message text
 instead of `code` does not conform. The `result` members of each operation
 are closed sets defined in section 6. No other envelope member exists in v1.
 
@@ -219,16 +316,34 @@ The two epochs are distinct values and neither substitutes for the other:
 
 | Value | Owner | Scope | Rule |
 | --- | --- | --- | --- |
-| Registration epoch: the pair (`registration_generation`, `attach_counter`) | `installation_generation` is installed with the protected entry; `attach_counter` is journaled by the dispatcher | The one dispatcher-Host pairing | The dispatcher increments `attach_counter` by exactly 1 and commits it to the journal before each attach attempt: at the first attach under a generation, after every dispatcher restart, and after every loss of the Host connection that ends an attach. A counter is never reused, including after a lost attach reply. The current epoch is the last pair the dispatcher journaled and had accepted by `attach`. Every operation other than `attach` must carry that exact pair; any other pair refuses `host_registration_stale`. |
-| Operation epoch: `state_version` | The station state record. At the station/1 pin SR1-SR3 assign its commits to the station operation service and SR6 leaves the authoritative-record question open (OPEN OQ18); the operator's ruling assigns the standing-run record to the dispatcher. The join is OPEN S1. | One station and its logical session | Every effect request carries the state version of its operation (SR3; for a start also SR4, recorded in R03), and two operations from one version commit at most once (SR2). The dispatcher journals the highest committed `state_version` it has accepted per `logical_session_id`. A new operation must carry a higher value than that journaled high-water mark; an equal or lower value on a new operation refuses `station_state_stale`. An exact replay (same (`logical_session_id`, `op_id`), same canonical arguments) is not a new operation and returns the recorded result at its recorded version. A value far in the future is not a fence bypass either: accepting it journals it as the high-water mark, so every lower later version refuses stale; whether gaps are admissible at all belongs to the record owner's compare-and-set and is part of OPEN S1. This high-water check is fencing at the effect owner; it does not make the dispatcher the compare-and-set writer of the station record until OPEN S1 is settled in station/1. |
+| Registration epoch: the pair (`registration_generation`, `attach_counter`) | `installation_generation` is installed with the protected entry; `attach_counter` is journaled by the dispatcher | The one dispatcher-Host pairing | The dispatcher increments `attach_counter` by exactly 1 and commits it to the journal before each attach attempt: at the first attach under a generation, at dispatcher start, and whenever it holds no current pair (section 6.1), with bounded retry whose values are OPEN S3. A counter is never reused, including after a lost attach reply, and a higher generation opens a fresh counter space scoped to that generation (section 6.1). A pair is current only from the `host_attached` commit for that counter until the first of: a dispatcher restart, a newly loaded higher generation, the journaling of a later `attach_requested`, a journal fence, an accepted `attach_wanted`, or a `host_registration_stale` reply from the Host for that pair. Journaling a new `attach_requested` therefore ends the previous pair's currency at once: until the new counter is `host_attached`, no pair is current, and the old pair does not become current again if the attempt fails or its reply is lost. Every operation other than `attach` and `attach_wanted` must carry the exact pair that is current at that moment; any other pair, and any pair presented while no pair is current, refuses `host_registration_stale`, effect: none. The registration members are checked for currency only and are never part of a replay comparison (the replay set above). |
+| Operation epoch: `state_version` | The station state record. At the station/1 pin SR1-SR3 assign its commits to the station operation service and SR6 leaves the authoritative-record question open (OPEN OQ18); the operator's ruling assigns the standing-run record to the dispatcher. The join is OPEN S1. | One station and its logical session | Every effect request carries the state version of its operation (SR3; for a start also SR4, recorded in R03), and two operations from one version commit at most once (SR2). The dispatcher journals the highest committed `state_version` it has accepted per `logical_session_id`. A new operation must carry a higher value than that journaled high-water mark; an equal or lower value on a new operation refuses `station_state_stale`. A replay in the comparison set defined above (same (`logical_session_id`, `op_id`), same `execution_id`, `controller_epoch` and `state_version`, carrying whatever registration pair is current at the repeat) is not a new operation and returns the recorded result at its recorded version. After a journal fence, the journaled high-water mark alone does not prove a `host_start` new: section 7 requires proof against a floor kept outside the restored journal, failing which the request refuses (OPEN S6). A value far in the future is not a fence bypass either: accepting it journals it as the high-water mark, so every lower later version refuses stale; whether gaps are admissible at all belongs to the record owner's compare-and-set and is part of OPEN S1. This high-water check is fencing at the effect owner; it does not make the dispatcher the compare-and-set writer of the station record until OPEN S1 is settled in station/1. |
 
 Other epochs already defined by the dispatcher contract are not on this
 wire and are never accepted in place of the two above: the daemon-instance
 epoch (§4.1, fences supervisor writes), the execution claim epoch and
-`controller_epoch` (§12; `controller_epoch` is carried and checked against
-the session record, but it fences delivery at the Host, not registration),
+`controller_epoch` (§12; `controller_epoch` is carried and compared
+against the recorded operation values as the next paragraph states, but
+it fences delivery at the Host, not registration),
 and the account generation (user manager). Dispatcher §12 keeps these
 distinct, and so does this file.
+
+On `controller_epoch` in particular: the dispatcher does not evaluate it
+itself. It carries the value, binds it to the operation record and its
+effects, compares it as part of the replay comparison set and revalidates
+that a late result belongs to the recorded operation values
+(dispatcher §4.1, §12: the submitted four values are validated against
+the record at each effect); it does not decide whether the value is the
+Host's current controller epoch or a stale one, because that fence is the
+Host's own (dispatcher §12, "Fences without cross-service locks" and
+"Registration before delivery"). No refusal code or row in section 8
+therefore exists for a stale or unknown `controller_epoch` at the
+dispatcher in v1: the same (`logical_session_id`, `op_id`) presented with
+a different `controller_epoch` is different canonical arguments and
+refuses `request_id_conflict`, effect: none, and a new operation is not
+refused by the dispatcher on this member alone. A Host that sends a start
+under an epoch it has itself superseded breaks its own fence, which is
+Host-side behaviour proposed to the Host owner (OPEN H5).
 
 ## 6. Operations
 
@@ -238,24 +353,50 @@ is journaled is a refusal of section 8 with effect: none.
 
 1. Transport and pin checks of section 3 for the direction.
 2. Closed-shape, canonical-byte and bound checks of section 5.
-3. Registration epoch: `registration_generation` and `attach_counter` are
-   the current pair (on `attach`, the pair being established). If no
-   `--host-config` entry is attached to this daemon, Host-to-dispatcher
-   operations refuse `host_not_registered` before this step.
-4. Operation epoch: `state_version` against the journaled high-water mark
-   of its logical session, with the replay exception of section 5.
-5. The operation's own checks below, including all admission gates that
+3. Journal fence (Host-to-dispatcher operations only): if the
+   dispatcher's session journal is lost, fenced or restored and the
+   affected record has no clearance, the operation refuses
+   `station_session_journal_fenced`, effect: none, before any epoch is
+   asked. This step is what makes that code reachable at all in this
+   direction, because a fenced journal also kills every registration
+   pair. `attach_wanted` is the one exception: it writes nothing but a
+   wake-up (section 6.6), so this step does not refuse it, and the fence
+   still blocks the `attach` that follows it and every other operation.
+4. Registration epoch: `registration_generation` and `attach_counter`
+   are the current pair (on `attach`, the pair being established, judged
+   at the Host under the proposed rules of section 6.1; `attach_wanted`
+   carries no pair and skips this step). The registration members are
+   checked for currency only and then take no part in any replay
+   comparison (section 5). If no `--host-config` entry is attached to
+   this daemon, Host-to-dispatcher operations refuse
+   `host_not_registered`, effect: none, at this step.
+5. Operation epoch, for new `host_start` and `host_stop` operations only:
+   `state_version` against the journaled high-water mark of its logical
+   session, with the replay exception of section 5. This step does not
+   apply to `host_liveness` entries (stale entries are discarded one by
+   one, never a whole-report refusal, section 6.5), nor to
+   `query_operation`, whose `state_version` is the recorded version of
+   the operation it asks about and is not judged as a new operation
+   (section 6.4), nor to `attach` or `attach_wanted`, which name no
+   session.
+6. The operation's own checks below, including all admission gates that
    dispatcher §§7.1, 8.3, 9 and 12 already impose. This file adds no
    admission path around them: forward admission stays closed during
    recovery, maintenance, restore and hold exactly as those sections say,
-   and an accepted `attach` admits no work by itself.
+   and an accepted `attach` admits no work by itself. The §12 successor
+   rows of `host_start` (owner lifecycle consent absent, unknown permit,
+   restart budget exhausted, plan divergence and the other rows of that
+   table) refuse only under codes that are not published yet: this file
+   maps none of them onto a section 8 code by invention, and `host_start`
+   stays disabled until OPEN S4 and S5 publish those codes with their
+   evaluators.
 
 ### 6.1 `attach` (dispatcher to Host)
 
 `attach` establishes the registration epoch for the pairing. It has no
 physical effect. It admits no work.
 
-Closed request members: `v`, `op` = `attach`, `request_id`,
+Closed request members: `v`, `kind`, `op` = `attach`, `request_id`,
 `registration_generation`, `attach_counter`.
 
 Closed `result` members: `registration_generation`, `attach_counter`. Both
@@ -267,30 +408,55 @@ member refuses the reply.
 
 Sequence:
 
-1. The dispatcher completes its own startup or recovery prerequisites for
-   serving this seam: protected configuration loaded, journal replayed,
-   and every open operation classified under section 7. It increments
-   `attach_counter`, journals the phase `attach_requested` with the new
-   pair and commits it, all before any request byte is written. The
-   counter is scoped to the generation and its first journaled value under
-   a generation is 1. A counter that cannot increment inside its bound is
-   never wrapped or reused; a new `installation_generation` is required.
+1. The dispatcher attaches at start and whenever it holds no current
+   pair. Before an attempt it completes its own startup or recovery
+   prerequisites for serving this seam: protected configuration loaded,
+   journal replayed, and every open operation classified under section
+   7. It increments `attach_counter`, journals the phase
+   `attach_requested` with the new pair and commits it, all before any
+   request byte is written; that commit ends any previous pair's
+   currency at once (section 5). The counter is scoped to the generation
+   and its first journaled value under a generation is 1; a higher
+   generation opens a fresh counter space, so counter 1 under the new
+   generation is its first value and not a reuse of counter 1 under the
+   old. A counter that cannot increment inside its bound is never
+   wrapped or reused; a new `installation_generation` is required. Each
+   attach attempt is a new request with a fresh `request_id`; a failed,
+   refused or unanswered attempt is retried only as a further attempt
+   with the next counter, within a bounded retry whose attempt count,
+   spacing and deadline values are not defined here (OPEN S3), after
+   which the dispatcher holds no pair until its next start, its next
+   need to use this seam with no pair current, or an `attach_wanted`
+   wake-up starts the bounded retry again.
 2. It verifies the Host socket and peer uid (section 3) and sends `attach`.
    A failure before any byte is written is `host_socket_untrusted` or
    `host_unavailable` (section 8); the journaled counter stays consumed.
-3. The Host accepts only a pair it has not superseded: a request whose
-   `attach_counter` is lower than the highest counter it has accepted under
-   that generation refuses `host_registration_stale`; the same counter
-   under a different generation refuses `host_registration_conflict`. A
-   replay of the identical request (same `request_id`, same canonical
-   arguments) returns the recorded attach result and establishes nothing
-   new. A second attach with the same counter but a new `request_id` is a
-   duplicate and refuses `host_registration_stale`. Refusal is by the
-   epoch values, never by timing, ordering of connections or elapsed time.
-   How the Host stores the highest accepted counter durably across its own
-   restart is OPEN H1; a Host that cannot hold it can only fence within one
-   Host lifetime, and the dispatcher's own current-epoch check on every
-   later operation remains the fence on its side.
+3. Host acceptance in this step is Host-side behaviour proposed to the
+   Host owner (OPEN H1), with the Host as evaluator of its refusals. The
+   Host accepts only a pair it has not superseded: a request whose
+   `registration_generation` is lower than the highest generation it has
+   accepted refuses `host_registration_stale`, effect: none, and within
+   one generation a request whose `attach_counter` is at or below the
+   highest counter it has accepted under that generation refuses the
+   same code, effect: none, whatever its `request_id`. There is no
+   replay exception for `attach` and no recorded attach result is ever
+   returned to a replay: a byte-identical replay (same `request_id`),
+   a duplicate with a new `request_id` and a replay of an already
+   superseded counter all refuse alike under the at-or-below rule,
+   because a conforming dispatcher never resends a counter. A higher
+   generation than every accepted one opens a fresh counter space at
+   the Host as it does at the dispatcher (step 1): counters accepted
+   under a lower generation are no evidence against any counter under
+   the higher one, and no `host_registration_conflict` arises anywhere
+   on this wire (that code is only the dispatcher's load-time refusal
+   of section 4). Refusal is by the epoch values, never by timing,
+   ordering of connections or elapsed time. How the Host stores the
+   highest accepted pair and counter durably across its own restart,
+   and whether it keeps the current pair itself across a restart or
+   restarts without it (section 6.6), is the durability choice of
+   OPEN H1; a Host that holds no durable attach state can only fence
+   within one Host lifetime, and the dispatcher's own current-epoch
+   check on every later operation remains the fence on its side.
 4. On an accepted reply the dispatcher journals `host_attached`. From that
    commit the pair is current: the Host uses it on every later operation,
    and the dispatcher refuses every operation carrying another pair. A lost
@@ -299,11 +465,19 @@ Sequence:
    pair as current again.
 
 Until the first successful attach under the current generation and
-dispatcher lifetime, the Host has no current epoch to present. A
-`host_start`, `host_stop` or `host_liveness` that arrives in that window
-refuses `host_registration_stale`, effect: none. The Host waits for
-`attach`; it does not invent an epoch and does not retry the refused
-operation under a new operation id.
+dispatcher lifetime, and in every later window in which no pair is
+current, the Host has no current epoch to present. A `host_start`,
+`host_stop` or `host_liveness` that arrives in such a window refuses
+`host_registration_stale`, effect: none. The Host waits for `attach` (and
+may ask for one with `attach_wanted`, section 6.6); it does not invent an
+epoch and does not retry the refused operation under a new operation id.
+Once a pair is current again the same operation is presented under the
+same `op_id` (proposed to the Host owner, OPEN H6) re-stamped with the
+current pair: an operation that was refused before any intent was
+journaled is then judged as the new operation it still is, and an
+operation that was already recorded is met by the replay rule of section
+5 and returns its record; neither course is a conflict, because the
+registration members are no part of the comparison.
 
 ### 6.2 `host_start` (Host to dispatcher)
 
@@ -315,7 +489,7 @@ section 5; the set is closed. Only the pinned Host principal may call it.
 The dispatcher alone calls the privileged launcher; the Host has no
 launcher authority, no caller chain and no spawn grant.
 
-Closed request members: `v`, `op` = `host_start`, `request_id`,
+Closed request members: `v`, `kind`, `op` = `host_start`, `request_id`,
 `logical_session_id`, `execution_id`, `controller_epoch`, `op_id`,
 `registration_generation`, `attach_counter`, `state_version`.
 
@@ -337,24 +511,37 @@ The dispatcher is the effect owner of the start:
    journals the operation intent with its in-flight marker and the
    dispatcher-derived effect identities of §4.5. Nothing downstream is
    called under the lock.
-2. It journals the station/1 R03 phases in order: `lease_requested` before
-   the first lease acquire of this start, and `start_requested` before the
-   physical-start request is sent. Phase `start_requested` exists so that
-   recovery can tell whether a request may have been sent. Which writer
-   records `lease_requested` once the dispatcher holds the run record is
-   part of OPEN S1; the `start_requested` commit before the start request
-   leaves the dispatcher is a rule of this file whatever that join decides.
+2. It journals its own `start_requested` phase entry before the
+   physical-start request is sent. The name is the station/1 R03 phase
+   name and the entry corresponds to that record (section 7); it is not
+   the station R03 itself, which at the pin is committed by CRO. Phase
+   `start_requested` exists so that recovery can tell whether a request
+   may have been sent. The earlier R03 phase `lease_requested` is not a
+   dispatcher journal entry in v1: at the pin it precedes the Curator
+   home-lease acquire that CRO evaluates at start gate 8 on the lease
+   result, and the dispatcher contract has no home-lease acquire; it
+   enters this order only if the join of OPEN S1 assigns that acquire
+   to the dispatcher, as a write-ahead published by that join. The
+   `start_requested` commit before the start request leaves the
+   dispatcher is a rule of this file whatever that join decides.
 3. It performs the start through the existing launcher effect path with a
    per-physical-start claim and root-receipt interlock (§§4.5, 5.3, 12),
    then revalidates epochs and fences before recording the result.
 
 Idempotence and unknown outcomes:
 
-- A replay with the same (`logical_session_id`, `op_id`) and identical
-  canonical arguments, including after a crash of either side, returns the
-  recorded result and the record's current state. It creates no second
-  claim, effect or process (station/1 §2 replay rule; dispatcher §12).
-- The same (`logical_session_id`, `op_id`) with different arguments refuses
+- A replay in the comparison set of section 5 (same
+  (`logical_session_id`, `op_id`), same `execution_id`,
+  `controller_epoch` and `state_version`), including after a crash of
+  either side and after any re-attach, returns the recorded result and
+  the record's current state. The registration pair the replay carries
+  must be the pair current at the repeat and is not compared with the
+  pair the original request carried; a repeat that still carries a
+  dead pair refuses `host_registration_stale`, effect: none, before
+  the replay is looked up. It creates no second claim, effect or
+  process (station/1 §2 replay rule; dispatcher §12).
+- The same (`logical_session_id`, `op_id`) with a different
+  `execution_id`, `controller_epoch` or `state_version` refuses
   `request_id_conflict`, effect: none. station/1 names the station-side
   equivalent `station_operation_conflict` with the station operation
   service as evaluator; the dispatcher returns its own Appendix A code for
@@ -367,23 +554,45 @@ Idempotence and unknown outcomes:
   define (effect observation, start receipt, process evidence). It never
   sends a second start for that operation id and never mints a replacement
   operation id for the same start. The Host side of a lost reply follows
-  §8.3: repeat the same request with the same `request_id`, never a new
-  `op_id`.
+  §8.3, as Host client behaviour proposed to the Host owner (OPEN H6):
+  repeat the same operation with the same `op_id` and the same
+  `request_id`, never a new `op_id`, carrying the pair that is current
+  at the repeat so the replay reaches the record across a re-attach.
 - A previous execution of the session whose claim is not confirmed absent
   refuses a new start `agent_busy` (dispatcher §12). Unknown is not
   absence; a liveness report, a Host reply, service health and a changed
   boot identifier do not confirm absence (station/1 U4, R09).
+- After a journal fence and its clearance, non-resurrection is proved
+  against a floor kept outside the restored journal (dispatcher §11.1):
+  a `host_start` is accepted as a new operation only where both its
+  `op_id` is proved not to be a pre-loss operation and its
+  `state_version` is proved higher than every pre-loss version for that
+  session, against the station record under OPEN S1 or the operator's
+  clearance inventory under OPEN S6. A `host_start` whose `op_id` or
+  `state_version` cannot be proved new against that floor — including
+  where no such floor can be produced at all, where the `op_id` is in
+  the inventory but its dispatcher record is lost, and where its
+  version is at or below the floor — refuses
+  `station_session_journal_fenced`, effect: none. It is never judged
+  as a new operation against the restored high-water mark alone, so a
+  Host repeat of a pre-loss `op_id` re-stamped with the current pair
+  cannot start that operation a second time; the lost operation is
+  reconciled through clearance and operator disposition, not by
+  re-presenting it.
 
 ### 6.3 `host_stop` (Host to dispatcher)
 
 `host_stop` asks the dispatcher to stop one execution under the same
 permit. It is host-requested, durably distinct from owner `cancel`, and
 grants no start authority. Only the pinned Host principal may call it, and
-only for an execution under its own permit.
+only for an execution under the permit of the named
+`logical_session_id`.
 
-Closed request members: `v`, `op` = `host_stop`, `request_id`,
+Closed request members: `v`, `kind`, `op` = `host_stop`, `request_id`,
 `logical_session_id`, `execution_id`, `controller_epoch`, `op_id`,
-`registration_generation`, `attach_counter`, `state_version`. Here `op_id`
+`registration_generation`, `attach_counter`, `state_version`. This member
+set is defined here (dispatcher §8.1 states that the `host_stop`
+request/reference/authentication member format is unpublished). Here `op_id`
 is the stop operation's own identity, distinct from the start's `op_id`;
 `execution_id` names the target execution.
 
@@ -394,11 +603,15 @@ reply reports the recorded stop operation and the record's current state
 The dispatcher journals the stop intent before its stop effect, then runs
 the existing journaled stop path: the E-stop effect of §4.5 and the
 account-wide `exec.stop` scope of §§5.3 and 6, continued under the same
-effect identity and identical canonical arguments while processes remain.
+effect identity and its journaled effect arguments while processes remain.
 A completed stop replays without signalling and never signals a later
-execution. A replay of the stop (same (`logical_session_id`, `op_id`),
-same arguments) returns the recorded result; the same `op_id` with
-different arguments refuses `request_id_conflict`.
+execution. A replay of the stop in the comparison set of section 5
+(same (`logical_session_id`, `op_id`), same `execution_id`,
+`controller_epoch` and `state_version`, carrying the registration pair
+current at the repeat) returns the recorded result; the same `op_id`
+with a different compared argument refuses `request_id_conflict`,
+effect: none, and a repeat carrying a dead pair refuses
+`host_registration_stale`, effect: none.
 
 A stop ends only by an absence acceptance: the dispatcher records the
 execution as ended and releases its claim only when the qualified absence
@@ -408,8 +621,11 @@ liveness report or a timeout. station/1 R09 is that acceptance at the
 station record; who writes the station-side R09 once the dispatcher holds
 the run record is part of OPEN S1, and the dispatcher-side rule here does
 not wait for it: no R09-grade absence evidence, no ended record, no claim
-release. An execution that is not under this Host's permit refuses
-`run_not_owned`, effect: none.
+release. An execution that is not under the permit of the named
+`logical_session_id` refuses `run_not_owned`, effect: none; in
+particular an execution under another session's permit refuses even
+where (as there is only one Host) that permit also belongs to this
+Host.
 
 ### 6.4 `query_operation` (dispatcher to Host)
 
@@ -421,10 +637,20 @@ needs no prior journal intent; a read that only classifies is not an effect
 `effect.observe` reads of dispatcher §4.5; it is not a new dispatcher
 operation and is never offered to any other caller.
 
-Closed request members: `v`, `op` = `query_operation`, `request_id`,
-`registration_generation`, `attach_counter`, `logical_session_id`,
-`execution_id`, `op_id`, `state_version`. The `state_version` is the
-dispatcher's journaled version for that session at the operation.
+Closed request members: `v`, `kind`, `op` = `query_operation`,
+`request_id`, `registration_generation`, `attach_counter`,
+`logical_session_id`, `execution_id`, `op_id`, `state_version`. The
+`state_version` is defined here as the operation's recorded
+`state_version`: the version journaled in the dispatcher record of the
+named (`logical_session_id`, `op_id`) operation itself, not the
+session's later high-water mark if further operations have since been
+accepted. It binds the question and any reply to that one operation and
+is proposed to the Host owner as an equality check against the Host's
+record of that operation, or as whatever narrower use the Host owner
+publishes; what a mismatch answers is part of OPEN H3, and no
+high-water judgement is made on it, so a query for an older operation
+is never refused merely because its recorded version is below the
+current mark.
 
 Closed `result` members: `logical_session_id`, `execution_id`, `op_id`
 (echoed; a mismatch discards the reply), and `outcome`, exactly one of the
@@ -440,10 +666,16 @@ same answers, retention or deadlines carry to this seam.
 The dispatcher maps the reply through §4.6 without widening it:
 
 - `recorded` says the Host holds a terminal recorded outcome for that
-  operation id. This wire carries no outcome detail inside it, so the
-  dispatcher classifies the operation only together with its own recorded
-  result, the start receipt and process evidence. `recorded` never by
-  itself proves a process was bound or has ended.
+  operation id. Dispatcher §4.6 maps a receiver's `recorded` to known
+  present or known absent only together with the recorded result and
+  the current target state, and this wire carries neither inside the
+  value; the Host is also not a receiver of the dispatcher's launch
+  effect. A `recorded` answer here is therefore classified unknown
+  until it is combined with the dispatcher's own recorded result, the
+  start receipt and process evidence, and only that combination may
+  classify the operation. `recorded` never by itself proves a process
+  was bound or has ended, authorizes no classification change and
+  releases nothing.
 - `pending` and `unavailable`, including a timed-out or lost query reply,
   are unknown. The operation stays open and unreleased.
 - `rolled_back`, and `not_recorded` with complete coverage, are known
@@ -455,10 +687,17 @@ The dispatcher maps the reply through §4.6 without widening it:
   retry.
 
 A query repeats safely: it consumes no operation, advances no epoch and
-creates no record. It still carries both epochs and refuses stale ones, so
-a replaced Host incarnation with a stale registration view cannot answer
-questions about current operations. `effect: none` holds for a refused
-query exactly as for every refusal of section 8.
+creates no record. It still carries the registration pair current at
+the query and the operation's recorded `state_version`. That a Host
+with no current pair, or presented with a pair that is not the highest
+it has accepted, refuses the query `host_registration_stale`, effect:
+none, is Host-side behaviour proposed to the Host owner (OPEN H1, H3),
+with the Host as evaluator, so a replaced Host incarnation with a stale
+registration view cannot answer questions about current operations; at
+the dispatcher such a refusal for the pair it believed current ends
+that pair's currency and the dispatcher attaches with the next counter
+(section 5). `effect: none` holds for a refused query exactly as for
+every refusal of section 8.
 
 ### 6.5 `host_liveness` (Host to dispatcher)
 
@@ -470,8 +709,8 @@ underlines the point for its own liveness notion: a self-report, heartbeat,
 answered message or live helper process is not a liveness proof and is
 never merged into a termination verdict.
 
-Closed request members: `v`, `op` = `host_liveness`, `request_id`,
-`registration_generation`, `attach_counter`, `sessions`. `sessions` is an
+Closed request members: `v`, `kind`, `op` = `host_liveness`,
+`request_id`, `registration_generation`, `attach_counter`, `sessions`. `sessions` is an
 array of 0..64 entries; the bound 64 is defined here for v1 (one report
 covers at most 64 logical sessions; a Host holding more sends more
 reports). Each entry is a closed object with exactly
@@ -487,6 +726,11 @@ be.
 Closed `result` members: `reported` (integer 0..64, entries received) and
 `discarded_stale` (integer 0..64, entries discarded under the rules below).
 The reply acknowledges receipt only.
+
+Handling is per entry: the whole report is judged only by steps 1 to 4
+(pin, shape, fence, and the registration pair on the report itself),
+and step 5's new-operation `state_version` check never applies to its
+entries, so no entry can make the report as a whole refuse stale.
 
 Handling, per entry:
 
@@ -506,28 +750,90 @@ and `silence_deadline` values open (its OQ4), and this file invents no
 interval (OPEN S3, OPEN H4). Consequences never attach to silence by
 timeout: no stop, no release and no absence follows from a missing report.
 
+### 6.6 `attach_wanted` (Host to dispatcher)
+
+`attach_wanted` is the one Host-to-dispatcher notice defined here and
+proposed to the Host owner (OPEN H1). It is how a Host that holds no
+current registration pair — above all a Host that restarted without
+durable attach state — tells the dispatcher so, since with one
+operation per connection and no Host incarnation on the `attach` reply
+there is otherwise nothing that would ever trigger a re-attach. It is
+not an operation on any session.
+
+Closed request members: `v`, `kind`, `op` = `attach_wanted`,
+`request_id`. The notice carries no epoch and no session: no
+`registration_generation`, no `attach_counter`, no `state_version` and
+no session, execution or operation member exists on it, and a body that
+carries one refuses `request_invalid`, effect: none. Closed `result`
+members: none (an empty `result` object); the reply acknowledges the
+wake-up only.
+
+Authentication is by the pin only, exactly as the operations table of
+section 3 states for this direction (kernel peer uid of the pinned
+Host service uid plus the pinned principal directory, checked before
+hello and again before the result); nothing in the body authenticates
+or selects anything, because there is nothing in it to do so. Steps 3 to
+6 of the section 6 check order do not refuse this notice: it admits
+nothing, creates and changes no record, advances no epoch, takes and
+releases no claim, and writes nothing but a wake-up of the attach logic
+of section 6.1 (in particular receipt journals no intent; an `attach`
+that follows journals its `attach_requested` as every attach does). Its
+acknowledgement proves nothing about any session, process or outcome
+and no consequence attaches to its absence: a notice that is never sent
+changes nothing, and the dispatcher's attach at start and bounded retry
+stand without it.
+
+On an accepted notice the dispatcher ends the currency of any pair it
+still held (section 5) and answers by attaching with its next counter
+under section 6.1, on a new dispatcher-to-Host connection, subject to
+the section 7 fence rule that no attach resumes under a fenced
+generation: inside a journal fence the wake-up changes nothing until
+clearance and a new generation let that attach proceed. The Host
+behaviour that sends it is proposed to the Host owner: a Host that has
+restarted without durable attach state sends `attach_wanted` on its own
+connection (outside any handler invocation, section 3) once it can
+serve its socket, presents no pair it no longer holds, and until an
+`attach` gives it a current pair refuses dispatcher calls (`attach`
+excepted) `host_registration_stale`, effect: none, with the Host as
+evaluator. A Host that kept its pair and its highest accepted counter
+durably across its restart keeps using that pair and sends no notice:
+the pair simply stays current on both sides. Which of those two
+courses a restarting Host takes is the durability choice left in
+OPEN H1.
+
 ## 7. Journal phases, loss and restart
 
 Journal entries are opaque payloads of [journal.md](journal.md); the phase
-names and the commit-before order below are this contract's. Phase names
-`lease_requested` and `start_requested` are station/1 R03 names cited
-exactly. The other names in this table are defined here for the dispatcher
-journal. Every entry is committed (fsync, journal contract) before the
-step it precedes; an entry that cannot be committed admits no following
-step.
+names and the commit-before order below are this contract's. The phase
+name `start_requested` is the station/1 R03 name cited exactly, and the
+other names in this table are defined here for the dispatcher journal.
+The entries in this table are the dispatcher's own write-ahead entries;
+none of them is a station/1 record. At the station/1 pin every `Rnn` is
+an entry of the station state record, written by CRO in the same
+compare-and-set that commits its cell (station/1 §4.1, SR2), and the
+write-ahead column for the dispatcher (`DI`) there is narrower than the
+record itself: R03 "request and effect identity", R08 "journaled end of
+the session and stop effect", R09 "claim release and the clearance of
+the slot, which cites this proof", R23 "its own fence mark". The last
+column below therefore names the station record each dispatcher entry
+corresponds to and through which of those write-ahead lines, and never
+labels a dispatcher entry with a station record id. The earlier R03
+phase `lease_requested` appears nowhere in this table, for the reason
+stated in section 6.2. Every entry is committed (fsync, journal
+contract) before the step it precedes; an entry that cannot be committed
+admits no following step.
 
-| Order | Dispatcher journal entry | Committed before | Source of the name |
+| Order | Dispatcher journal entry | Committed before | Name, and the station record it corresponds to |
 | --- | --- | --- | --- |
 | 1 | `attach_requested` with the new (`registration_generation`, `attach_counter`) | The `attach` request is written | Defined here |
 | 2 | `host_attached` with the accepted pair | The pair is treated as current | Defined here |
-| 3 | Start operation intent: canonical arguments, both epochs, effect identities, in-flight marker | Any downstream call for that start | Dispatcher §4.1, §4.5 |
-| 4 | `lease_requested` | The first lease acquire of that start | station/1 R03 |
-| 5 | `start_requested` | The physical-start request is sent | station/1 R03 |
-| 6 | `start_unknown` for that (`logical_session_id`, `op_id`) | The operation is held for reconciliation and any later step reads its state | Defined here; the held classification is station/1 `held:start` and R17 |
-| 7 | Stop operation intent (host-requested) with its effect identity | The stop effect is issued | station/1 R08; dispatcher §4.5 |
-| 8 | `absence_accepted` citing the absence proof | The execution is recorded ended and its claim released | Defined here for the dispatcher journal; the acceptance is station/1 R09 |
-| 9 | Recovery entry: each open operation found and its classification | Any resumed step after a restart | station/1 R10 |
-| 10 | Journal fence entry and fence mark | Every later step after a lost, fenced or restored journal | station/1 R23 |
+| 3 | Start operation intent: canonical arguments, both epochs, effect identities, in-flight marker | Any downstream call for that start | Dispatcher §4.1, §4.5; the `DI` write-ahead "request and effect identity" of station/1 R03 |
+| 4 | `start_requested` | The physical-start request is sent | Phase name of station/1 R03; the entry is the dispatcher's own step-2 write-ahead of section 6.2, not station R03 |
+| 5 | `start_unknown` for that (`logical_session_id`, `op_id`) | The operation is held for reconciliation and any later step reads its state | Defined here; the held classification corresponds to station/1 `held:start` and its R17 hold record |
+| 6 | Stop operation intent (host-requested) with its effect identity | The stop effect is issued | Dispatcher §4.5; the `DI` write-ahead "journaled end of the session and stop effect" of station/1 R08, which CRO commits at the station record |
+| 7 | `absence_accepted` citing the absence proof | The execution is recorded ended and its claim released | Defined here for the dispatcher journal; the acceptance it rests on is station/1 R09, and its claim release is the `DI` write-ahead of R09 that cites the proof |
+| 8 | Recovery entry: each open operation found and its classification | Any resumed step after a restart | The dispatcher's own reconciliation of its journal before new work, corresponding to station/1 R10, which CRO commits at the station record |
+| 9 | Journal fence entry and fence mark | Every later step after a lost, fenced or restored journal | The dispatcher's own fence mark, the `DI` write-ahead of station/1 R23, which CRO commits at the station record |
 
 Replay retains every complete valid frame, including a phase whose reply
 was never acknowledged ([journal.md](journal.md)): a replayed
@@ -540,11 +846,11 @@ a released claim.
 
 | Event | Rule |
 | --- | --- |
-| Dispatcher restart | This is station/1's "starter crash" column, never a capability report: the cells that carry it for the states this file touches include [`starting` x starter crash] = `starting; R10; no gate`, [`running` x starter crash] = `running; R10; no gate` and [`held:start` x starter crash] = `held:start; R10; no gate`. On restart the dispatcher takes exclusive ownership, replays the journal in two passes, writes the recovery entry (R10) classifying every open operation, and reconciles under §7.1 before forward admission. An operation found at `start_requested` with an unknown outcome stays unknown (`held:start`) and is reconciled by `query_operation` and receiver evidence. Only after classification does the dispatcher attach again, with the next `attach_counter`; the pre-restart registration epoch is dead and refuses stale. |
+| Dispatcher restart | This is station/1's "starter crash" column, never a capability report: the cells that carry it for the states this file touches include [`starting` x starter crash] = `starting; CRO; R10; no gate`, [`running` x starter crash] = `running; CRO; R10; no gate` and [`held:start` x starter crash] = `held:start; CRO; R10; no gate`. On restart the dispatcher takes exclusive ownership, replays the journal in two passes, writes its recovery entry (order 8 above, corresponding to station R10) classifying every open operation, and reconciles under §7.1 before forward admission. An operation found at `start_requested` with an unknown outcome stays unknown (`held:start`) and is reconciled by `query_operation` and receiver evidence. Only after classification does the dispatcher attach again, with the next `attach_counter`; the pre-restart registration epoch is dead and refuses stale. |
 | Host loss (socket gone, connect refused, peer died) | No new start: no `host_start` can arrive and the dispatcher starts nothing on its own. Open operations stay unknown until reconciled; claims, quotas, fences and delivery closure are retained exactly as §12 states for host failure. Pre-send dispatcher-to-Host failures are `host_unavailable`; a failure after bytes were written is an unknown outcome of that operation. A missing liveness report proves nothing. |
-| Host restart or reconnect | The old registration epoch is dead. The dispatcher attaches with the next counter (section 6.1); Host operations carrying the old pair refuse `host_registration_stale`, and the dispatcher's queries are re-issued only as reads. Whatever the Host still holds after its restart is learned again by observation and reports, not assumed: replayed ready Host metadata without live evidence settles nothing (the Host's own stated rule on its manager seam, applied here as a limit, not a borrowed guarantee). |
-| Lost, fenced or restored dispatcher journal | This is station/1 R23 and dispatcher §11.1. The dispatcher writes its fence mark, records nothing as ended, and every host operation whose record cannot be cleared refuses `station_session_journal_fenced` (station/1 gate 9 of the start gates; evaluator `DI`). Forward admission stays node-wide fenced until the §11.1 external fence, reverse inventory and operator disposition complete; a restored snapshot certifies no completeness of its own. Registration counters journaled only in the lost journal cannot be proved monotonic, so attach does not resume under the fenced generation: after clearance the operator path installs a new `installation_generation`, and only then may attach proceed. How the clearance that cites R09 is recorded for a slot is part of the station join (OPEN S6). |
-| Ambiguous reply, either direction | The same-effect rule of §4.5 and the reply rule of §8.3: repeat the same request with the same `request_id` and the same operation identity, or observe. Never a new `op_id`, never a second physical effect, never a fabricated receipt. |
+| Host restart or reconnect | Two cases, by the Host's durability choice in OPEN H1. A Host that kept its pair and its highest accepted counter durably keeps using that pair: it stays current on both sides, no re-attach is needed or performed, and its operations and answers proceed under it. A Host that restarted without durable attach state holds no pair: the old pair is dead at the Host, it sends `attach_wanted` (section 6.6) and refuses dispatcher calls `host_registration_stale` until attached; the dispatcher still counts the old pair current only until it accepts that notice or receives that refusal for the pair, whereupon it ends the pair's currency and attaches with the next counter (section 6.1), after which the old pair refuses stale on both directions and its queries are re-issued only as reads under the new pair. The restarted Host presents no pair in the window in between, so nothing is admitted on the strength of the old pair in that window either. Whatever the Host still holds after its restart is learned again by observation and reports, not assumed: replayed ready Host metadata without live evidence settles nothing (the Host's own stated rule on its manager seam, applied here as a limit, not a borrowed guarantee). |
+| Lost, fenced or restored dispatcher journal | This corresponds to station/1 R23 (the dispatcher's entry is its own fence mark, order 9 above) and is governed by dispatcher §11.1. The dispatcher writes its fence mark, records nothing as ended, no registration pair stays current, and every Host-to-dispatcher operation (`attach_wanted` alone excepted, section 6 step 3) whose record cannot be cleared refuses `station_session_journal_fenced`, effect: none, at that step before any epoch check — a pre-intent refusal in this file, where station/1 evaluates the same verdict at start gate 9, below the R03 record line, as a recorded P4 that leads to `stopping` (recorded in OPEN S1/S4; evaluator `DI` in both). Forward admission stays node-wide fenced until the §11.1 external fence, reverse inventory and operator disposition complete; a restored snapshot certifies no completeness of its own. Registration counters journaled only in the lost journal cannot be proved monotonic, so attach does not resume under the fenced generation: after clearance the operator path installs a new `installation_generation`, and only then may attach proceed. The same loss removes the per-session `state_version` high-water marks and the (`logical_session_id`, `op_id`) replay keys, so after clearance a `host_start` is judged new only against a floor kept outside the restored journal (section 6.2): one whose `op_id` or `state_version` cannot be proved new against the station record (OPEN S1) or the operator's clearance inventory refuses `station_session_journal_fenced`, effect: none. The clearance itself is, at the station/1 pin, the dispatcher's record citing the R09 of the account; its encoding and the encoding of that floor are OPEN S6. |
+| Ambiguous reply, either direction | The same-effect rule of §4.5 and the reply rule of §8.3: repeat the same operation with the same `request_id` and the same operation identity (`op_id`) — for `host_start`/`host_stop` carrying the registration pair current at the repeat, which is no part of their comparison — or observe. Never a new `op_id`, never a second physical effect, never a fabricated receipt. `attach` is the stated exception to same-request repetition: it is never resent under the same counter, and its next attempt uses the next counter with a fresh `request_id` (section 6.1). |
 
 ## 8. Refusals
 
@@ -558,7 +864,11 @@ this table: it is a recorded outcome of that operation under §§4.5 and 4.6.
 
 Codes come from dispatcher Appendix A or station/1 §4.3 wherever one
 exists, reused without renaming. Codes marked "defined here" are new
-dispatcher codes of this contract, with the dispatcher (`DI`) as evaluator.
+codes of this contract. Each row names its evaluator where it
+evaluates: for codes the Host evaluates on its own socket or under the
+proposed rules of sections 6.1, 6.4 and 6.6 the evaluator is the Host,
+proposed to the Host owner, and the row says so; everywhere else it is
+the dispatcher (`DI`).
 A refusal enforced by closing a connection with zero bytes (the transport
 contract's disposition for an unpinned peer or an untrusted endpoint)
 carries its code as the local recorded reason; no bytes are written to
@@ -566,24 +876,31 @@ present it.
 
 | Code | Evaluator and source | When | Effect |
 | --- | --- | --- | --- |
-| `caller_not_permitted` | Dispatcher, Appendix A | Kernel peer uid is not the pinned Host service uid, or the Host principal pin fails at any recheck point. A peer outside the transport caller pins at all is closed with zero bytes before hello under the transport rules, with this code as the recorded reason. | none |
-| `request_invalid` | Dispatcher, Appendix A; also the Host's refusal for the same cause on its socket | Non-canonical bytes; unknown, missing, duplicated or cross-operation member; value out of its bound; wrong `v` or `op`; an operation offered in the wrong direction; an extra member in a reply, including an unpublished Host member on `attach`. | none |
+| `caller_not_permitted` | Dispatcher, Appendix A | Kernel peer uid is not the pinned Host service uid, or the Host principal pin fails at load, before hello or before the operation's intent is journaled. A pin failure found only at the pre-result recheck after intent is not this refusal: the result is withheld and the operation stays recorded (section 4). A peer outside the transport caller pins at all is closed with zero bytes before hello under the transport rules, with this code as the recorded reason. | none |
+| `request_invalid` | Dispatcher, Appendix A; also the Host (proposed to the Host owner) for the same cause on its socket | Non-canonical bytes; unknown, missing, duplicated or cross-operation member; value out of its bound; wrong `v`, `kind` or `op`; an operation offered in the wrong direction; an epoch or session member on `attach_wanted`; an extra member in a reply, including an unpublished Host member on `attach`. | none |
 | `host_not_registered` | Dispatcher, defined here | A Host-to-dispatcher operation arrives while no `--host-config` entry is attached to the daemon. No host is registered by any request, so there is no other way out of this state. | none |
-| `host_registration_stale` | Dispatcher, defined here (station/1 has no code for a registration epoch) | `registration_generation` does not equal the accepted `installation_generation`; `attach_counter` does not equal the current journaled counter (lower, higher, or the same counter presented again under a new `request_id` after `host_attached`); an operation presenting the epoch of a dead attach; a configured generation lower than the journaled one at load. | none |
-| `host_registration_conflict` | Dispatcher, defined here | The same `installation_generation` loaded with different configuration bytes than the journaled digest; the same `attach_counter` presented under a different generation. | none |
+| `host_registration_stale` | Dispatcher, defined here (station/1 has no code for a registration epoch); and the Host, defined here and proposed to the Host owner, where the Host evaluates (below) | At the dispatcher: an operation other than `attach`/`attach_wanted` whose pair is not the pair current at that moment (`registration_generation` not the accepted `installation_generation`, or `attach_counter` lower or higher than the current counter, or any pair while no pair is current, including the pair of a dead attach and a byte-carried dead pair on an otherwise exact replay); a configured generation lower than the journaled one at load. At the Host (proposed, sections 6.1, 6.4, 6.6): an `attach` whose generation is lower than its highest accepted generation or whose counter is at or below its highest accepted counter of that generation, whatever its `request_id` (`attach` has no replay exception and returns no recorded result); a dispatcher call presented to a Host that holds no current pair, or with a pair that is not its highest accepted pair. The same input never maps to two codes: an old pair under a superseded generation is this code alone, at whichever side judges it. | none |
+| `host_registration_conflict` | Dispatcher, defined here | Only the load-time case of section 4: the same `installation_generation` loaded with different configuration bytes than the journaled digest. No cross-generation counter comparison exists anywhere in v1, so this code never arises on the wire in either direction. | none |
 | `host_socket_untrusted` | Dispatcher, defined here, local refusal with zero bytes written | On the dispatcher-to-Host direction, before connect or after it: `socket_path` is not a socket, its owner is not `socket_owner_uid`, a parent component is a symlink or has an untrusted owner or mode, the kernel peer uid after connect is not `host.uid`, or the path cannot be represented as a socket address. | none |
 | `host_unavailable` | Dispatcher, defined here, local refusal | Connect to the verified Host socket fails, or the connection fails before any request byte of this operation is written. A failure after bytes were written is never this code; it is an unknown outcome. | none |
-| `station_state_stale` | station/1 §4.3 (code verbatim; SR3 makes an effect owner's stale refusal surface under this code, OPEN S2) | A new operation carries a `state_version` equal to or lower than the highest committed version journaled for its `logical_session_id`, or an effect owner has already seen a higher epoch for the station. An exact replay is not refused under this code. | none |
-| `request_id_conflict` | Dispatcher, Appendix A | Same (`logical_session_id`, `op_id`) as a recorded operation, or same caller-scoped `request_id` on `attach`, with different canonical arguments. | none |
-| `run_not_owned` | Dispatcher, Appendix A | `host_stop` (or a result lookup behind it) names an execution that is not under this Host's session permit. | none |
+| `station_state_stale` | Dispatcher on this seam, station/1 §4.3 code verbatim; station/1 §4.3 at the pin names CRO as this code's one evaluator, so the attribution on this seam is the stated conflict of OPEN S2 | A new `host_start` or `host_stop` carries a `state_version` equal to or lower than the highest committed version journaled for its `logical_session_id`, or an effect owner has already seen a higher epoch for the station. A replay in the comparison set of section 5 is not refused under this code, and neither is a `host_liveness` entry or a `query_operation` (section 6 steps). | none |
+| `request_id_conflict` | Dispatcher, Appendix A | Same (`logical_session_id`, `op_id`) as a recorded `host_start` or `host_stop` with a different compared canonical argument (`execution_id`, `controller_epoch` or `state_version`). A different registration pair is never by itself this code: the current pair carries the replay to its record and a dead pair is `host_registration_stale`. | none |
+| `run_not_owned` | Dispatcher, Appendix A | `host_stop` (or a result lookup behind it) names an execution that is not under the permit of the named `logical_session_id`, including an execution under another session's permit. | none |
 | `agent_busy` | Dispatcher, Appendix A and §12 | `host_start` for a session whose previous execution claim is not confirmed absent. Unknown counts as not absent. | none |
 | `capacity:hold` and the other `capacity:*` codes of Appendix A | Dispatcher, §§8.3 and 9 | `host_start` while forward admission is closed for recovery, hold, maintenance, restore or a temporary capacity gate. `host_stop` and reconciliation keep the recovery availability that §8.3 already gives them; this row creates no new closure for them. | none |
-| `station_session_journal_fenced` | Dispatcher as `DI`, station/1 §4.3 (code verbatim) | The dispatcher's session journal is lost, fenced or restored and the affected record has no clearance (R23, section 7). | none |
+| `station_session_journal_fenced` | Dispatcher as `DI`, station/1 §4.3 (code verbatim) | For a Host-to-dispatcher operation (`attach_wanted` excepted), at section 6 step 3 right after the pin and shape checks and before the registration check: the dispatcher's session journal is lost, fenced or restored and the affected record has no clearance (section 7, corresponding to station/1 R23). Also, after clearance, a `host_start` whose `op_id` or `state_version` cannot be proved new against the floor kept outside the restored journal (sections 6.2 and 7). At station/1 the same verdict is evaluated at start gate 9 below the R03 record line as a recorded P4; in this file it is a pre-intent refusal (OPEN S1/S4). | none |
 
-No other refusal code exists in v1. In particular there is no code by which
-a liveness report, a Host reply or the passage of time can produce an ended
-record, a released claim or an admitted start; those outcomes need the
-absence acceptance and admission gates their own sections name.
+No other refusal code is defined by this file in v1, and the codes above
+are the whole of its refusal surface. Two boundaries of that statement
+are stated, not hidden: there is no dispatcher code for a stale
+`controller_epoch`, because the dispatcher does not evaluate that epoch
+(section 5), and the dispatcher §12 successor refusals of `host_start`
+have no published codes yet, are mapped onto no code above, and keep
+`host_start` disabled until OPEN S4/S5 publish them (section 6 step 6).
+In particular there is no code by which a liveness report, a Host reply
+or the passage of time can produce an ended record, a released claim or
+an admitted start; those outcomes need the absence acceptance and
+admission gates their own sections name.
 
 ## 9. Negative cases
 
@@ -601,33 +918,40 @@ means every launcher and Host-socket attempt the harness can observe.
 | Configuration member missing | Valid file with `socket_owner_uid` removed | Startup refuses locally, zero protocol bytes | The same file with the member restored loads and serves |
 | Configuration not canonical | Valid members but one space byte inserted between two tokens | Startup refuses locally, zero protocol bytes | The same members in exact canonical bytes load and serve |
 | Two hosts in one file | `host` replaced by an array of two principal objects | Startup refuses locally for the closed-shape rule of section 4, zero protocol bytes | The same file with the first object alone under `host` loads and serves |
-| Generation reused with changed bytes | Generation `G` journaled with its digest; file edited to a new `socket_path`, generation still `G` | Load refuses `host_registration_conflict`, effect: none; journaled generation and digest unchanged | The same edited file with generation `G+1` loads, and attach under `G+1` proceeds |
+| Generation reused with changed bytes | Generation `G` journaled with its digest; file edited to a new `socket_path`, generation still `G` | Load refuses `host_registration_conflict`, effect: none; journaled generation and digest unchanged | The same edited file with generation `G+1` loads, and the first attach under `G+1` at its counter 1 proceeds even though counter 1 was already accepted under `G` (a higher generation opens a fresh counter space) |
 | Wrong caller uid | Current attach in force. A peer with a pinned transport caller uid other than `host.uid` sends an otherwise valid `host_start` | `caller_not_permitted`, effect: none. No intent journaled, no downstream call | The identical request from peer uid `host.uid` with a valid pin is journaled and proceeds |
 | Unpinned caller | Current attach in force. A peer uid in no transport pin connects | Zero-byte close before hello, recorded reason `caller_not_permitted`, effect: none | The pinned Host peer completes hello and its operation proceeds |
-| Host principal pin replaced | Between load and the operation, the pinned Host directory is replaced with a different inode | Operation refuses `caller_not_permitted` at the pre-result recheck, effect: none | The original pinned directory unchanged: the same operation proceeds |
+| Host principal pin replaced before intent | Between load and an admitted `host_start`, the replacement of the pinned Host directory with a different inode is found at the before-hello pin check, before any intent is journaled | Operation refuses `caller_not_permitted`, effect: none. No intent journaled, no downstream call | The original pinned directory unchanged: the same operation is journaled and proceeds |
+| Host principal pin replaced after intent | The intent of a `host_start` is journaled and its downstream call made; the pin replacement is found at the pre-result recheck | No result is presented on that connection; this is not a refusal of the recorded operation and claims no effect: none for it. Journal shows exactly the one intent and its effect set, the record stays exactly as recorded, and a later conforming replay of that `op_id` under a pin that passes returns that record with no second intent | The pinned directory unchanged throughout: the same operation's result is presented |
 | Wrong socket owner | `socket_path` names a real socket whose owner is a different uid than `socket_owner_uid` | Dispatcher-to-Host attempt refuses `host_socket_untrusted` locally; zero request bytes written; no `query_operation` answer is acted on | The socket at the same path owned by `socket_owner_uid` with peer uid `host.uid`: `attach` proceeds |
 | Wrong socket peer uid | Socket owner correct, but the accepting process has a peer uid different from `host.uid` | `host_socket_untrusted`, zero request bytes written, effect: none | Accepting process with peer uid `host.uid`: `attach` proceeds |
 | Host down before send | No listener at the verified `socket_path` | `host_unavailable` locally; attach counter stays consumed; no operation is admitted under that counter | Listener present and verified: the next attach with the next counter completes |
 | Stale registration epoch (low) | Current epoch `(G, 7)`. The Host sends `host_start` with `attach_counter` 6, all else valid | `host_registration_stale`, effect: none. No intent journaled, no downstream call, high-water `state_version` unchanged | The identical request with `attach_counter` 7 is journaled and proceeds |
-| Stale registration epoch (high) | Current epoch `(G, 7)`. The Host sends `host_start` with `attach_counter` 8 | `host_registration_stale`, effect: none. A future counter is not adopted and does not advance the current epoch | After a real dispatch attach commits counter 8, the identical request with `attach_counter` 8 proceeds |
+| Stale registration epoch (high) | Current epoch `(G, 7)`. The Host sends `host_start` with `attach_counter` 8 | `host_registration_stale`, effect: none. A future counter is not adopted and does not advance the current epoch | After a real dispatcher attach commits counter 8, the identical request with `attach_counter` 8 proceeds |
 | Operation before any attach | No successful attach yet in this dispatcher lifetime. The Host sends `host_start` carrying a pair it chose | `host_registration_stale`, effect: none. The presented pair is not adopted | After the dispatcher attaches, the same `host_start` carrying the attached pair proceeds |
-| Duplicate attach | Counter 7 already `host_attached`. A second `attach` arrives with counter 7 and a new `request_id`, immediately or much later | `host_registration_stale`, effect: none at both times; the refusal does not depend on elapsed time or connection order | A replay of the byte-identical first attach request (same `request_id`) returns the recorded attach result; an attach with counter 8 establishes the new epoch |
+| Duplicate or replayed attach | Counter 7 is the highest counter the Host has accepted under `G` (`host_attached` at the dispatcher). A further `attach` under `G` arrives at the Host with counter 7 — byte-identical with the same `request_id`, or with a new `request_id`, immediately or much later — and likewise a replay of the already superseded counter 6 | Every one refuses `host_registration_stale` at the Host, effect: none, and no recorded attach result is returned to any of them; the refusal does not depend on elapsed time or connection order | An attach with counter 8 under `G` establishes the new epoch |
+| Attach under a superseded generation | The Host's highest accepted generation is `G+1` (highest accepted counter 3). An `attach` arrives under `G` with counter 99, a value never accepted under any generation | `host_registration_stale` at the Host, effect: none. That is the only code this input maps to (never `host_registration_conflict`) | An attach under `G+1` with counter 4 establishes the new epoch; under a newly installed `G+2`, its counter 1 likewise proceeds |
 | Attach reply lost | Counter 7 sent and accepted by the Host; the reply never reaches the dispatcher | Pairing is not current under 7; counter 7 is never resent; no operation is admitted under 7 by either side's later claim | The next attach with counter 8 completes and operations under `(G, 8)` proceed |
-| Stale state version (equal) | Session high-water `state_version` is 41 after a committed start. A new `host_start` with a new `op_id` carries `state_version` 41 | `station_state_stale`, effect: none. No claim taken, no downstream call | The identical request with `state_version` 42 is journaled and proceeds |
+| Stale state version (equal) | Session high-water `state_version` is 41 after a committed start, and the previous execution's absence is accepted (station/1 R09), so no `agent_busy` is in play. A new `host_start` with a new `op_id` carries `state_version` 41 | `station_state_stale`, effect: none. No claim taken, no downstream call | The identical request with `state_version` 42 is journaled and proceeds |
 | Stale state version (lower) | Same session, new `host_stop` carries `state_version` 40 | `station_state_stale`, effect: none. The running execution is not signalled | The identical `host_stop` with `state_version` 42 journals its intent and proceeds |
-| Replayed `host_start`, same operation id | The start for (`logical_session_id`, `op_id` = `op-1`) is journaled. The identical canonical request is sent again, including after a restart of either side | The recorded result and current `record_state` are returned. Exactly one claim, one effect set and at most one process exist for `op-1`; journal shows no second `start_requested` for it | A second, genuinely new start uses a new `op_id`, a higher `state_version`, and only after confirmed absence, and proceeds as its own operation |
-| Same operation id, different arguments | `op-1` replayed with a changed `execution_id` | `request_id_conflict`, effect: none. The recorded operation is unchanged | The byte-identical replay returns the recorded result (previous row) |
-| Reply lost after `start_requested` | Journal holds `start_requested` for `op-1`; the physical start reply is dropped before the dispatcher can classify it | Operation goes to `start_unknown`, claim retained, classification `held:start`. Reconciliation runs `query_operation` for `op-1` plus receipt and process observation. No second start request for `op-1` under any id. A Host retry with the same `request_id` and `op_id` returns the open record | The same start with the reply delivered records its outcome, and `record_state` advances by that evidence alone |
-| Dispatcher restart mid-start | Dispatcher stops after `start_requested` for `op-1` is committed and before its outcome is recorded, then restarts | Journal replays; recovery entry (R10) classifies `op-1` unknown; no new start for the session is admitted; the pre-restart epoch refuses `host_registration_stale`. After classification the dispatcher re-attaches with the next counter and reconciles `op-1`; no second `start_requested` is written for it | A restart in which `op-1` had a recorded terminal outcome before the stop replays to that outcome, and a new start with a new `op_id` proceeds if absence is confirmed |
-| Host restart mid-start | The Host restarts while `op-1` is at `start_requested` and unknown | Open operation stays unknown and unreleased; old registration epoch refuses stale on both directions; the dispatcher re-attaches with the next counter and asks `query_operation` for `op-1`. No second start | The Host that did not restart answers the same query under the still-current epoch, and reconciliation proceeds on that evidence |
-| Journal fenced | Dispatcher journal replaced by a restored copy, fence mark written (R23), clearance not complete. A valid `host_start` arrives | `station_session_journal_fenced`, effect: none. Nothing is recorded ended; claims of possibly-running executions are not released; attach does not resume under the fenced generation | After §11.1 clearance and a newly installed generation, attach completes and the same `host_start` shape is admitted under the new epoch |
+| Replayed `host_start`, same operation id | The start for (`logical_session_id`, `op_id` = `op-1`) is journaled under epoch `(G, 7)`. After a re-attach has made `(G, 8)` current (including after a restart of either side that kept its records), the Host repeats the operation with the same `op_id` and same `request_id`, the same `execution_id`, `controller_epoch` and `state_version`, and pair `(G, 8)` | The recorded result and current `record_state` are returned. Exactly one claim, one effect set and at most one process exist for `op-1`; journal shows no second `start_requested` for it, and no conflict is raised over the changed pair | A second, genuinely new start uses a new `op_id`, a higher `state_version`, and only after confirmed absence, and proceeds as its own operation |
+| Replayed `host_start` carrying a dead pair | The same repeat as the previous row, but carrying the dead pair `(G, 7)` while `(G, 8)` is current | `host_registration_stale`, effect: none, before the replay is looked up. The recorded operation is unchanged and no result for it is presented on those bytes | The same repeat carrying the current pair `(G, 8)` returns the recorded result (previous row) |
+| Same operation id, different arguments | `op-1` replayed under the current pair with a changed `execution_id` | `request_id_conflict`, effect: none. The recorded operation is unchanged | The replay in the comparison set (same `execution_id`) returns the recorded result (previous rows) |
+| Same operation id, different controller epoch | `op-1` replayed under the current pair with a changed `controller_epoch`, all other compared arguments equal | `request_id_conflict`, effect: none. This is a comparison failure, not a dispatcher judgement that the epoch is stale (section 5); the recorded operation is unchanged | The replay with the recorded `controller_epoch` returns the recorded result |
+| Reply lost after `start_requested` | Journal holds `start_requested` for `op-1`; the physical start reply is dropped before the dispatcher can classify it | Operation goes to `start_unknown`, claim retained, classification `held:start`. Reconciliation runs `query_operation` for `op-1` plus receipt and process observation. No second start request for `op-1` under any id. A Host repeat with the same `request_id` and `op_id`, carrying the pair current at the repeat (after any re-attach), returns the open record | The same start with the reply delivered records its outcome, and `record_state` advances by that evidence alone |
+| Dispatcher restart mid-start | Dispatcher stops after `start_requested` for `op-1` is committed under `(G, 7)` and before its outcome is recorded, then restarts | Journal replays; its recovery entry (corresponding to station/1 R10) classifies `op-1` unknown; no new start for the session is admitted; the pre-restart epoch refuses `host_registration_stale`. After classification the dispatcher re-attaches with the next counter and reconciles `op-1`; a Host repeat of `op-1` under the new current pair returns the open record; no second `start_requested` is written for it | A restart in which `op-1` had a recorded terminal outcome before the stop replays to that outcome, and a new start with a new `op_id` proceeds if absence is confirmed |
+| Host restart mid-start, no durable attach state | The Host restarts without durable attach state while `op-1` is at `start_requested` and unknown. It sends `attach_wanted`; a `query_operation` the dispatcher issues for `op-1` under the pair it still believes current reaches the restarted Host before the re-attach completes | Open operation stays unknown and unreleased. The restarted Host refuses that query `host_registration_stale`, effect: none; the dispatcher ends the old pair's currency, re-attaches with the next counter and re-asks `query_operation` for `op-1` under the new pair, as a read only. From the new `attach_requested` on, the old pair refuses stale on both directions. No second start | The Host that kept its pair durably across the same restart (or did not restart) answers the same query under the still-current pair, and reconciliation proceeds on that evidence with no re-attach |
+| Journal fenced | Dispatcher journal replaced by a restored copy, the dispatcher's fence mark written (corresponding to station/1 R23), clearance not complete, and no registration pair current because the restore killed it. A `host_start` arrives that would be valid but for the fence (including one carrying the dead pre-restore pair) | `station_session_journal_fenced`, effect: none, at step 3 before the registration check that would otherwise answer `host_registration_stale`. Nothing is recorded ended; claims of possibly-running executions are not released; attach does not resume under the fenced generation | After §11.1 clearance and a newly installed generation, attach completes and the same shape of `host_start`, with an `op_id` and `state_version` proved new against the floor outside the restored journal (next row), is admitted under the new epoch |
+| Journal fenced: pre-loss operation re-presented after clearance | Before the loss a start for `op-1` at `state_version` 41 was journaled only in the lost journal. The external floor (clearance inventory) lists `op-1` and floor 41 for the session; clearance completes, a new generation is installed and attached, and the previous execution's absence is accepted (station/1 R09). The Host repeats `op-1` with the same request identity, `state_version` 41 and the new current pair (and mutatis mutandis: any `host_start` whose `op_id` or version the floor cannot prove new) | `station_session_journal_fenced`, effect: none. No intent journaled, no second `start_requested` for `op-1`, no claim taken; the restored high-water mark does not make the repeat a new operation | A genuinely new `op-2` with `state_version` 42, both proved new against the same external floor, is journaled and proceeds |
+| `attach_wanted` carrying a session | The Host has restarted without durable attach state and the dispatcher has not yet re-attached. The Host peer sends `attach_wanted` with one extra member `logical_session_id` | `request_invalid`, effect: none. No wake-up is delivered and no `attach_requested` is journaled on those bytes; downstream Host-socket attempts show no attach caused by them | The same notice without that member is acknowledged with an empty result, and the dispatcher ends any pair it still held and attaches with the next counter |
 | Stop ended by Host reply alone | `host_stop` accepted and the Host reports its side done; account-wide absence proof not accepted | Record stays `stopping`; no `absence_accepted` entry; claim not released; a new start refuses `agent_busy` | The same stop with the qualified absence proof accepted journals `absence_accepted`, records the end and releases the claim; a successor start may then proceed |
-| Stop of a foreign execution | `host_stop` names an `execution_id` belonging to a different session's permit | `run_not_owned`, effect: none. That execution is not signalled | `host_stop` naming an execution under this Host's permit journals its intent and proceeds |
+| Stop of a foreign execution | `host_stop` names an `execution_id` belonging to a different session's permit than the named `logical_session_id` (the other session's permit also belongs to this, the one, Host) | `run_not_owned`, effect: none. That execution is not signalled | `host_stop` naming an execution under the permit of the named `logical_session_id` journals its intent and proceeds |
 | Liveness report claiming a start | Report entry with `alive` `true` for an (`logical_session_id`, `execution_id`) the dispatcher never journaled | Entry discarded (`discarded_stale` counts it). No record created, no claim taken, no input admitted, `record_state` of every real record unchanged | The same report about a journaled running execution at the current `state_version` is counted as reported information, with still no record change at all |
 | Liveness silence after a start | Running execution, then no `host_liveness` report arrives for an arbitrary long interval | Nothing changes: no stop, no release, no absence, no successor admitted on the silence | The same execution later reported `alive` `true` at the current version is retained as information only |
 | Liveness with stale version | Report entry for the running execution with `state_version` one below the journaled version | Entry discarded as stale; the record is unchanged | The same entry at the journaled version is retained as information |
 | Query answered `not_recorded` | `op-1` unknown after `start_requested`; Host answers `query_operation` with `outcome` `not_recorded` and complete coverage | Known absent for the Host-side effect only. The start is not retried, the record is not closed as never-run without the remaining receiver and receipt evidence, and no claim is released on this answer alone | With the start receipt and process evidence also proving the recorded outcome, that outcome is journaled for `op-1` under §4.6 mapping |
-| Query answered `unavailable` | Host answers `outcome` `unavailable` (or the query reply is lost) | Unknown. `op-1` stays open and unreleased; repeating the query sends no effect | A later `recorded` answer for `op-1` classifies the Host-side effect under §4.6 |
+| Query answered `unavailable` | Host answers `outcome` `unavailable` (or the query reply is lost) | Unknown. `op-1` stays open and unreleased; repeating the query sends no effect | A later `recorded` answer for `op-1`, combined with the dispatcher's recorded result, the start receipt and process evidence, classifies the operation under §4.6 |
+| Query answered `recorded` alone | `op-1` unknown after `start_requested`; Host answers `outcome` `recorded`, and no start receipt or process evidence is available beside it | Still unknown. `op-1` stays open and unreleased, `record_state` is unchanged, and the answer is not mapped to known present or known absent: this wire carries neither the recorded result nor a current target state | The same answer with the start receipt and process evidence proving the outcome journals that outcome for `op-1` under §4.6 mapping |
 
 ## 10. Out of v1
 
@@ -663,12 +987,12 @@ point, where one is recorded at all, is recorded here and nowhere else.
 
 | Id | Question | Needed from the Host owner before this seam can be qualified |
 | --- | --- | --- |
-| OPEN H1 | Durable attach state on the Host side | How the Host durably stores the highest accepted `attach_counter` per `registration_generation` across its own restart, before it replies to `attach`; and whether the attach reply needs a Host incarnation or Host epoch attestation member beyond the echo of section 6.1. The Host's manager-seam documents retain a "Host epoch" in their own admission object; its name, meaning and availability on this socket are unpublished, so v1 carries none. |
-| OPEN H2 | The Host listener | The socket's deployment contract: path ownership and parent-directory protection, socket mode and group so that exactly the dispatcher service uid may connect, listener lifecycle across Host restart, stale-socket handling, and what the Host checks about the dispatcher's peer uid. Peer-credential availability and strength on the target platform must be the Host's published statement; prototype fixtures that settle for a peer pid and uid observation do not settle it. |
-| OPEN H3 | `query_operation` answers | For each `outcome` value of section 6.4: what Host-side fact it attests, what complete coverage means for `not_recorded`, how the answer is serialized with the Host's own operation writes, and the retention floor for operation records on this seam. The retention and capacity figures published for the Host's private manager ledger belong to that seam and are not assumed here. |
+| OPEN H1 | Durable attach state on the Host side, and `attach_wanted` | The durability choice this file leaves to the Host owner, with every Host behaviour in sections 6.1, 6.4 and 6.6 proposed to that owner: how the Host durably stores the highest accepted generation and `attach_counter` per generation across its own restart, before it replies to `attach`; whether it also keeps the current pair itself across a restart, in which case it keeps using it and no re-attach happens; or whether it restarts with no pair, in which case it sends the `attach_wanted` notice defined here and proposed here (section 6.6; authenticated by the pin only, no epoch, no session) and refuses dispatcher calls (`attach` excepted) `host_registration_stale`, effect: none, itself as evaluator, until attached; and whether the attach reply needs a Host incarnation or Host epoch attestation member beyond the echo of section 6.1. The Host's manager-seam documents retain a "Host epoch" in their own admission object; its name, meaning and availability on this socket are unpublished, so v1 carries none. |
+| OPEN H2 | The Host listener | The socket's deployment contract: path ownership and parent-directory protection, socket mode and group so that exactly the dispatcher service uid may connect, listener lifecycle across Host restart, stale-socket handling, and what the Host checks about the dispatcher's peer uid, including confirmation of the section 3 rule (proposed there) that the Host issues no synchronous Host-to-dispatcher call from inside its `attach` or `query_operation` handler. Peer-credential availability and strength on the target platform must be the Host's published statement (this seam is Linux only in v1, section 3); prototype fixtures that settle for a peer pid and uid observation do not settle it. |
+| OPEN H3 | `query_operation` answers | For each `outcome` value of section 6.4: what Host-side fact it attests (for `recorded` in particular, what if anything it can prove about a physical start the dispatcher owns, beyond being combined at the dispatcher with its own recorded result, the start receipt and process evidence, since until then this file classifies it unknown), what complete coverage means for `not_recorded`, how the answer is serialized with the Host's own operation writes, whether the Host checks the query's `state_version` (defined here as the operation's recorded version) for equality against its own record of that operation and what a mismatch answers, its refusal of a query that carries no current pair (`host_registration_stale`, proposed in section 6.4, Host as evaluator), and the retention floor for operation records on this seam. The retention and capacity figures published for the Host's private manager ledger belong to that seam and are not assumed here. |
 | OPEN H4 | Liveness content | What `alive` attests (runner connection, native process, input readiness or another internal fact), how it is produced, and at what interval reports are sent. This file gives the value no effect, so the answer can be narrow; it is still the Host's to publish, because a consumer must know what it is displaying. Whether 64 entries per report is the right bound is part of the same answer. |
 | OPEN H5 | Controller epoch and the delivery gate | Confirmation that the Host's controller epoch is a monotonic integer inside the section 5 bound, how it advances on Host replacement, and the registration-and-readiness-before-delivery join of dispatcher §12 (runner channel authentication, native-session lock) that an accepted `host_start` result feeds into. That join is outside this wire and remains an activation gate. |
-| OPEN H6 | Host client behavior on loss | The Host's own durable intent before it asks for `host_start` (the book's "persists intent with delivery closed"), and its implementation of the same-request repeat after a lost reply, including that it never mints a new `op_id` for the same start and never starts anything itself while the dispatcher answer is unknown. |
+| OPEN H6 | Host client behavior on loss | The Host's own durable intent before it asks for `host_start` (the book's "persists intent with delivery closed"), and its implementation of the same-operation repeat after a lost reply, after a refusal before intent and after a re-attach: it keeps the same `op_id` and the same `request_id`, carries the registration pair current at the repeat (which the dispatcher checks for currency only and never compares, section 5), never mints a new `op_id` for the same start and never starts anything itself while the dispatcher answer is unknown. |
 
 ### 11.2 For station/1 and joint publication (station/1 at `3463191e`)
 
@@ -679,10 +1003,10 @@ qualified.
 
 | Id | Question | State at the pin, and what must settle it |
 | --- | --- | --- |
-| OPEN S1 | The OQ18 join (SR6) | At the pin, SR1-SR3 make the station operation service the single writer of the station state record and of the state version, and SR6 leaves open whether that record or the dispatcher's session record is authoritative. The operator's ruling of 2026-11-16 assigns the standing-run record to the dispatcher and keeps the station description in the workbench registry, read-only to the dispatcher. station/1 must incorporate the ruling in its own revision cycle: which record the dispatcher-held run record is a projection of, or replaces; who performs the compare-and-set that mints the `state_version` a `host_start` carries; through which read the dispatcher learns it (the registry read format is also undefined here); who writes the R03 phase `lease_requested` and the R09 absence acceptance at the station record once the dispatcher holds the run record; and whether `attach` needs a station scope. Until then section 5's high-water rule is fencing at the effect owner only. |
-| OPEN S2 | Who evaluates `station_state_stale` on this seam | station/1 §4.3 names the station operation service as evaluator of `station_state_stale`, while SR3 says an effect owner that has seen a higher epoch refuses the request, reports the refusal, and the requester receives `station_state_stale`. This file follows SR3 with the dispatcher as effect owner. station/1 must confirm that the code surfaces to the Host exactly so, including what stale-request detail may be carried and by whom. |
-| OPEN S3 | Clock and deadline values | station/1 §4.5 leaves values open: `start_detect` runs on the dispatcher policy `detect` bound, `end_to_absence` is its OQ21, and `liveness_interval` with `silence_deadline` is its OQ4. The dispatcher owner and the station owners must publish the values, together with the finite per-call deadlines of section 3. This file sets none of them; no timeout in v1 may end a record, release a claim or prove absence whatever values are chosen (station/1 U4). |
-| OPEN S4 | The validated binding and start gates 8-18 | The form of the validated binding is station/1's OPEN OQ19, and the start gates below the R03 record line (including `station_binding_stale`, `station_lifecycle_not_permitted`, `station_plan_changed`, capacity and launcher gates) are owned there and in dispatcher §§3.4 and 12. This file consumes no binding and relaxes no start gate; joint publication must state how those verdicts surface on the section 6.2 result without renaming station codes. |
-| OPEN S5 | Successor authority | The session lifecycle authorisation member, the ordinary restart budget (station/1's OPEN OQ3), permit issuance and withdrawal encodings, and who requests a start after a reboot are dispatcher §12 with §16 question 3. Section 6.2 assumes the dispatcher can evaluate them; their publication is a precondition of enabling `host_start`, and none of it is filled in here. |
-| OPEN S6 | Clearance after a journal fence | R23 opens an absence debt and station/1 §11 makes a slot unusable after journal loss until a clearance record citing R09 exists. The encoding of that clearance, its writer, and the confirmation that registration resumes only under a new `installation_generation` (the rule of section 7) belong to the station and dispatcher owners jointly, beside dispatcher §11.1's restore formats. |
+| OPEN S1 | The OQ18 join (SR6) | At the pin, SR1-SR3 make the station operation service the single writer of the station state record and of the state version, and SR6 leaves open whether that record or the dispatcher's session record is authoritative. The operator's ruling of 2026-11-16 assigns the standing-run record to the dispatcher and keeps the station description in the workbench registry, read-only to the dispatcher. station/1 must incorporate the ruling in its own revision cycle: which record the dispatcher-held run record is a projection of, or replaces; who performs the compare-and-set that mints the `state_version` a `host_start` carries; through which read the dispatcher learns it (the registry read format is also undefined here); who commits, at the station record, R03 (including whether its phase `lease_requested` ever becomes a dispatcher write-ahead, which section 6.2 keeps out of the dispatcher's order), R08, R09, R10 and R23 once the dispatcher holds the run record (at the pin CRO commits every one of them and the dispatcher's entries of section 7 only correspond to them through the narrower `DI` write-ahead lines); whether `attach` needs a station scope; and the gate-placement difference also recorded in OPEN S4, that this file refuses the gate 9 journal verdict before intent where station/1 records it as P4 below the R03 line. Until then section 5's high-water rule is fencing at the effect owner only. |
+| OPEN S2 | Who evaluates `station_state_stale` on this seam: a stated conflict | This is a conflict for the station owners to decide, not a confirmation this file asks for. At the pin, station/1 §4.3 gives every code exactly one evaluating service and makes `station_state_stale` CRO's, carrying "the effect owner's own stale-request detail", with CRO returning an evaluator's code before a record and the code arriving in P4 after one; at that pin the arrangement is settled the other way from this file. This file follows SR3's path (an effect owner that has seen a higher epoch refuses and the requester receives `station_state_stale`) with the dispatcher itself surfacing the code to the Host on this seam, because no CRO is on this wire. The station owners must decide one of: amend the evaluator or routing of the code for this seam, route the dispatcher's stale refusal through CRO, or give the dispatcher its own detail code to be carried under CRO's code; what stale-request detail may be carried and by whom belongs to the same decision. Until it is taken, section 8 records the dispatcher as evaluator on this seam expressly against the pin, and nothing here renames the code. |
+| OPEN S3 | Clock, deadline and attach-retry values | station/1 §4.5 leaves values open: `start_detect` runs on the dispatcher policy `detect` bound, `end_to_absence` is its OQ21, and `liveness_interval` with `silence_deadline` is its OQ4. The dispatcher owner and the station owners must publish the values, together with the finite per-call deadlines of section 3 and the bounded attach retry of section 6.1 (attempt count, pacing between attempts, and the overall bound, each attempt consuming the next counter). This file sets none of them; no timeout in v1 may end a record, release a claim or prove absence whatever values are chosen (station/1 U4). |
+| OPEN S4 | The validated binding and start gates 8-18 | The form of the validated binding is station/1's OPEN OQ19, and the start gates below the R03 record line (including `station_binding_stale`, `station_lifecycle_not_permitted`, `station_plan_changed`, capacity and launcher gates) are owned there and in dispatcher §§3.4 and 12. This file consumes no binding and relaxes no start gate; joint publication must state how those verdicts surface on the section 6.2 result without renaming station codes, and must publish the refusal codes of the dispatcher §12 successor rows, which have none yet, since `host_start` stays disabled until then (with OPEN S5, section 6 step 6). It must also settle a stated placement difference: gates 9 (session journal), 11 (lifecycle) and 14 (capacity) are at station/1 `DI` verdicts below the R03 record line that arrive as a recorded P4 and lead to `stopping`, whereas this file makes `station_session_journal_fenced` (step 3), the lifecycle/successor verdicts and its `capacity:*`/`agent_busy` answers pre-intent refusals with effect: none; which placement a qualified seam implements is for the station and dispatcher owners to decide jointly, without renaming any code. |
+| OPEN S5 | Successor authority | The session lifecycle authorisation member, the ordinary restart budget (station/1's OPEN OQ3), permit issuance and withdrawal encodings, who requests a start after a reboot, and the refusal codes with evaluators for every dispatcher §12 successor row (which the station codes of gates 10-14 overlap but do not by themselves publish for this wire) are dispatcher §12 with §16 question 3. Section 6.2 assumes the dispatcher can evaluate them; their publication, codes included, is a precondition of enabling `host_start`, and none of it is filled in here. |
+| OPEN S6 | Clearance after a journal fence | R23 opens an absence debt and station/1 §11 makes a slot unusable after journal loss until a clearance record citing R09 exists. The writer of that clearance is already settled at the pin — station/1 §11 makes it the dispatcher's record that cites the R09 of that account — and is not reopened here. What remains open is narrow: the encoding of the clearance record and of the non-resurrection floor it rests on (the per-session pre-loss `op_id` inventory and `state_version` floor of sections 6.2 and 7, kept outside the restored journal in the station record under S1 or the operator's clearance inventory, against which every post-clearance `host_start` must be proved new, failing which it refuses `station_session_journal_fenced`, effect: none), and the confirmation that registration resumes only under a new `installation_generation` (the rule of section 7), beside dispatcher §11.1's restore formats. |
 | OPEN S7 | Signatures beside peer pins | The decided v1 form authenticates host operations by kernel peer uid and pins alone and signs nothing (section 3). The objection worth recording is here: a same-uid process is indistinguishable from the Host service, and dispatcher §3.3 signs every other mutating request. Whether joint publication requires a request signature by the Host principal in addition to the pins, or accepts the pin-only form for a statically installed same-machine service pair, is for the station, dispatcher and Host owners to answer at acceptance. v1 is written without signatures either way. |

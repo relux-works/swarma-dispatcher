@@ -81,6 +81,45 @@ Provider/placement selection, typed protocol/profile, complete originals,
 currentness/continuity, bounded endpoint/load and exact native qualification
 remain closed gates; selection alone supplies none of their evidence.
 
+### First-run static cut: local caller key (PROPOSED)
+
+For the first enforcing run only, the owner accepted a reduced gate: one
+owner-signed static statement (`swarma-s7 static-gate/1`, format owned by
+Keymaker and pending its publication) replaces, for a bounded window on one
+host, the live custodian import of the three importing scopes above and the
+B0–B5 association install. This section states what that cut means for the
+request forms of §2. It changes no form, no check and no code path.
+
+- **The association key is a local key.** `association.key` is an Ed25519
+  public key whose private half is a file made by the installer for the caller
+  account: owned by the caller UID, mode `0600`, never printed or copied. It is
+  not derived through Keymaker purpose 6, and Keymaker has no custody of it.
+- **The checks of §2 stay in full.** Every request carries `auth={key,sig}`;
+  the key must equal the protected association key, the signature must verify
+  over the exact preimage, the kernel peer UID must equal the association UID
+  and the caller generation must be the independently active one. A request
+  without `auth`, with another key or from another UID refuses as before.
+- **`registration_number` and `master_epoch` carry no Keymaker meaning in this
+  cut.** They remain required members of the closed association. The protected
+  policy records one fixed value for each, and a request copy must equal it.
+  They are not evidence of a Keymaker registration, and nothing may read them
+  as one.
+- **What pins the key.** The protected policy holds the association, so the
+  policy digest covers the key. The static statement carries that policy digest
+  and names the caller key, UID and generation directly, so the owner signs the
+  public key the run relies on.
+- **What the cut does not give.** Custody of the caller key by Keymaker, key
+  rotation through a registered generation, and any protection against the
+  host's own administrator, who can read the key file. These return with
+  purpose 6 in the full path. The purpose-6 number stays reserved and
+  unallocated; this cut does not use or redefine it.
+- **Window.** After the statement's `not_after`, no dispatch starts. Owned
+  cancel, stop, end and cleanup of an existing run keep working, as they do
+  after the policy's own `not_after`.
+
+The cut ends with the first enforcing run. It is not a second permanent
+profile, and nothing in it relaxes the gates of §7 for any later use.
+
 ## 2. Closed proposed forms and signing
 
 The complete proposed shapes are [request](../schemas/m0-request-1.schema.json),

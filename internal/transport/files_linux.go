@@ -211,6 +211,12 @@ func sourceSnapshot(name string, server bool) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// ServerSnapshot reads one protected server-mode configuration file with the
+// same ownership, mode, size and identity checks as the daemon configuration.
+// It performs no parsing; callers own their closed grammar.
+func ServerSnapshot(path string) ([]byte, error) { return sourceSnapshot(path, true) }
+
 func groupMember(g uint32) (bool, error) {
 	if uint32(os.Getegid()) == g {
 		return true, nil

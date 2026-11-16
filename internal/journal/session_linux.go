@@ -191,8 +191,7 @@ func poison(err error) error {
 	if err == nil {
 		err = failure(StorageWriteFailure, "aborted ownership", nil)
 	}
-	var e *Error
-	if errors.As(err, &e) {
+	if e := firstError(err); e != nil {
 		return &Error{Class: e.Class, Op: e.Op, Cause: err, Poisoned: true}
 	}
 	return &Error{Class: StorageWriteFailure, Op: "state mutation", Cause: err, Poisoned: true}

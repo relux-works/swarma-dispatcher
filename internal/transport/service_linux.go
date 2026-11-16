@@ -102,6 +102,14 @@ func (s *slots) stop() {
 }
 
 func serveOperation(f *os.File, start time.Time, recheck func() error) error {
+	return serveOperationExt(f, start, recheck, 0, nil)
+}
+
+// serveOperationExt is serveOperation with an optional post-hello extension.
+// With ext nil the behavior is exactly the reference subset. With ext set, a
+// post-hello frame outside the closed grammar is offered to ext once; its
+// response is written after the same pin recheck, and ErrFatal propagates.
+func serveOperationExt(f *os.File, start time.Time, recheck func() error, peer uint32, ext Extension) error {
 	wire, err := newSocketIO(f, start)
 	if err != nil {
 		return err
@@ -128,15 +136,24 @@ func serveOperation(f *os.File, start time.Time, recheck func() error) error {
 		return err
 	}
 	allowed, err := parseOperation(b, id)
-	if err != nil {
+	var response string
+	switch {
+	case err == nil:
+		response = invalid(id)
+		if allowed {
+			response = hold(id)
+		}
+	case ext != nil && errors.Is(err, ErrInvalid):
+		response, err = ext.Serve(peer, id, b)
+		clear(b)
+		if err != nil {
+			return err
+		}
+	default:
 		return err
 	}
 	if err = recheck(); err != nil {
 		return err
-	}
-	response := invalid(id)
-	if allowed {
-		response = hold(id)
 	}
 	return wire.writeFrame(response)
 }
@@ -170,6 +187,12 @@ func transientAccept(err error) bool {
 	return errors.Is(err, syscall.EINTR) || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EPROTO)
 }
 func serve(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown) error {
+	return serveExt(ctx, e, c, stop, nil)
+}
+
+// serveExt is serve with an optional extension. An extension ErrFatal from any
+// connection requests daemon shutdown with that cause.
+func serveExt(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, ext Extension) error {
 	resources := newSlots()
 	var workers sync.WaitGroup
 	watcherDone := make(chan struct{})
@@ -244,7 +267,9 @@ func serve(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown) err
 			defer pin.close()
 			defer wakeClose(f)
 			// Protocol errors close only this connection, without retaining payload/IDs.
-			_ = serveOperation(f, start, pin.recheck)
+			if err := serveOperationExt(f, start, pin.recheck, uid, ext); errors.Is(err, ErrFatal) {
+				stop.request(err)
+			}
 		}(f, uid, pin, start)
 	}
 	stop.request(nil)
@@ -272,7 +297,11 @@ func serve(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown) err
 
 // Daemon loads one protected server snapshot and serves only capacity:hold.
 // It must run as a standalone process on a qualified local filesystem deployment.
-func Daemon(configPath string) (result error) {
+func Daemon(configPath string) error { return DaemonWith(configPath, nil) }
+
+// DaemonWith is Daemon with an optional post-hello extension. A nil extension
+// is the reference subset; the caller owns the extension's lifetime.
+func DaemonWith(configPath string, ext Extension) (result error) {
 	// Set once before product concurrency/file creation. New socket inode starts 0600.
 	syscall.Umask(0177)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -343,7 +372,7 @@ func Daemon(configPath string) (result error) {
 			result = errors.Join(result, ErrShutdown)
 		}
 	}()
-	return serve(ctx, e, c, stop)
+	return serveExt(ctx, e, c, stop, ext)
 }
 
 // Capacity performs exactly one authenticated exchange, returning the closed

@@ -19,7 +19,21 @@ var (
 	ErrOwnership   = errors.New("transport: endpoint ownership uncertain")
 	ErrShutdown    = errors.New("transport: shutdown budget exceeded")
 	ErrUnsupported = errors.New("transport: Linux is required")
+	// ErrFatal from an Extension ends the daemon: the serve loop requests
+	// shutdown with that cause and the process exits failure.
+	ErrFatal = errors.New("transport: extension requires process exit")
 )
+
+// Extension serves one post-hello frame that is not the closed capacity or
+// two-member rejection grammar. It receives the kernel peer UID, the validated
+// connection correlation ID and the borrowed frame body, and returns the
+// complete response payload (at most 508 bytes) or an error that closes the
+// connection without a reply. A nil Extension keeps the reference subset
+// unchanged: such frames close without a reply. Daemon attaches none; only
+// DaemonWith can.
+type Extension interface {
+	Serve(peer uint32, id string, body []byte) (string, error)
+}
 
 // scanCanonical gates bytes before typed decoding; it never normalizes input.
 func scanCanonical(b []byte, maxDepth int, wire bool) bool {

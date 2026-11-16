@@ -31,14 +31,52 @@ type Error struct {
 	Poisoned bool
 }
 
-func (e *Error) Error() string { return "journal: " + string(e.Class) + ": " + e.Op }
-func (e *Error) Unwrap() error { return e.Cause }
+// Error and Unwrap are nil-safe: a typed-nil *Error reached through errors.Is,
+// errors.As or an errors.Join tree neither panics nor terminates the walk early,
+// so a poisoned sibling behind it is still found (journal review r7).
+func (e *Error) Error() string {
+	if e == nil {
+		return "journal: <nil>"
+	}
+	return "journal: " + string(e.Class) + ": " + e.Op
+}
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
 func ClassOf(err error) Class {
-	var e *Error
-	if errors.As(err, &e) {
+	if e := firstError(err); e != nil {
 		return e.Class
 	}
 	return ""
+}
+
+// firstError is errors.As for *Error that skips typed-nil nodes instead of
+// returning them, in the same depth-first order. errors.As would assign a
+// typed nil and stop, hiding the class behind it; a nil result means no
+// non-nil *Error exists in the tree.
+func firstError(err error) *Error {
+	switch e := err.(type) {
+	case nil:
+		return nil
+	case *Error:
+		if e != nil {
+			return e
+		}
+		return nil
+	case interface{ Unwrap() []error }:
+		for _, child := range e.Unwrap() {
+			if found := firstError(child); found != nil {
+				return found
+			}
+		}
+		return nil
+	case interface{ Unwrap() error }:
+		return firstError(e.Unwrap())
+	}
+	return nil
 }
 
 // MustExit reports the process-exit duty; it never exits the process itself.

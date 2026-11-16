@@ -118,6 +118,8 @@ The [reference contract](spec/transport.md) is implemented in `internal/transpor
 with `cmd/swarma-dispatcher` and `cmd/swarma-capacity`. Both refuse unsupported
 platforms. They require one explicit `--config /absolute/file.json`; there are no
 environment defaults, endpoint overrides, account lookup or config reloads.
+The daemon's optional `--m0-config` flag is the gated M0 extension described
+below; without it the daemon is exactly this reference subset.
 The separate closed server/client schemas, root ownership/modes, numeric pins,
 caller UID non-reuse and fixed `/opt/swarma/run/dispatcher/dispatcher.sock` path
 are normative in the contract. This repository does not provision them. The
@@ -193,6 +195,61 @@ controls require ext4 or XFS and print an explicit skip reason otherwise. Pure
 codec and deterministic fault tests still run; substituted filesystem metadata
 in fault tests is not durability qualification. Root-only foreign-UID cases,
 reboot/writeback durability and deployment recovery enforcement are unqualified.
+
+## M0 runtime (draft, non-activatable)
+
+[`internal/m0`](internal/m0/) is a DRAFT implementation of the
+[M0 existing-worker candidate](spec/m0-launch.md) against its draft
+specification: the strict bounded CCJ-1 canonicalizer, the closed dispatch and
+owned-cancel forms with their finite bounds and Ed25519 preimage verification,
+the closed policy and signing-plan forms, the executor-entry /1 composition and
+`run-codex` argv mapping as dispatcher-side witnesses, the durable one-launch
+ledger on [`internal/journal`](internal/journal/) with established-recovery
+replay, the receiver interlock A commit gate, owned cancel with the original
+stop obligations, and the daemon activation gate. Nothing is deployed, installed
+or enabled by default. Every dependency on an unpublished slice is a seam whose
+default refuses by name: the user-launcher intake (S1), the broker Claude runner
+argv (S3a), the qualified clock, the protected generation reader, the protected
+policy source and the catalog input body. See the
+[package documentation](internal/m0/doc.go).
+
+The daemon gains one optional flag. Without it nothing M0 is loaded and the
+wire behavior is the reference subset exactly; with it the M0 extension attaches
+only when the configuration selects M0 **and** the policy source reports an
+installed policy. With the default seams that is never the case, so the daemon
+prints `m0 closed` and stays capacity-only:
+
+```sh
+.temp/swarma-dispatcher --config /absolute/server.json --m0-config /absolute/m0.json
+```
+
+The M0 configuration is a separate protected server-mode file (same ownership
+and mode rules as the server configuration) holding exactly the canonical
+object `{"enabled","entry","kind","recovery_attested","state_dir","supported_local_storage","v"}`
+with `kind` `swarma-dispatcher m0-config/1`, `entry` `initialize` or
+`established`, and an absolute `state_dir` that already contains the journal
+`records` and `inputs` directories. The transport server configuration is
+unchanged. `recovery_attested` is the operator's recovery-prerequisite
+attestation for the journal; without it an established reopen refuses
+`m0_recovery_held`. A journal sync failure makes the daemon exit and must not be
+reopened in the same boot.
+
+On an admitted isolated Linux runner:
+
+```sh
+go test -v -count=1 -timeout=20m ./internal/m0/
+go test -race -count=1 ./internal/m0/ ./internal/transport/ ./internal/journal/
+go vet ./internal/m0/
+gofmt -l internal/m0/
+```
+
+Tests use the synthetic fixtures under `fixtures/m0-launch/` and
+`fixtures/m0-executor-entry/`, re-keyed to a per-test Ed25519 key, in-memory
+fakes for every seam, an in-memory ledger for the platform-neutral runtime
+tests and real `t.TempDir()` journals (ext4/XFS, otherwise an explicit skip)
+for the Linux recovery tests. Results go to the test log. Nothing here
+qualifies a receiver, a signer, protected installation, native timing or an
+activation; the `m0_*` refusal codes are draft spellings pending publication.
 
 ## Demo tools (not production)
 

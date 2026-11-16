@@ -88,41 +88,81 @@ owner-signed static statement (`swarma-s7 static-gate/1`, format owned by
 Keymaker and pending its publication) replaces, for a bounded window on one
 host, the live custodian import of the three importing scopes above and the
 B0–B5 association install. This section states what that cut means for the
-request forms of §2. It changes no form, no check and no code path.
+request forms of §2.
+
+It changes no form and no check of §2. For this run only, and by owner decision
+rather than as a fallback, it departs from three statements: the purpose-6 key,
+registration number and master epoch of the §2 Association row (see below); the
+§2 signing paragraph, because the caller tool signs R with the local key
+instead of Keymaker `sign_station_caller`; and main §3.3's rule that caller
+private keys stay in Keymaker custody with no readable private key. The caller
+tool signs only the R fixed by the protected signing plan, and any other R
+refuses as before.
+
+The statement adds one refusal outside §2 and removes none: before each
+dispatch, and before owned cancel without the window check, the dispatcher
+verifies the statement and compares its `association` and `dispatcher` sections
+with its protected policy and configuration, under the `static-gate/1` consumer
+rule.
 
 - **The association key is a local key.** `association.key` is an Ed25519
   public key whose private half is a file made by the installer for the caller
-  account: owned by the caller UID, mode `0600`, never printed or copied. It is
-  not derived through Keymaker purpose 6, and Keymaker has no custody of it.
-  The file is created only after the owner's explicit consent to a new key on
-  that host. It must not be readable by, or reachable from, the worker UID or
-  any account other than the caller: the secret-free rule for workers covers
-  this key like any other secret.
+  account: owned by the caller UID, mode `0600`. It is not derived through
+  Keymaker purpose 6, and Keymaker has no custody of it. The file is created
+  only after the owner's explicit consent to a new key on that host.
+- **Where the key file may be.** The file lies in a caller-owned directory of
+  mode `0700`, reached through non-symlink ancestors owned by root or the
+  caller UID that are not group- or other-writable, and outside every worker
+  home, workspace, export and retention path. The caller tool opens it with
+  `O_NOFOLLOW` and refuses any other owner, mode or file type. The key is never
+  printed, logged, journaled, passed in argv or the environment, copied, or
+  included in a backup or export.
+- **Caller and worker are different accounts.** In this cut the association
+  UID MUST differ from the worker UID, and the worker UID MUST NOT be in any
+  group of the caller. The installer refuses a policy that violates either
+  rule; the dispatcher does not check it.
+- **The key's only protection.** Main §3.3 custody does not hold for this key.
+  The rules above are its only protection, and the host administrator can
+  still read it.
+- **Disposal.** Once the run's stop and cleanup are terminal, the installer
+  removes the association and deletes the key file. A later run needs a new
+  key and new consent.
 - **The checks of §2 stay in full.** Every request carries `auth={key,sig}`;
   the key must equal the protected association key, the signature must verify
   over the exact preimage, the kernel peer UID must equal the association UID
   and the caller generation must be the independently active one. A request
   without `auth`, with another key or from another UID refuses as before.
+- **Transport admission is separate from this cut.** The caller's managed UID
+  reaches these checks only through the separate protected M0 caller list,
+  which admits the connection and grants no authority; the association
+  equality above still decides.
 - **`registration_number` and `master_epoch` carry no Keymaker meaning in this
-  cut.** They remain required members of the closed association. The protected
-  policy records one fixed value for each, and a request copy must equal it.
-  They are not evidence of a Keymaker registration, and nothing may read them
-  as one.
+  cut.** They remain required members of the closed association, each in
+  1..9007199254740991. The protected policy records one fixed value for each;
+  a request copy must equal it, and at cancel it must equal the original
+  dispatch record. They are not evidence of a Keymaker registration, and
+  nothing may read them as one.
 - **What pins the key.** The protected policy holds the association, so the
   policy digest covers the key. The static statement carries that policy digest
   and names the caller key, UID and generation directly, so the owner signs the
   public key the run relies on.
 - **What the cut does not give.** Custody of the caller key by Keymaker, key
   rotation through a registered generation, and any protection against the
-  host's own administrator, who can read the key file. These return with
-  purpose 6 in the full path. The purpose-6 number stays reserved and
-  unallocated; this cut does not use or redefine it.
-- **Window.** After the statement's `not_after`, no dispatch starts. Owned
-  cancel, stop, end and cleanup of an existing run keep working, as they do
+  host's own administrator. These return with purpose 6 in the full path. The
+  purpose-6 number stays reserved and unallocated; this cut does not use or
+  redefine it.
+- **Window.** At or after the statement's `not_after`, the dispatcher admits no
+  dispatch. Owned cancel skips only the window check: the statement's other
+  checks still apply, and if they refuse, the retained stop obligation and the
+  automatic stop of §3 continue. Stop, cleanup and the Keymaker and broker end
+  operations of a run admitted inside the window keep working, as they do
   after the policy's own `not_after`.
 
-The cut ends with the first enforcing run. It is not a second permanent
-profile, and nothing in it relaxes the gates of §7 for any later use.
+The cut ends with the first enforcing run and is not a second permanent
+profile. For that run it stands in only for the importing-custody row of §7 and
+for the purpose-6 bootstrap and first-caller parts of the Keymaker row. Every
+other §7 gate applies to that run unchanged, and until the `static-gate/1`
+format is published and one statement is signed, the cut is unavailable.
 
 ## 2. Closed proposed forms and signing
 

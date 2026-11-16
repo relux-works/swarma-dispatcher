@@ -532,8 +532,13 @@ func (r *Runtime) dispatch(ctx context.Context, peer uint32, req *Request) (*Res
 	start := StartRequest{EffectID: effect, ExecutionID: exec, ControllerEpoch: epoch, Worker: req.Worker, ExecProfile: req.Plan.ExecProfile, Entry: entryBytes, EntryDigest: entryDigest, Deadlines: deadlines}
 	policy := PolicyPin{ID: p.ID, Revision: p.Revision}
 	r.mu.Unlock()
-	// The only physical launch call, outside the state lock.
+	// The only physical launch call, outside the state lock. The clock is a
+	// seam too and is read before the lock is retaken.
 	receipt, callErr := r.seams.Launcher.Start(ctx, start, &gate{r: r, requestID: req.RequestID, policy: policy})
+	after, afterErr := r.seams.Clock.Now()
+	if afterErr != nil || !after.Confident {
+		after = Reading{}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.usableLocked(); err != nil {
@@ -573,10 +578,6 @@ func (r *Runtime) dispatch(ctx context.Context, peer uint32, req *Request) (*Res
 	default:
 		result.Outcome = phaseUnknown
 		result.Detail = "receipt claims C without a durable commit"
-	}
-	after, clockErr := r.seams.Clock.Now()
-	if clockErr != nil || !after.Confident {
-		after = Reading{}
 	}
 	if err := r.appendLocked(&frame{Type: frameResult, Now: timeOrZero(after), Result: result}); err != nil {
 		return nil, err
@@ -761,6 +762,15 @@ func (r *Runtime) cancel(ctx context.Context, peer uint32, req *Request) (*Resul
 		noEffect := target.Phase == phaseReserved
 		event := timeOrZero(now)
 		stopEffect := effectID(principal, target.RequestID, lineageRecordID, componentLaunch, operationStop, 1)
+		// A cancel that arrives after the original expiry does not replace the
+		// expiry obligation: that earlier clock is retained with its own
+		// detection so the stop ceiling cannot move later.
+		if !noEffect && now.Confident && effectiveNow(now.Unix, r.proj.Watermark) >= target.Deadlines.Expiry && !target.hasObligation(sourceExpiry) {
+			if err := r.appendLocked(&frame{Type: frameStopIntent, Now: event, StopIntent: &stopIntentFrame{RequestID: target.RequestID, EffectID: stopEffect, Event: target.Deadlines.Expiry, Detection: event, Source: sourceExpiry}}); err != nil {
+				r.mu.Unlock()
+				return nil, err
+			}
+		}
 		if err := r.appendLocked(&frame{Type: frameCancel, Now: event, Cancel: &cancelFrame{
 			RequestID: req.RequestID, Principal: principal, PeerUID: peer, Canonical: string(req.Canonical),
 			Target: target.RequestID, EffectID: stopEffect, Event: event, Detection: event, NoEffect: noEffect,
@@ -780,7 +790,9 @@ func (r *Runtime) cancel(ctx context.Context, peer uint32, req *Request) (*Resul
 		}
 		c = r.proj.Cancels[req.RequestID]
 	}
-	if c.NoEffect || target.StopOutcome != "" {
+	// A terminal stop is never re-issued; an unknown one is continued under the
+	// same original effect and obligations.
+	if c.NoEffect || terminalStop(target.StopOutcome) {
 		res, err := cancelOutcome(c, target, existing != nil)
 		r.mu.Unlock()
 		return res, err
@@ -794,9 +806,23 @@ func (r *Runtime) cancel(ctx context.Context, peer uint32, req *Request) (*Resul
 	return cancelOutcome(r.proj.Cancels[req.RequestID], r.proj.Dispatches[target.RequestID], existing != nil)
 }
 
-// issueStop performs the recorded stop effect of one dispatch outside the
-// lock and journals its outcome. Only receiver-owned confirmed absence with
-// bounded evidence releases the claim; everything else stays unknown.
+// stopRequestLocked assembles the stop effect of one dispatch from its
+// recorded obligations. The ceiling is the earliest over all of them.
+func stopRequestLocked(rec *dispatchRecord) StopRequest {
+	return StopRequest{
+		EffectID: rec.StopEffectID, ExecutionID: rec.ExecutionID, Worker: rec.Worker,
+		Event: rec.StopEvent, Detection: rec.StopDetection,
+		Obligations: append([]StopObligation(nil), rec.StopObligations...),
+		Ceiling:     rec.earliestCeiling(),
+	}
+}
+
+// issueStop performs or continues the recorded stop effect of one dispatch
+// outside the lock and journals its outcome. A terminal outcome is never
+// re-issued. An unknown outcome is a continuation: the original stop effect is
+// observed first, then the SAME stop (same effect identity, events, detection
+// and earliest ceiling) is retried. Only receiver-owned confirmed absence with
+// bounded evidence releases the claim; a failed or unknown stop never does.
 func (r *Runtime) issueStop(ctx context.Context, requestID string) error {
 	r.mu.Lock()
 	rec := r.proj.Dispatches[requestID]
@@ -804,21 +830,30 @@ func (r *Runtime) issueStop(ctx context.Context, requestID string) error {
 		r.mu.Unlock()
 		return inconsistent("stop without a recorded intent")
 	}
-	if rec.StopOutcome != "" {
+	if terminalStop(rec.StopOutcome) {
 		r.mu.Unlock()
 		return nil
 	}
-	stop := StopRequest{EffectID: rec.StopEffectID, ExecutionID: rec.ExecutionID, Worker: rec.Worker, Event: rec.StopEvent, Detection: rec.StopDetection,
-		Ceiling: StopCeiling(rec.StopEvent, rec.StopDetection, rec.Deadlines.DetectSeconds, rec.Deadlines.StopSeconds)}
+	continuation := rec.StopOutcome == stopUnknown
+	stop := stopRequestLocked(rec)
 	r.mu.Unlock()
+	if continuation {
+		if err := r.observeStop(ctx, requestID, stop); err != nil {
+			return err
+		}
+	}
 	receipt, callErr := r.seams.Launcher.Stop(ctx, stop)
+	after, clockErr := r.seams.Clock.Now()
+	if clockErr != nil || !after.Confident {
+		after = Reading{}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.usableLocked(); err != nil {
 		return err
 	}
 	rec = r.proj.Dispatches[requestID]
-	if rec == nil || rec.StopOutcome != "" {
+	if rec == nil || terminalStop(rec.StopOutcome) {
 		return nil
 	}
 	s := &stopFrame{RequestID: requestID, Outcome: stopUnknown}
@@ -826,23 +861,39 @@ func (r *Runtime) issueStop(ctx context.Context, requestID string) error {
 		s.Outcome = stopAbsent
 		s.Evidence = receipt.Evidence
 	}
-	after, clockErr := r.seams.Clock.Now()
-	if clockErr != nil || !after.Confident {
-		after = Reading{}
-	}
 	if err := r.appendLocked(&frame{Type: frameStop, Now: timeOrZero(after), Stop: s}); err != nil {
 		return err
 	}
 	return r.materializeLocked()
 }
 
+// observeStop records the receiver's read-only observation of the original
+// stop effect. The class is evidence for reconciliation only: it never
+// releases the claim and never substitutes for the stop receipt.
+func (r *Runtime) observeStop(ctx context.Context, requestID string, stop StopRequest) error {
+	class, oerr := r.seams.Launcher.Observe(ctx, EffectQuery{EffectID: stop.EffectID, Operation: operationStop, ArgumentsDigest: stop.ExecutionID})
+	if oerr != nil || (class != ObservationPresent && class != ObservationAbsent && class != ObservationContradictory) {
+		class = ObservationUnknown
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.usableLocked(); err != nil {
+		return err
+	}
+	if rec := r.proj.Dispatches[requestID]; rec == nil || terminalStop(rec.StopOutcome) {
+		return nil
+	}
+	return r.appendLocked(&frame{Type: frameObserve, Observe: &observeFrame{RequestID: requestID, Class: class, Effect: observeStop}})
+}
+
 // Reconcile observes every unresolved original effect through the launcher's
-// read-only effect.observe and records the class. It never issues a start.
+// read-only effect.observe and records the class: unresolved launches and
+// unknown stops alike. It never issues a start; stop continuation is Sweep's.
 func (r *Runtime) Reconcile(ctx context.Context) error {
 	r.mu.Lock()
 	var pending []dispatchRecord
 	for _, rec := range r.proj.Dispatches {
-		if rec.Phase == phaseInFlight || rec.Phase == phaseCommitted || rec.Phase == phaseUnknown {
+		if rec.Phase == phaseInFlight || rec.Phase == phaseCommitted || rec.Phase == phaseUnknown || rec.StopOutcome == stopUnknown {
 			pending = append(pending, *rec)
 		}
 	}
@@ -853,6 +904,14 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 	}
 	var first error
 	for _, rec := range pending {
+		if rec.StopOutcome == stopUnknown {
+			if err := r.observeStop(ctx, rec.RequestID, stopRequestLocked(&rec)); err != nil {
+				return err
+			}
+		}
+		if rec.Phase != phaseInFlight && rec.Phase != phaseCommitted && rec.Phase != phaseUnknown {
+			continue
+		}
 		class, oerr := r.seams.Launcher.Observe(ctx, EffectQuery{EffectID: rec.EffectID, Operation: operationStart, ArgumentsDigest: rec.EntryDigest})
 		if oerr != nil {
 			class = ObservationUnknown
@@ -868,7 +927,7 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 			r.mu.Unlock()
 			return err
 		}
-		if err := r.appendLocked(&frame{Type: frameObserve, Observe: &observeFrame{RequestID: rec.RequestID, Class: class}}); err != nil {
+		if err := r.appendLocked(&frame{Type: frameObserve, Observe: &observeFrame{RequestID: rec.RequestID, Class: class, Effect: observeStart}}); err != nil {
 			r.mu.Unlock()
 			return err
 		}
@@ -877,9 +936,10 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 	return first
 }
 
-// Sweep records the dispatcher's automatic stop obligation after policy
-// removal/replacement or original expiry and issues or continues each
-// recorded stop under its original effect. It never starts anything.
+// Sweep records the dispatcher's automatic stop obligations after policy
+// removal/replacement and at original expiry, each with its own event and
+// detection, and issues or continues every non-terminal stop under its
+// original effect and earliest ceiling. It never starts anything.
 func (r *Runtime) Sweep(ctx context.Context) error {
 	now, clockErr := r.seams.Clock.Now()
 	if clockErr != nil {
@@ -900,22 +960,32 @@ func (r *Runtime) Sweep(ctx context.Context) error {
 			continue
 		}
 		expired := now.Confident && effectiveNow(now.Unix, r.proj.Watermark) >= rec.Deadlines.Expiry
-		if rec.StopEffectID == "" && (r.proj.RemovalRecorded || expired) {
-			event, source := r.proj.Removal, "removal"
-			if !r.proj.RemovalRecorded {
-				event, source = rec.Deadlines.Expiry, "expiry"
-			}
-			effect := effectID(rec.Principal, rec.RequestID, lineageRecordID, componentLaunch, operationStop, 1)
-			if err := r.appendLocked(&frame{Type: frameStopIntent, Now: timeOrZero(now), StopIntent: &stopIntentFrame{RequestID: rec.RequestID, EffectID: effect, Event: event, Detection: timeOrZero(now), Source: source}}); err != nil {
+		var due []StopObligation
+		if expired && !rec.hasObligation(sourceExpiry) {
+			due = append(due, StopObligation{Source: sourceExpiry, Event: rec.Deadlines.Expiry, Detection: timeOrZero(now)})
+		}
+		if r.proj.RemovalRecorded && !rec.hasObligation(sourceRemoval) {
+			due = append(due, StopObligation{Source: sourceRemoval, Event: r.proj.Removal, Detection: timeOrZero(now)})
+		}
+		// Earliest original event first, so the primary provenance is the
+		// earliest obligation when both are detected in one sweep.
+		if len(due) == 2 && due[1].Event < due[0].Event {
+			due[0], due[1] = due[1], due[0]
+		}
+		effect := effectID(rec.Principal, rec.RequestID, lineageRecordID, componentLaunch, operationStop, 1)
+		for _, o := range due {
+			if err := r.appendLocked(&frame{Type: frameStopIntent, Now: timeOrZero(now), StopIntent: &stopIntentFrame{RequestID: rec.RequestID, EffectID: effect, Event: o.Event, Detection: o.Detection, Source: o.Source}}); err != nil {
 				r.mu.Unlock()
 				return err
 			}
+		}
+		if len(due) > 0 {
 			if err := r.materializeLocked(); err != nil {
 				r.mu.Unlock()
 				return err
 			}
 		}
-		if rec.StopEffectID != "" && rec.StopOutcome == "" {
+		if rec.StopEffectID != "" && !terminalStop(rec.StopOutcome) {
 			work = append(work, rec.RequestID)
 		}
 	}

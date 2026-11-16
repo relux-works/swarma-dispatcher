@@ -64,13 +64,27 @@ type StartReceipt struct {
 	Receipt    []byte
 }
 
-// StopRequest is the owned stop effect with its original obligations.
+// StopObligation is one original stop obligation with its own provenance:
+// the authoritative event (owner cancel intent, removal intent or original
+// expiry) and the dispatcher's detection of it. Obligations are only ever
+// added, never moved or reset.
+type StopObligation struct {
+	Source    string `json:"source"`
+	Event     int64  `json:"event"`
+	Detection int64  `json:"detection"`
+}
+
+// StopRequest is the owned stop effect with its original obligations. Event
+// and Detection are the first recorded obligation; Obligations lists every
+// retained one; Ceiling is the EARLIEST applicable completion deadline over all
+// of them (zero only when no obligation has qualified time).
 type StopRequest struct {
 	EffectID    string
 	ExecutionID string
 	Worker      Worker
 	Event       int64
 	Detection   int64
+	Obligations []StopObligation
 	Ceiling     int64
 }
 

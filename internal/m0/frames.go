@@ -126,10 +126,19 @@ type stopFrame struct {
 	Evidence  []byte `json:"evidence,omitempty"`
 }
 
+// observeFrame records one receiver observation. Effect selects the observed
+// original effect: "" or "start" is the launch effect (older frames omit the
+// member), "stop" is the stop effect of a continuation.
 type observeFrame struct {
 	RequestID string      `json:"request_id"`
 	Class     Observation `json:"class"`
+	Effect    string      `json:"effect,omitempty"`
 }
+
+const (
+	observeStart = "start"
+	observeStop  = "stop"
+)
 
 type removalFrame struct {
 	Event  int64  `json:"event"`
@@ -155,6 +164,17 @@ const (
 	stopUnknown  = "unknown"
 	stopNoEffect = "no_effect"
 )
+
+const (
+	sourceCancel  = "cancel"
+	sourceRemoval = "removal"
+	sourceExpiry  = "expiry"
+)
+
+// terminalStop reports whether a stop outcome ends the stop transaction.
+// An unknown outcome is debt, not an end: it is continued under the same
+// effect until the receiver answers.
+func terminalStop(outcome string) bool { return outcome == stopAbsent || outcome == stopNoEffect }
 
 type dispatchRecord struct {
 	RequestID       string
@@ -182,9 +202,53 @@ type dispatchRecord struct {
 	StopEvent       int64
 	StopDetection   int64
 	StopSource      string
+	StopObligations []StopObligation
+	StopAttempts    int
 	StopOutcome     string
 	StopEvidence    []byte
+	StopObserved    Observation
 	Observed        Observation
+}
+
+// addObligation records the stop effect identity on first use and retains one
+// obligation per source. A repeated source keeps its original event and
+// detection: later polling never moves an earlier clock.
+func (rec *dispatchRecord) addObligation(effect, source string, event, detection int64) {
+	if rec.StopEffectID == "" {
+		rec.StopEffectID, rec.StopEvent, rec.StopDetection, rec.StopSource = effect, event, detection, source
+	}
+	for _, o := range rec.StopObligations {
+		if o.Source == source {
+			return
+		}
+	}
+	rec.StopObligations = append(rec.StopObligations, StopObligation{Source: source, Event: event, Detection: detection})
+}
+
+func (rec *dispatchRecord) hasObligation(source string) bool {
+	for _, o := range rec.StopObligations {
+		if o.Source == source {
+			return true
+		}
+	}
+	return false
+}
+
+// earliestCeiling is the earliest completion ceiling over every retained
+// obligation with qualified time. Adding obligations can only lower it, so a
+// retried stop never receives a later ceiling than the original.
+func (rec *dispatchRecord) earliestCeiling() int64 {
+	ceiling := int64(0)
+	for _, o := range rec.StopObligations {
+		if o.Event <= 0 || o.Detection <= 0 {
+			continue
+		}
+		c := StopCeiling(o.Event, o.Detection, rec.Deadlines.DetectSeconds, rec.Deadlines.StopSeconds)
+		if ceiling == 0 || c < ceiling {
+			ceiling = c
+		}
+	}
+	return ceiling
 }
 
 type cancelRecord struct {
@@ -338,9 +402,10 @@ func (p *projection) apply(f *frame) error {
 		}
 		rec.CancelRequested = true
 		if !c.NoEffect {
-			if rec.StopEffectID == "" {
-				rec.StopEffectID, rec.StopEvent, rec.StopDetection, rec.StopSource = c.EffectID, c.Event, c.Detection, "cancel"
+			if rec.StopEffectID != "" && rec.StopEffectID != c.EffectID {
+				return inconsistent("cancel names a different stop effect")
 			}
+			rec.addObligation(c.EffectID, sourceCancel, c.Event, c.Detection)
 		}
 		p.Cancels[c.RequestID] = &cancelRecord{RequestID: c.RequestID, Principal: c.Principal, PeerUID: c.PeerUID, Canonical: []byte(c.Canonical), Target: c.Target, EffectID: c.EffectID, Event: c.Event, Detection: c.Detection, NoEffect: c.NoEffect}
 	case frameStopIntent:
@@ -352,9 +417,10 @@ func (p *projection) apply(f *frame) error {
 		if rec == nil {
 			return inconsistent("stop intent for an unknown dispatch")
 		}
-		if rec.StopEffectID == "" {
-			rec.StopEffectID, rec.StopEvent, rec.StopDetection, rec.StopSource = s.EffectID, s.Event, s.Detection, s.Source
+		if rec.StopEffectID != "" && rec.StopEffectID != s.EffectID {
+			return inconsistent("stop intent names a different stop effect")
 		}
+		rec.addObligation(s.EffectID, s.Source, s.Event, s.Detection)
 	case frameStop:
 		s := f.Stop
 		if s == nil {
@@ -364,6 +430,10 @@ func (p *projection) apply(f *frame) error {
 		if rec == nil {
 			return inconsistent("stop outcome for an unknown dispatch")
 		}
+		if terminalStop(rec.StopOutcome) {
+			return inconsistent("stop outcome after a terminal stop")
+		}
+		rec.StopAttempts++
 		switch s.Outcome {
 		case stopAbsent:
 			if len(s.Evidence) == 0 || len(s.Evidence) > maxEvidenceBytes {
@@ -395,7 +465,14 @@ func (p *projection) apply(f *frame) error {
 		default:
 			return inconsistent("unknown observation class")
 		}
-		rec.Observed = o.Class
+		switch o.Effect {
+		case "", observeStart:
+			rec.Observed = o.Class
+		case observeStop:
+			rec.StopObserved = o.Class
+		default:
+			return inconsistent("unknown observed effect")
+		}
 	case frameRemoval:
 		if f.Removal == nil {
 			return inconsistent("removal frame without body")

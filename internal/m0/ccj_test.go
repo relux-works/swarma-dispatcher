@@ -56,6 +56,9 @@ func TestCanonicalizeLexicalRefusals(t *testing.T) {
 		name, ok, bad string
 	}{
 		{"duplicate", `{"a":1,"b":2}`, `{"a":1,"a":2}`},
+		{"plain-duplicate-after-two", `{"a":1,"b":2,"c":3}`, `{"a":1,"b":2,"a":3}`},
+		// The escaped spelling "a" decodes to "a": a duplicate after
+		// unescaping; "b" decodes to the distinct name "b" and is accepted.
 		{"escaped-alias", `{"a":1,"b":2}`, `{"a":1,"a":2}`},
 		{"nested-duplicate", `{"o":{"a":1}}`, `{"o":{"a":1,"a":1}}`},
 		{"bom", `{"a":1}`, "\xEF\xBB\xBF{\"a\":1}"},
@@ -114,6 +117,49 @@ func TestCanonicalizeBounds(t *testing.T) {
 	}
 	if _, _, err := canonicalize(nil, lim); CodeOf(err) != CodeRequestInvalid {
 		t.Fatal("BOUNDS: empty document accepted", err)
+	}
+}
+
+// Claim: the codec reproduces fifteen reference vectors whose expected bytes
+// and verdicts were independently agreed with the pinned registrar CCJ-1
+// codec: every control escape, quote/backslash/slash/HTML literals, non-ASCII
+// and line/paragraph separators literal, surrogate pairs, Unicode-scalar (not
+// UTF-16) name order, no normalization, safe integers, nested order, escaped
+// distinct versus duplicate aliases, and the fraction, negative-zero and
+// unpaired-surrogate refusals. This is bounded evidence on these vectors, not
+// equivalence.
+func TestCanonicalReferenceVectors(t *testing.T) {
+	lim := limits{maxBytes: 4096, maxDepth: 16, maxTokens: 1024}
+	for _, tc := range []struct {
+		name, in, want string
+		accepted       bool
+	}{
+		{"all-32-controls", `{"s": "\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f"}`,
+			`{"s":"\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f"}`, true},
+		{"quote-backslash-slash-html", `{"s": "\"\\/<>&"}`, `{"s":"\"\\/<>&"}`, true},
+		{"unicode-literals", `{"s": "é😀  "}`, "{\"s\":\"é😀  \"}", true},
+		{"scalar-not-utf16-key-order", `{"😀": 1, "": 2}`, "{\"\":2,\"😀\":1}", true},
+		{"no-normalization", `{"é": 1, "é": 2}`, "{\"é\":2,\"é\":1}", true},
+		{"surrogate-pair", `{"s":"😀"}`, `{"s":"😀"}`, true},
+		{"safe-integers", `{"low": -9007199254740991, "high": 9007199254740991, "zero": 0}`, `{"high":9007199254740991,"low":-9007199254740991,"zero":0}`, true},
+		{"nested-order", `{"z": [3, 2, 1, {"b": null, "a": true}], "a": false}`, `{"a":false,"z":[3,2,1,{"a":true,"b":null}]}`, true},
+		{"escaped-distinct-alias", `{"a":1,"b":2}`, `{"a":1,"b":2}`, true},
+		{"escaped-duplicate-alias", `{"a":1,"a":2}`, "", false},
+		{"integer-control", `{"a": 1}`, `{"a":1}`, true},
+		{"fraction-refusal", `{"a":1.0}`, "", false},
+		{"zero-control", `{"a": 0}`, `{"a":0}`, true},
+		{"negative-zero-refusal", `{"a":-0}`, "", false},
+		{"unpaired-surrogate-refusal", `{"s":"\ud83d"}`, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got, err := canonicalize([]byte(tc.in), lim)
+			if (err == nil) != tc.accepted || (tc.accepted && string(got) != tc.want) {
+				t.Fatalf("VECTOR: accepted=%v want=%v got=%q want=%q err=%v", err == nil, tc.accepted, got, tc.want, err)
+			}
+			if !tc.accepted && CodeOf(err) != CodeRequestInvalid {
+				t.Fatalf("VECTOR: refusal code %v", err)
+			}
+		})
 	}
 }
 

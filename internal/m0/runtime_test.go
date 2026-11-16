@@ -3,7 +3,9 @@ package m0
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/relux-works/swarma-dispatcher/internal/journal"
 )
@@ -287,8 +289,8 @@ func TestCancelOwnership(t *testing.T) {
 // Claim: a cancel that races the start, arriving after intent and before C,
 // records the stop intent so the gate refuses C: no commit frame, the start is
 // refused m0_start_invalidated, the stop is issued once under the original
-// effect, and an unknown stop outcome keeps the claim and stop debt. A cancel
-// of a reservation that never reached intent needs no stop.
+// effect, and an unknown stop outcome keeps the claim and stop debt. The
+// reservation-before-intent cancel is TestCancelBeforeIntent.
 func TestCancelRacingStart(t *testing.T) {
 	e := newEnv(t)
 	e.launcher.stopAbsent = false
@@ -572,5 +574,304 @@ func TestPolicyOrdering(t *testing.T) {
 	must(t, err)
 	if res.State != stopAbsent {
 		t.Fatalf("ORDER: cancel after removal %+v", res)
+	}
+}
+
+// Claim: a cancel of a reservation that never reached intent (the process was
+// lost between the reserve and intent frames) records the owner's cancel with
+// no stop effect: the record becomes "cancelled", no stop is issued, and the
+// same-ID dispatch retry replays that outcome without a start. The recovered
+// reservation that is NOT cancelled continues to a single start (control).
+func TestCancelBeforeIntent(t *testing.T) {
+	for _, cancelled := range []bool{true, false} {
+		e := newEnv(t)
+		e.store.failAppendAt = e.store.appendCalls + 3 // policy, reserve, then intent fails
+		e.store.failErr = &journal.Error{Class: journal.StorageWriteFailure, Op: "pwrite", Poisoned: true}
+		_, err := e.dispatch(t)
+		wantCode(t, err, CodeStorageFailed)
+		if e.store.count(frameReserve) != 1 || e.store.count(frameIntent) != 0 {
+			t.Fatal("PRE-INTENT: reservation-only state not reproduced")
+		}
+		e.reopen(t)
+		if rec := e.record(t, dispatchID); rec.Phase != phaseReserved {
+			t.Fatalf("PRE-INTENT: %+v", rec)
+		}
+		if cancelled {
+			res, err := e.cancel(t)
+			must(t, err)
+			rec := e.record(t, dispatchID)
+			if res.State != string(phaseCancelled) || rec.Phase != phaseCancelled || rec.StopEffectID != "" || rec.StopOutcome != stopNoEffect {
+				t.Fatalf("PRE-INTENT: cancel %+v %+v", res, rec)
+			}
+			res, err = e.dispatch(t)
+			must(t, err)
+			if res.State != string(phaseCancelled) || !res.Replayed {
+				t.Fatalf("PRE-INTENT: dispatch replay %+v", res)
+			}
+			if starts, stops := e.launcher.count(); starts != 0 || stops != 0 {
+				t.Fatalf("PRE-INTENT: starts=%d stops=%d", starts, stops)
+			}
+			continue
+		}
+		res, err := e.dispatch(t)
+		must(t, err)
+		if res.State != string(phaseStarted) || res.Replayed {
+			t.Fatalf("PRE-INTENT: control %+v", res)
+		}
+		if starts, _ := e.launcher.count(); starts != 1 {
+			t.Fatalf("PRE-INTENT: control starts=%d", starts)
+		}
+	}
+}
+
+// Claim (earliest original obligation): the stop ceiling handed to the
+// receiver is the earliest completion deadline over every retained
+// obligation. Before expiry an owner cancel keeps its own event (control);
+// after expiry a late cancel and a late removal both keep the expiry
+// obligation, so the ceiling is expiry-based (expiry + detect + stop, not the
+// later cancel/removal time); a removal before expiry yields the removal
+// ceiling, which is earlier than any expiry-based one (the other direction).
+// Every obligation is durable in the record with its own event and detection.
+func TestOriginalExpiryCeiling(t *testing.T) {
+	for _, mode := range []string{"before-expiry-control", "late-cancel", "late-removal", "removal-before-expiry"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newEnv(t)
+			_, err := e.dispatch(t)
+			must(t, err)
+			original := e.record(t, dispatchID)
+			event := original.Deadlines.ReservedAt + 1
+			detection := event
+			if mode == "late-cancel" || mode == "late-removal" {
+				event = original.Deadlines.Expiry
+				detection = event + original.Deadlines.DetectSeconds + 10
+			}
+			e.clock.set(detection)
+			if strings.Contains(mode, "removal") {
+				e.source.edit(func(i *Installed) { i.Removed = true; i.InstallRevision++ })
+				must(t, e.rt.Sweep(context.Background()))
+			} else {
+				_, err = e.cancel(t)
+				must(t, err)
+			}
+			stop := e.launcher.lastStop
+			want := StopCeiling(event, detection, original.Deadlines.DetectSeconds, original.Deadlines.StopSeconds)
+			if stop.Ceiling != want {
+				t.Fatalf("CEILING: got %d want %d (event=%d expiry=%d detection=%d)", stop.Ceiling, want, event, original.Deadlines.Expiry, detection)
+			}
+			rec := e.record(t, dispatchID)
+			switch mode {
+			case "late-cancel", "late-removal":
+				if !rec.hasObligation(sourceExpiry) || len(rec.StopObligations) != 2 {
+					t.Fatalf("CEILING: expiry obligation not retained: %+v", rec.StopObligations)
+				}
+				if later := StopCeiling(detection, detection, original.Deadlines.DetectSeconds, original.Deadlines.StopSeconds); stop.Ceiling >= later {
+					t.Fatalf("CEILING: late event moved the ceiling to %d", stop.Ceiling)
+				}
+			case "removal-before-expiry":
+				// The earliest an expiry obligation could ever complete is
+				// expiry + detect + stop; the removal ceiling lies before it.
+				if rec.hasObligation(sourceExpiry) || len(rec.StopObligations) != 1 || stop.Ceiling >= StopCeiling(original.Deadlines.Expiry, original.Deadlines.Expiry, original.Deadlines.DetectSeconds, original.Deadlines.StopSeconds) {
+					t.Fatalf("CEILING: removal ceiling did not win: %+v %d", rec.StopObligations, stop.Ceiling)
+				}
+			default:
+				if len(rec.StopObligations) != 1 || rec.StopObligations[0].Source != sourceCancel {
+					t.Fatalf("CEILING: control obligations %+v", rec.StopObligations)
+				}
+			}
+			for _, o := range stop.Obligations {
+				if o.Event <= 0 || o.Detection <= 0 {
+					t.Fatalf("CEILING: obligation without provenance %+v", o)
+				}
+			}
+		})
+	}
+}
+
+// Claim (continuation ownership): after a transient stop failure, a non-owner
+// cancel under a fresh request ID refuses run_not_owned, a non-owner body
+// reusing the remembered cancel ID refuses request_id_conflict (the remembered
+// body is immutable, so the conflict wins before ownership), and a differently
+// identified owner cancel refuses request_invalid; none touches the unknown
+// stop. The owner's same-ID retry continues the original stop effect (observe,
+// then the same stop) to absence; once absent, further retries, Sweep and
+// Reconcile issue nothing. The healthy receiver is the control.
+func TestStopContinuationOwnership(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.dispatch(t)
+	must(t, err)
+	e.launcher.stopErr = errFixture
+	_, err = e.cancel(t)
+	wantCode(t, err, CodeObservationUnknown)
+	first := e.launcher.lastStop
+	e.launcher.mu.Lock()
+	e.launcher.stopErr = nil
+	e.launcher.mu.Unlock()
+	other := newKey(t)
+	foreign := parseDoc(t, e.cancelDoc.encode(nil))
+	setPath(t, foreign, "association.key", text(other.spelling))
+	setPath(t, foreign, "request_id", text(strings.Repeat("6", 32)))
+	_, err = e.rt.Handle(context.Background(), e.peer, signRequest(t, foreign, other))
+	wantCode(t, err, CodeRunNotOwned)
+	reused := parseDoc(t, e.cancelDoc.encode(nil))
+	setPath(t, reused, "association.key", text(other.spelling))
+	_, err = e.rt.Handle(context.Background(), e.peer, signRequest(t, reused, other))
+	wantCode(t, err, CodeRequestIDConflict)
+	fresh := parseDoc(t, e.cancelDoc.encode(nil))
+	setPath(t, fresh, "request_id", text(strings.Repeat("9", 32)))
+	_, err = e.rt.Handle(context.Background(), e.peer, signRequest(t, fresh, e.key))
+	wantCode(t, err, CodeRequestInvalid)
+	rec := e.record(t, dispatchID)
+	if _, stops := e.launcher.count(); stops != 1 || rec.StopOutcome != stopUnknown || rec.Phase != phaseStarted {
+		t.Fatalf("CONTINUATION: foreign requests drove the stop: stops=%d %+v", stops, rec)
+	}
+	res, err := e.cancel(t)
+	must(t, err)
+	rec = e.record(t, dispatchID)
+	starts, stops := e.launcher.count()
+	if res.State != stopAbsent || rec.Phase != phaseAbsent || starts != 1 || stops != 2 || rec.StopAttempts != 2 || rec.StopObserved == "" {
+		t.Fatalf("CONTINUATION: %+v %+v starts=%d stops=%d", res, rec, starts, stops)
+	}
+	retried := e.launcher.lastStop
+	if retried.EffectID != first.EffectID || retried.Event != first.Event || retried.Detection != first.Detection || retried.Ceiling != first.Ceiling {
+		t.Fatalf("CONTINUATION: stop identity changed: first=%+v retried=%+v", first, retried)
+	}
+	_, err = e.cancel(t)
+	must(t, err)
+	must(t, e.rt.Sweep(context.Background()))
+	must(t, e.rt.Reconcile(context.Background()))
+	if _, stops := e.launcher.count(); stops != 2 {
+		t.Fatalf("CONTINUATION: terminal stop re-issued: stops=%d", stops)
+	}
+}
+
+// clockProbe records, for every Clock.Now call, whether the runtime's state
+// lock was free at that moment.
+type clockProbe struct {
+	base     Clock
+	rt       *Runtime
+	mu       sync.Mutex
+	unlocked []bool
+}
+
+func (p *clockProbe) Now() (Reading, error) {
+	free := p.rt.mu.TryLock()
+	if free {
+		p.rt.mu.Unlock()
+	}
+	p.mu.Lock()
+	p.unlocked = append(p.unlocked, free)
+	p.mu.Unlock()
+	return p.base.Now()
+}
+
+// Claim: no Clock.Now read happens under Runtime.mu. A healthy dispatch and
+// cancel read the clock exactly five times (dispatch prepare, commit gate,
+// result, cancel prepare, stop result); the prepare and gate reads are the
+// unlocked controls and the result and stop reads must be unlocked too.
+func TestClockSeamOutsideStateLock(t *testing.T) {
+	e := newEnv(t)
+	probe := &clockProbe{base: e.clock, rt: e.rt}
+	e.rt.seams.Clock = probe
+	_, err := e.dispatch(t)
+	must(t, err)
+	_, err = e.cancel(t)
+	must(t, err)
+	if len(probe.unlocked) != 5 || !probe.unlocked[0] || !probe.unlocked[1] || !probe.unlocked[3] {
+		t.Fatalf("CLOCK-LOCK: unlocked controls not exercised: %v", probe.unlocked)
+	}
+	for i, free := range probe.unlocked {
+		if !free {
+			t.Errorf("CLOCK-LOCK: Clock.Now call %d ran under Runtime.mu: %v", i+1, probe.unlocked)
+		}
+	}
+}
+
+type handleOutcome struct {
+	result *Result
+	err    error
+}
+
+func awaitSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatal("coordination timeout, not a product finding")
+	}
+}
+
+// Claim (concurrent ordering, cancel before C): with the start blocked at the
+// pre-C boundary in another goroutine, an owner cancel records the stop
+// intent, so C is refused, no commit frame exists, and exactly one start and
+// one stop were issued. Local synthetic seams only; no receiver durability.
+func TestConcurrentCancelBeforeCommit(t *testing.T) {
+	e := newEnv(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan handleOutcome, 1)
+	e.launcher.stopAbsent = false
+	e.launcher.onStart = func() { close(entered); <-release }
+	go func() {
+		res, err := e.rt.Handle(context.Background(), e.peer, e.dispatchWire)
+		done <- handleOutcome{res, err}
+	}()
+	awaitSignal(t, entered)
+	_, err := e.rt.Handle(context.Background(), e.peer, e.cancelWire)
+	wantCode(t, err, CodeObservationUnknown)
+	close(release)
+	outcome := <-done
+	wantCode(t, outcome.err, CodeStartInvalidated)
+	if e.store.count(frameCommit) != 0 {
+		t.Fatal("CONCURRENT: cancel-before-C committed")
+	}
+	if starts, stops := e.launcher.count(); starts != 1 || stops != 1 {
+		t.Fatalf("CONCURRENT: starts=%d stops=%d", starts, stops)
+	}
+}
+
+// afterCommitLauncher delays the start receipt until released, after C.
+type afterCommitLauncher struct {
+	base      *fakeLauncher
+	committed chan struct{}
+	release   chan struct{}
+}
+
+func (l *afterCommitLauncher) Start(ctx context.Context, req StartRequest, gate CommitGate) (StartReceipt, error) {
+	receipt, err := l.base.Start(ctx, req, gate)
+	close(l.committed)
+	<-l.release
+	return receipt, err
+}
+func (l *afterCommitLauncher) Stop(ctx context.Context, req StopRequest) (StopReceipt, error) {
+	return l.base.Stop(ctx, req)
+}
+func (l *afterCommitLauncher) Observe(ctx context.Context, q EffectQuery) (Observation, error) {
+	return l.base.Observe(ctx, q)
+}
+
+// Claim (concurrent ordering, C before cancel): C wins, the owner cancel then
+// confirms absence while the start receipt is still delayed, and the late
+// receipt does not overwrite that terminal absence; one commit frame, one
+// start and one stop. Local synthetic seams only.
+func TestConcurrentCommitBeforeCancel(t *testing.T) {
+	e := newEnv(t)
+	launcher := &afterCommitLauncher{base: e.launcher, committed: make(chan struct{}), release: make(chan struct{})}
+	e.rt.seams.Launcher = launcher
+	done := make(chan handleOutcome, 1)
+	go func() {
+		res, err := e.rt.Handle(context.Background(), e.peer, e.dispatchWire)
+		done <- handleOutcome{res, err}
+	}()
+	awaitSignal(t, launcher.committed)
+	res, err := e.rt.Handle(context.Background(), e.peer, e.cancelWire)
+	must(t, err)
+	close(launcher.release)
+	outcome := <-done
+	must(t, outcome.err)
+	if res.State != stopAbsent || outcome.result.State != string(phaseAbsent) || e.store.count(frameCommit) != 1 {
+		t.Fatalf("CONCURRENT: lost terminal absence: cancel=%+v dispatch=%+v", res, outcome.result)
+	}
+	if starts, stops := e.launcher.count(); starts != 1 || stops != 1 {
+		t.Fatalf("CONCURRENT: starts=%d stops=%d", starts, stops)
 	}
 }

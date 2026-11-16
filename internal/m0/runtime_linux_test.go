@@ -4,6 +4,7 @@ package m0
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,6 +132,10 @@ func TestRealJournalCrashAfterIntent(t *testing.T) {
 // is m0_closed and no state file is created.
 func TestAttachOpensLedger(t *testing.T) {
 	cfg := journalFixture(t)
+	// Attach sets the daemon umask; restore the test process umask afterwards.
+	previous := syscall.Umask(0)
+	syscall.Umask(previous)
+	t.Cleanup(func() { syscall.Umask(previous) })
 	e := newEnv(t)
 	doc := `{"enabled":true,"entry":"initialize","kind":"swarma-dispatcher m0-config/1","recovery_attested":true,"state_dir":"` + cfg.Directory + `","supported_local_storage":true,"v":1}`
 	read := func(string) ([]byte, error) { return []byte(doc), nil }
@@ -159,5 +164,126 @@ func TestAttachOpensLedger(t *testing.T) {
 	}
 	if starts, _ := e.launcher.count(); starts != 1 {
 		t.Fatalf("ATTACH: starts=%d", starts)
+	}
+}
+
+// Claim (real journal, stop continuation): a healthy stop completes (control).
+// After a transient receiver failure the stop outcome is unknown and the
+// original obligation is retained; once the receiver is healthy the SAME stop
+// (effect, event, detection) is continued to absence from a same-ID cancel
+// retry, from Sweep plus Reconcile, and after a journal close and
+// established reopen plus Sweep and Reconcile, each with exactly one start and
+// two stops. A receiver that keeps failing leaves the run started with the
+// stop unknown and no state claims absence. After absence nothing is
+// re-issued.
+func TestStopRecoveryAfterTransientFailure(t *testing.T) {
+	for _, mode := range []string{"healthy-control", "retry", "sweep", "reopen-sweep", "still-failing"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newEnv(t)
+			cfg := journalFixture(t)
+			rt, err := Initialize(cfg, e.seams())
+			must(t, err)
+			e.rt = rt
+			t.Cleanup(func() { _ = e.rt.Close() })
+			_, err = e.dispatch(t)
+			must(t, err)
+			if mode == "healthy-control" {
+				res, err := e.cancel(t)
+				must(t, err)
+				if res.State != stopAbsent {
+					t.Fatalf("RECOVERY: healthy stop %+v", res)
+				}
+				return
+			}
+			e.launcher.stopErr = errFixture
+			_, err = e.cancel(t)
+			wantCode(t, err, CodeObservationUnknown)
+			original := e.record(t, dispatchID)
+			if original.StopEffectID == "" || original.StopOutcome != stopUnknown || original.Phase != phaseStarted {
+				t.Fatalf("RECOVERY: retained stop missing: %+v", original)
+			}
+			if mode != "still-failing" {
+				e.launcher.mu.Lock()
+				e.launcher.stopErr = nil
+				e.launcher.mu.Unlock()
+			}
+			if mode == "reopen-sweep" {
+				must(t, e.rt.Close())
+				e.rt, err = OpenEstablished(cfg, e.seams())
+				must(t, err)
+			}
+			if mode == "retry" {
+				_, _ = e.cancel(t)
+			} else {
+				must(t, e.rt.Sweep(context.Background()))
+				must(t, e.rt.Reconcile(context.Background()))
+			}
+			recovered := e.record(t, dispatchID)
+			starts, stops := e.launcher.count()
+			if starts != 1 || recovered.StopEffectID != original.StopEffectID || recovered.StopEvent != original.StopEvent || recovered.StopDetection != original.StopDetection {
+				t.Fatalf("RECOVERY: original obligation changed: starts=%d old=%+v new=%+v", starts, original, recovered)
+			}
+			if stops != 2 || recovered.StopAttempts != 2 || recovered.StopObserved == "" {
+				t.Fatalf("RECOVERY: stop not continued once: stops=%d %+v", stops, recovered)
+			}
+			if mode == "still-failing" {
+				if recovered.StopOutcome != stopUnknown || recovered.Phase != phaseStarted || len(recovered.StopEvidence) != 0 {
+					t.Fatalf("RECOVERY: absence inferred from a failed stop: %+v", recovered)
+				}
+				return
+			}
+			if recovered.StopOutcome != stopAbsent || recovered.Phase != phaseAbsent {
+				t.Fatalf("RECOVERY: recovered receiver never revisited: %+v", recovered)
+			}
+			must(t, e.rt.Sweep(context.Background()))
+			must(t, e.rt.Reconcile(context.Background()))
+			if _, stops := e.launcher.count(); stops != 2 {
+				t.Fatalf("RECOVERY: terminal stop re-issued: stops=%d", stops)
+			}
+		})
+	}
+}
+
+// Claim (real journal, ceiling survives reopen): a cancel arriving after the
+// original expiry with a failing receiver records the expiry and cancel
+// obligations; after a journal close and established reopen the continued
+// stop carries the same effect and the same earliest ceiling (expiry-based),
+// never a later one, and reaches absence with one start and two stops.
+func TestOriginalExpiryCeilingSurvivesReopen(t *testing.T) {
+	e := newEnv(t)
+	cfg := journalFixture(t)
+	rt, err := Initialize(cfg, e.seams())
+	must(t, err)
+	e.rt = rt
+	t.Cleanup(func() { _ = e.rt.Close() })
+	_, err = e.dispatch(t)
+	must(t, err)
+	original := e.record(t, dispatchID)
+	detection := original.Deadlines.Expiry + original.Deadlines.DetectSeconds + 10
+	e.clock.set(detection)
+	e.launcher.stopErr = errFixture
+	_, err = e.cancel(t)
+	wantCode(t, err, CodeObservationUnknown)
+	first := e.launcher.lastStop
+	want := StopCeiling(original.Deadlines.Expiry, detection, original.Deadlines.DetectSeconds, original.Deadlines.StopSeconds)
+	if first.Ceiling != want {
+		t.Fatalf("CEILING-REOPEN: first stop ceiling %d want %d", first.Ceiling, want)
+	}
+	must(t, e.rt.Close())
+	e.rt, err = OpenEstablished(cfg, e.seams())
+	must(t, err)
+	rec := e.record(t, dispatchID)
+	if !rec.hasObligation(sourceExpiry) || !rec.hasObligation(sourceCancel) || rec.StopOutcome != stopUnknown {
+		t.Fatalf("CEILING-REOPEN: obligations lost across reopen: %+v", rec)
+	}
+	e.launcher.mu.Lock()
+	e.launcher.stopErr = nil
+	e.launcher.mu.Unlock()
+	must(t, e.rt.Sweep(context.Background()))
+	retried := e.launcher.lastStop
+	rec = e.record(t, dispatchID)
+	starts, stops := e.launcher.count()
+	if retried.EffectID != first.EffectID || retried.Ceiling != want || retried.Ceiling > first.Ceiling || rec.Phase != phaseAbsent || starts != 1 || stops != 2 {
+		t.Fatalf("CEILING-REOPEN: first=%+v retried=%+v rec=%+v starts=%d stops=%d", first, retried, rec, starts, stops)
 	}
 }

@@ -1,19 +1,16 @@
 // Package source is the launcher-side Source client of the P17 hook
 // interface: H1 run.prepare and the validate step of H2 run.bind.
 //
-// The wire codec of Source (pin A, module a2a-swarm, package runorigin) is a
-// seam. This build does not vendor that codec, so the default Wire refuses by
-// name; nothing here substitutes a local spelling of the Source wire. The
-// client around the seam owns everything the codec does not: the socket path
-// check, kernel peer authentication, the generation check, the five-second
-// budget, the one-connection validate, the byte-equal binding recheck and the
-// origin shape check.
+// Pinned explicitly selects the public runorigin values and documented Source
+// framing. Unpinned remains the refusing default. This client owns path, peer,
+// current generation, budgets, same-connection validation and binding checks.
 package source
 
 import (
 	"errors"
 	"net"
 
+	"github.com/relux-works/a2a-swarm/runorigin"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/codes"
 )
 
@@ -30,7 +27,12 @@ type HelloMessage struct {
 // PrepareRequest is the launcher's input to source.origin.prepare/1. The
 // pinned codec decides the wire spelling; LaunchNonce identifies the run.
 type PrepareRequest struct {
-	LaunchNonce string
+	RequestID      string              `json:"request_id"`
+	LaunchNonce    string              `json:"launch_nonce"`
+	Event          runorigin.EventRef  `json:"event_ref"`
+	InputPrincipal runorigin.Principal `json:"input_principal"`
+	// Local hello context, never an extra wire member.
+	SourceIncarnation string `json:"-"`
 }
 
 // PreparedMessage is the prepare result. Bindings are every binding Source
@@ -43,7 +45,10 @@ type PreparedMessage struct {
 
 // ValidateRequest is the launcher's input to source.origin.validate/1.
 type ValidateRequest struct {
-	PreparedID string
+	RequestID         string `json:"request_id"`
+	LaunchNonce       string `json:"launch_nonce"`
+	PreparedID        string `json:"prepared_id"`
+	SourceIncarnation string `json:"source_incarnation"`
 }
 
 // ValidatedMessage is the validate result. Origin is the admission origin

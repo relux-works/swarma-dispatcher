@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"strings"
+	"unicode/utf8"
+
+	"github.com/relux-works/a2a-swarm/runorigin"
 )
 
 // OriginMembers is the size of the admission object (H2 step 3).
@@ -16,19 +18,6 @@ var ErrOrigin = errors.New("source: origin malformed")
 
 func originErr(what string) error { return errors.Join(ErrOrigin, errors.New("source: origin: "+what)) }
 
-func isHex64(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') {
-			return false
-		}
-	}
-	return true
-}
-
 // CheckOrigin checks the shape of the origin bytes validate returned, without
 // changing them: one JSON object of exactly six string members, no nesting,
 // no duplicate member, exactly three lowercase 64-hex IDs, mode "enforcing",
@@ -36,7 +25,7 @@ func isHex64(s string) bool {
 // "!"), and nothing after the object. L never builds, edits or defaults an
 // origin; this check only decides refusal.
 func CheckOrigin(raw []byte) error {
-	if len(raw) == 0 {
+	if len(raw) == 0 || !utf8.Valid(raw) {
 		return originErr("missing")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -89,25 +78,14 @@ func CheckOrigin(raw []byte) error {
 	if len(members) != OriginMembers {
 		return originErr("member count")
 	}
-	mode, ok := members["mode"]
-	if !ok || mode != "enforcing" {
-		return originErr("mode")
-	}
-	cmd, ok := members["command_id"]
-	if !ok || cmd != "" {
-		return originErr("command_id")
-	}
-	ids := 0
-	for k, v := range members {
-		if strings.HasPrefix(v, "$") || strings.HasPrefix(v, "!") {
-			return originErr("Matrix identifier in " + k)
-		}
-		if k != "mode" && k != "command_id" && isHex64(v) {
-			ids++
+	for _, name := range []string{"kind", "event_id", "grant_id", "tip_hash", "mode", "command_id"} {
+		if _, ok := members[name]; !ok {
+			return originErr("member set")
 		}
 	}
-	if ids != 3 {
-		return originErr("id count")
+	o := runorigin.Origin{Kind: members["kind"], EventID: members["event_id"], GrantID: members["grant_id"], TipHash: members["tip_hash"], Mode: members["mode"], CommandID: members["command_id"]}
+	if !o.Valid() {
+		return originErr("admission values")
 	}
 	return nil
 }

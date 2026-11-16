@@ -57,22 +57,22 @@ func journalCfg(t *testing.T) journal.Config {
 }
 
 type env struct {
-	t         *testing.T
-	jcfg      journal.Config
-	store     *runrecord.Store
-	src       *fakes.SourceScript
-	srcDialer *fakes.SourceDialer
-	km        *fakes.KeymakerScript
-	kmDialer  *fakes.KeymakerDialer
-	proc      *fakes.ProcTree
-	killer    *fakes.Killer
-	quar      *sweep.Quarantine
-	archival  sweep.StaticArchival
-	operator  sweep.StaticOperatorRelease
-	placement isolation.Placement
-	cfg       launcher.Config
-	deps      launcher.Deps
-	l         *launcher.Launcher
+	t              *testing.T
+	jcfg           journal.Config
+	store          *runrecord.Store
+	src            *fakes.SourceScript
+	srcDialer      *fakes.SourceDialer
+	km             *fakes.KeymakerScript
+	kmDialer       *fakes.KeymakerDialer
+	proc           *fakes.ProcTree
+	killer         *fakes.Killer
+	quar           *sweep.Quarantine
+	exportEvidence sweep.StaticWorkProductExport
+	operator       sweep.StaticOperatorRelease
+	placement      isolation.Placement
+	cfg            launcher.Config
+	deps           launcher.Deps
+	l              *fixtureLauncher
 
 	mu     sync.Mutex
 	nonces int
@@ -119,13 +119,13 @@ func newEnv(t *testing.T) *env {
 	must(t, err)
 	must(t, e.proc.Add(os.Getpid(), [4]uint32{luid, luid, luid, luid}, 1))
 	e.killer = &fakes.Killer{Tree: e.proc}
-	e.archival = sweep.StaticArchival{}
+	e.exportEvidence = sweep.StaticWorkProductExport{}
 	e.operator = sweep.StaticOperatorRelease{}
-	e.quar = &sweep.Quarantine{Gate: sweep.ReleaseGate{Archival: e.archival, Operator: e.operator}}
+	e.quar = &sweep.Quarantine{Gate: sweep.ReleaseGate{WorkProductExport: e.exportEvidence, Operator: e.operator}}
 	e.placement = isolation.Fixed(cuid)
 	e.cfg = launcher.Config{
 		LauncherUID:    luid,
-		Station:        "station-1",
+		Station:        "1",
 		RequestTimeout: 100 * time.Millisecond,
 		BindAttempts:   3,
 		MaxRestarts:    2,
@@ -149,8 +149,22 @@ func newEnv(t *testing.T) *env {
 	return e
 }
 
+// Typed principal fixtures preserve the round-1 scenarios with the native shape.
+func principal(label string) keymaker.Principal {
+	return keymaker.Principal{UID: 22000 + uint32(label[len(label)-1]-'0'), Generation: "1"}
+}
+
+type fixtureLauncher struct{ *launcher.Launcher }
+
+func (l *fixtureLauncher) Begin(ctx context.Context, label string) (*launcher.Run, error) {
+	return l.Launcher.Begin(ctx, principal(label))
+}
+func (l *fixtureLauncher) BeginChild(ctx context.Context, parent *launcher.Run, label string) (*launcher.Run, error) {
+	return l.Launcher.BeginChild(ctx, parent, principal(label))
+}
+
 // build creates the launcher from the current env fields.
-func (e *env) build() *launcher.Launcher {
+func (e *env) build() *fixtureLauncher {
 	e.t.Helper()
 	e.deps.Placement = e.placement
 	e.deps.Records = e.store
@@ -160,8 +174,8 @@ func (e *env) build() *launcher.Launcher {
 	e.deps.Quarantine = e.quar
 	l, err := launcher.New(e.cfg, e.deps)
 	must(e.t, err)
-	e.l = l
-	return l
+	e.l = &fixtureLauncher{l}
+	return e.l
 }
 
 // reopen closes the store and opens it again, as a restarted launcher would.
@@ -216,7 +230,7 @@ func TestBeginBindsDurably(t *testing.T) {
 	}
 	id, body, err := fakes.ParseBind(binds[0])
 	must(t, err)
-	if id != rec.BindRequestID || !bytes.Equal(body.Origin, rec.Origin) || body.ParentRun != "" || body.InputPrincipal != "input-1" || body.IdentityRegistrationNumber != "station-1" {
+	if id != rec.BindRequestID || !bytes.Equal(body.Origin, rec.Origin) || body.ParentRun != "" || body.InputPrincipal != principal("input-1") || body.IdentityRegistrationNumber != 1 {
 		t.Fatalf("bind %q %+v", id, body)
 	}
 	if _, err := os.Stat(filepath.Join(e.jcfg.Directory, "records", runrecord.RecordName(run.Key))); err != nil {
@@ -352,15 +366,20 @@ func TestBindRefusedDefinite(t *testing.T) {
 	e.km.BindMode = "refuse"
 	l := e.build()
 	_, err := l.Begin(context.Background(), "input-1")
-	if !codes.Is(err, codes.OriginRefused) || !errors.Is(err, keymaker.ErrRefused) {
+	if !codes.Is(err, codes.BindRefused) || !errors.Is(err, keymaker.ErrRefused) {
 		t.Fatalf("%v", err)
 	}
 	keys := e.store.Keys()
 	if len(keys) != 1 || e.record(keys[0]).State != runrecord.Refused || !e.quar.Held(cuid) {
 		t.Fatalf("keys %v held=%v", keys, e.quar.Held(cuid))
 	}
+	// The test wire certifies a test-only no-effect refusal, not a native code.
+	v, exitErr := codes.Exit(err, 0, true)
+	if exitErr != nil || v.Status != 16 || e.record(keys[0]).InputReleased || e.record(keys[0]).Child != nil || len(e.km.Binds()) != 1 {
+		t.Fatalf("no-effect refusal: %+v %v", v, exitErr)
+	}
 	// Only an explicit operator release frees the never-used uid (no end and
-	// no archival can exist for it), and only with the zero-process proof.
+	// no export evidence can exist for it), and only with the zero-process proof.
 	e.operator[keys[0]] = cuid
 	if d, err := e.quar.Release(keys[0], cuid, false, sweep.Enumerate(e.proc.Root, cuid)); err != nil || !d.Release || e.quar.Held(cuid) {
 		t.Fatalf("operator release: %+v %v", d, err)
@@ -386,11 +405,11 @@ func endReady(t *testing.T, e *env) *launcher.Run {
 // ended acknowledgement the record moves ending -> ended with the exact end
 // request id and body, teardown ran, the launcher exits with the child's
 // status, the uid sweep killed the child through the helper, and with
-// archival evidence for this run the uid left quarantine.
+// work-product export for this run the uid left quarantine.
 func TestEndExactAck(t *testing.T) {
 	e := newEnv(t)
 	run := endReady(t, e)
-	e.archival[run.Key] = true
+	e.exportEvidence[run.Key] = sweep.Exported
 	torn := false
 	out, err := run.End(context.Background(), 3, true, func() error { torn = true; return nil })
 	must(t, err)
@@ -399,7 +418,7 @@ func TestEndExactAck(t *testing.T) {
 	if rec.State != runrecord.Ended || !rec.EndAcknowledged || !rec.TeardownDone || !torn || len(ends) != 1 || !bytes.Equal(ends[0], rec.EndRequestBody) || rec.EndRequestID == "" {
 		t.Fatalf("record %+v ends=%d torn=%v", rec, len(ends), torn)
 	}
-	if out.Verdict.Status != 3 || !out.Acknowledged || !out.UIDReleased || out.Sweep.Err != nil || e.quar.Held(cuid) || !out.Release.Archived || !out.Release.Proved {
+	if out.Verdict.Status != 3 || !out.Acknowledged || !out.UIDReleased || out.Sweep.Err != nil || e.quar.Held(cuid) || !out.Release.WorkProductExportSatisfied || !out.Release.Proved {
 		t.Fatalf("outcome %+v held=%v", out, e.quar.Held(cuid))
 	}
 	if uids := e.killer.UIDs(); len(uids) != 1 || uids[0] != cuid {
@@ -415,16 +434,16 @@ func TestEndExactAck(t *testing.T) {
 
 // Claim (release gate, book ch. 07 / Core G1, negatives with the positive
 // control in TestEndExactAck): an acknowledged end with zero processes but
-// no archival evidence and no operator release keeps the uid quarantined and
-// a new run never gets it; an unpinned archival seam (the default) behaves
+// no export evidence and no operator release keeps the uid quarantined and
+// a new run never gets it; an unpinned export seam (the default) behaves
 // the same; an explicit operator release for this run then frees it, with a
 // fresh zero-process proof.
-func TestEndAckNoArchivalKeepsQuarantine(t *testing.T) {
+func TestEndAckNoExportKeepsQuarantine(t *testing.T) {
 	e := newEnv(t)
 	run := endReady(t, e)
 	out, err := run.End(context.Background(), 0, true, nil)
 	must(t, err)
-	if !out.Acknowledged || out.UIDReleased || !out.Release.Proved || out.Release.Archived || out.Release.OperatorReleased || !e.quar.Held(cuid) || e.record(run.Key).State != runrecord.Ended {
+	if !out.Acknowledged || out.UIDReleased || !out.Release.Proved || out.Release.WorkProductExportSatisfied || out.Release.OperatorReleased || !e.quar.Held(cuid) || e.record(run.Key).State != runrecord.Ended {
 		t.Fatalf("outcome %+v held=%v", out, e.quar.Held(cuid))
 	}
 	if _, err := e.l.Begin(context.Background(), "input-2"); !codes.Is(err, codes.IsolationUnqualified) {
@@ -436,13 +455,13 @@ func TestEndAckNoArchivalKeepsQuarantine(t *testing.T) {
 	}
 	// Unpinned default seams: same refusal, with the unpinned causes recorded.
 	e = newEnv(t)
-	e.deps.Archival = nil
+	e.deps.WorkProductExport = nil
 	e.deps.OperatorRelease = nil
 	e.quar = &sweep.Quarantine{}
 	run = endReady(t, e)
 	out, err = run.End(context.Background(), 0, true, nil)
 	must(t, err)
-	if out.UIDReleased || !codes.IsUnpinned(out.Release.ArchivalErr) || !codes.IsUnpinned(out.Release.OperatorErr) || !e.quar.Held(cuid) {
+	if out.UIDReleased || !codes.IsUnpinned(out.Release.WorkProductExportErr) || !codes.IsUnpinned(out.Release.OperatorErr) || !e.quar.Held(cuid) {
 		t.Fatalf("unpinned seams: %+v", out)
 	}
 }
@@ -458,7 +477,7 @@ func TestLostEndStaysEndingThenRetry(t *testing.T) {
 	e := newEnv(t)
 	e.km.EndMode = "drop"
 	run := endReady(t, e)
-	e.archival[run.Key] = true
+	e.exportEvidence[run.Key] = sweep.Exported
 	torn := false
 	out, err := run.End(context.Background(), 3, true, func() error { torn = true; return nil })
 	if !codes.Is(err, codes.EndUnknown) || !torn {
@@ -510,11 +529,11 @@ func TestEndAckWithSurvivorKeepsQuarantine(t *testing.T) {
 	e := newEnv(t)
 	e.killer.Immortal = true
 	run := endReady(t, e)
-	e.archival[run.Key] = true                                // archival present: the proof alone blocks the release
+	e.exportEvidence[run.Key] = sweep.Exported                // export present: the proof alone blocks release
 	must(t, e.proc.Add(778, [4]uint32{cuid, 0, cuid, 0}, 43)) // setuid descendant
 	out, err := run.End(context.Background(), 0, true, nil)
 	must(t, err)
-	if !out.Acknowledged || out.UIDReleased || !errors.Is(out.Sweep.Err, sweep.ErrNotProved) || !e.quar.Held(cuid) || e.record(run.Key).State != runrecord.Ended || !out.Release.Archived || out.Release.Proved {
+	if !out.Acknowledged || out.UIDReleased || !errors.Is(out.Sweep.Err, sweep.ErrNotProved) || !e.quar.Held(cuid) || e.record(run.Key).State != runrecord.Ended || !out.Release.WorkProductExportSatisfied || out.Release.Proved {
 		t.Fatalf("%+v held=%v", out, e.quar.Held(cuid))
 	}
 	if len(e.killer.UIDs()) != e.cfg.SweepBudget.Attempts {
@@ -552,7 +571,7 @@ func endBody(t *testing.T, id, runID string) []byte {
 // input released under a dead launcher is ended then swept; ending is
 // retried with the stored exact request; ended is never adopted; a bound
 // record whose recorded launcher is alive is owned and left alone. Release
-// gate: the swept uids with archival evidence are released, the one without
+// gate: the swept uids with export evidence are released, the one without
 // stays quarantined although its end was acknowledged and its child killed.
 func TestRestartTable(t *testing.T) {
 	e := newEnv(t)
@@ -614,12 +633,12 @@ func TestRestartTable(t *testing.T) {
 	must(t, err)
 	_, err = e.store.Update("ended", func(r *runrecord.Record) error { r.State = runrecord.Ended; r.EndAcknowledged = true; return nil })
 	must(t, err)
-	must(t, e.store.Create(mk("noarchive", 2008, dead)))
-	_, err = e.store.Update("noarchive", bound)
+	must(t, e.store.Create(mk("noexport", 2008, dead)))
+	_, err = e.store.Update("noexport", bound)
 	must(t, err)
-	_, err = e.store.Update("noarchive", childOf(800, 2008))
+	_, err = e.store.Update("noexport", childOf(800, 2008))
 	must(t, err)
-	_, err = e.store.Update("noarchive", released)
+	_, err = e.store.Update("noexport", released)
 	must(t, err)
 	must(t, e.store.Create(mk("owned", 2007, &self)))
 	_, err = e.store.Update("owned", bound)
@@ -630,7 +649,7 @@ func TestRestartTable(t *testing.T) {
 	must(t, err)
 
 	for _, k := range []string{"nochild", "spawned", "orphan", "ending"} {
-		e.archival[k] = true
+		e.exportEvidence[k] = sweep.Exported
 	}
 	e.reopen()
 	l := e.build()
@@ -642,7 +661,7 @@ func TestRestartTable(t *testing.T) {
 	want := map[string]runrecord.RestartAction{
 		"binding": runrecord.ActionHold, "nochild": runrecord.ActionEndAndKill, "spawned": runrecord.ActionEndAndKill,
 		"orphan": runrecord.ActionEndThenSweep, "ending": runrecord.ActionRetryEnd, "ended": runrecord.ActionNeverAdopt, "owned": runrecord.ActionOwned,
-		"noarchive": runrecord.ActionEndThenSweep,
+		"noexport": runrecord.ActionEndThenSweep,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("reports %+v", reports)
@@ -652,7 +671,7 @@ func TestRestartTable(t *testing.T) {
 			t.Fatalf("%s: action %s want %s (err %v)", k, got[k].Action, a, got[k].Err)
 		}
 	}
-	states := map[string]runrecord.State{"binding": runrecord.Binding, "nochild": runrecord.Ended, "spawned": runrecord.Ended, "orphan": runrecord.Ended, "ending": runrecord.Ended, "ended": runrecord.Ended, "owned": runrecord.Bound, "noarchive": runrecord.Ended}
+	states := map[string]runrecord.State{"binding": runrecord.Binding, "nochild": runrecord.Ended, "spawned": runrecord.Ended, "orphan": runrecord.Ended, "ending": runrecord.Ended, "ended": runrecord.Ended, "owned": runrecord.Bound, "noexport": runrecord.Ended}
 	for k, s := range states {
 		if rec := e.record(k); rec.State != s || !e.store.Fenced(k) {
 			t.Fatalf("%s: state %s want %s fenced=%v", k, rec.State, s, e.store.Fenced(k))
@@ -674,7 +693,7 @@ func TestRestartTable(t *testing.T) {
 			endingBytes = raw
 		}
 	}
-	for _, run := range []string{"run-nochild", "run-spawned", "run-orphan", "run-ending", "run-noarchive"} {
+	for _, run := range []string{"run-nochild", "run-spawned", "run-orphan", "run-ending", "run-noexport"} {
 		if !endIDs[run] {
 			t.Fatalf("no end for %s: %v", run, endIDs)
 		}
@@ -701,7 +720,7 @@ func TestRestartTable(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(e.proc.Root, "700")); err != nil {
 		t.Fatal("owned run's child was killed")
 	}
-	// 2008 ended with a zero-process proof but without archival: quarantined.
+	// 2008 ended with a zero-process proof but without export: quarantined.
 	for uid, held := range map[uint32]bool{2001: true, 2002: false, 2003: false, 2004: false, 2005: false, 2006: true, 2007: true, 2008: true} {
 		if e.quar.Held(uid) != held {
 			t.Fatalf("uid %d held=%v want %v", uid, e.quar.Held(uid), held)
@@ -760,7 +779,7 @@ func TestChildRunGates(t *testing.T) {
 	}
 	_, body, err := fakes.ParseBind(binds[1])
 	must(t, err)
-	if body.ParentRun != parent.RunID || body.Origin != nil || body.InputPrincipal != "input-2" {
+	if body.ParentRun != parent.RunID || body.Origin != nil || body.InputPrincipal != principal("input-2") {
 		t.Fatalf("child bind %+v", body)
 	}
 	must(t, parent.Spawn(e.spawnChild(777)))
@@ -823,10 +842,9 @@ func TestSourceRefusalsNoKeymaker(t *testing.T) {
 }
 
 // Claim (seams refuse by name, never fall back): with the Keymaker codec
-// unpinned the bind is refused before any frame is sent and the record is
-// refused rather than HELD; with the sweep helper unpinned an acknowledged
+// unpinned local encoding refuses before any frame or record; with the sweep helper unpinned an acknowledged
 // end leaves the uid quarantined; with no Keymaker dialer the launch fails
-// with ErrKeymakerUnavailable after Source validated and before any record.
+// with run_bind_unavailable after Source validated and before any record.
 func TestUnpinnedSeams(t *testing.T) {
 	e := newEnv(t)
 	e.deps.KeymakerWire = nil
@@ -835,7 +853,7 @@ func TestUnpinnedSeams(t *testing.T) {
 	if !codes.IsUnpinned(err) || len(e.km.Binds()) != 0 {
 		t.Fatalf("unpinned wire: %v binds=%d", err, len(e.km.Binds()))
 	}
-	if keys := e.store.Keys(); len(keys) != 1 || e.record(keys[0]).State != runrecord.Refused {
+	if keys := e.store.Keys(); len(keys) != 0 {
 		t.Fatalf("record after unpinned wire: %v", keys)
 	}
 	e = newEnv(t)
@@ -850,7 +868,7 @@ func TestUnpinnedSeams(t *testing.T) {
 	e.deps.Keymaker = nil
 	l = e.build()
 	_, err = l.Begin(context.Background(), "input-1")
-	if !errors.Is(err, launcher.ErrKeymakerUnavailable) || len(e.store.Keys()) != 0 {
+	if !codes.Is(err, codes.BindUnavailable) || len(e.store.Keys()) != 0 {
 		t.Fatalf("no dialer: %v", err)
 	}
 	if _, _, validates, _ := e.src.Counts(); validates != 1 {

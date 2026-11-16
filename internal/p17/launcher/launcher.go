@@ -12,7 +12,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"strconv"
+
+	"github.com/relux-works/a2a-swarm/runorigin"
 	"sync"
 	"time"
 
@@ -52,12 +56,12 @@ type Deps struct {
 	Incarnations incarnation.Reader
 	Killer       sweep.Killer
 	Quarantine   *sweep.Quarantine
-	// Archival and OperatorRelease are the two R_i release seams (book ch. 07,
+	// WorkProductExport and OperatorRelease are the R_i release seams (book ch. 07,
 	// Core G1). Nil is the refusing default; they are installed into the
 	// Quarantine gate when it has none.
-	Archival        sweep.Archival
-	OperatorRelease sweep.OperatorRelease
-	Nonce           func() (string, error)
+	WorkProductExport sweep.WorkProductExport
+	OperatorRelease   sweep.OperatorRelease
+	Nonce             func() (string, error)
 }
 
 // Launcher is L.
@@ -73,10 +77,6 @@ var (
 	ErrNotBound = errors.New("launcher: run record is not durably bound")
 	// ErrFenced refuses input on a fenced run.
 	ErrFenced = errors.New("launcher: run is fenced")
-	// ErrKeymakerUnavailable reports a Keymaker connection failure before any
-	// request was sent. r2.6 assigns no code to this case; it is not UNKNOWN,
-	// because nothing was sent, and it is reported as its own typed error.
-	ErrKeymakerUnavailable = errors.New("launcher: keymaker connection unavailable before bind")
 	// ErrParent refuses a child run whose parent record is not live and bound.
 	ErrParent = errors.New("launcher: parent run is not a live bound record of this launcher")
 )
@@ -124,8 +124,8 @@ func New(cfg Config, d Deps) (*Launcher, error) {
 	if d.Killer == nil {
 		d.Killer = sweep.UnpinnedKiller{}
 	}
-	if d.Archival == nil {
-		d.Archival = sweep.UnpinnedArchival{}
+	if d.WorkProductExport == nil {
+		d.WorkProductExport = sweep.UnpinnedWorkProductExport{}
 	}
 	if d.OperatorRelease == nil {
 		d.OperatorRelease = sweep.UnpinnedOperatorRelease{}
@@ -133,8 +133,8 @@ func New(cfg Config, d Deps) (*Launcher, error) {
 	if d.Quarantine == nil {
 		d.Quarantine = &sweep.Quarantine{}
 	}
-	if d.Quarantine.Gate.Archival == nil {
-		d.Quarantine.Gate.Archival = d.Archival
+	if d.Quarantine.Gate.WorkProductExport == nil {
+		d.Quarantine.Gate.WorkProductExport = d.WorkProductExport
 	}
 	if d.Quarantine.Gate.Operator == nil {
 		d.Quarantine.Gate.Operator = d.OperatorRelease
@@ -172,7 +172,7 @@ func (l *Launcher) nonce() (string, error) {
 
 // Begin runs H0, H1 and H2 for a root run and returns a bound run. On every
 // refusal nothing is launched; a HELD bind leaves the record in binding.
-func (l *Launcher) Begin(ctx context.Context, inputPrincipal string) (*Run, error) {
+func (l *Launcher) Begin(ctx context.Context, inputPrincipal keymaker.Principal) (*Run, error) {
 	return l.begin(ctx, inputPrincipal, nil)
 }
 
@@ -180,7 +180,7 @@ func (l *Launcher) Begin(ctx context.Context, inputPrincipal string) (*Run, erro
 // parent_run comes from this launcher's live parent record, the origin is
 // null and Keymaker inherits the immutable origin. There is no parameter by
 // which an agent could supply parent_run.
-func (l *Launcher) BeginChild(ctx context.Context, parent *Run, inputPrincipal string) (*Run, error) {
+func (l *Launcher) BeginChild(ctx context.Context, parent *Run, inputPrincipal keymaker.Principal) (*Run, error) {
 	if parent == nil || parent.l != l {
 		return nil, ErrParent
 	}
@@ -191,11 +191,11 @@ func (l *Launcher) BeginChild(ctx context.Context, parent *Run, inputPrincipal s
 	return l.begin(ctx, inputPrincipal, rec)
 }
 
-func (l *Launcher) begin(ctx context.Context, inputPrincipal string, parent *runrecord.Record) (*Run, error) {
+func (l *Launcher) begin(ctx context.Context, inputPrincipal keymaker.Principal, parent *runrecord.Record) (*Run, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if inputPrincipal == "" {
+	if inputPrincipal.UID == 0 || inputPrincipal.Generation == "" {
 		return nil, errors.New("launcher: input principal required")
 	}
 	// H0 before any contact.
@@ -226,7 +226,15 @@ func (l *Launcher) begin(ctx context.Context, inputPrincipal string, parent *run
 			if err != nil {
 				return nil, err
 			}
-			prepared, err := l.d.Source.Prepare(ctx, nonce)
+			// Source's numeric generation is a strict subset of Keymaker's opaque
+			// generation. Never silently coerce or default a different principal.
+			generation, gerr := strconv.ParseUint(inputPrincipal.Generation, 10, 64)
+			if gerr != nil || generation == 0 || strconv.FormatUint(generation, 10) != inputPrincipal.Generation {
+				return nil, codes.Refuse(codes.OriginRefused, "Source input generation", gerr)
+			}
+			src := *l.d.Source
+			src.InputPrincipal = runorigin.Principal{UID: inputPrincipal.UID, Generation: generation}
+			prepared, err := src.Prepare(ctx, nonce)
 			if err != nil {
 				return nil, err
 			}
@@ -250,13 +258,32 @@ func (l *Launcher) begin(ctx context.Context, inputPrincipal string, parent *run
 	}
 	// H2 step 4: one fresh direct Keymaker connection, then the durable record.
 	if l.d.Keymaker == nil {
-		return nil, errors.Join(ErrKeymakerUnavailable, errors.New("launcher: no keymaker dialer"))
+		return nil, codes.Refuse(codes.BindUnavailable, "no keymaker dialer", nil)
 	}
 	km, err := keymaker.Open(ctx, l.d.Keymaker, l.d.KeymakerWire, l.cfg.RequestTimeout)
 	if err != nil {
-		return nil, errors.Join(ErrKeymakerUnavailable, err)
+		return nil, codes.Refuse(codes.BindUnavailable, "keymaker connect", err)
 	}
 	bindID, err := l.nonce()
+	if err != nil {
+		_ = km.Close()
+		return nil, err
+	}
+	registration, err := strconv.ParseUint(l.cfg.Station, 10, 64)
+	if err != nil || registration == 0 || strconv.FormatUint(registration, 10) != l.cfg.Station {
+		_ = km.Close()
+		return nil, errors.New("launcher: station registration must be a canonical positive integer")
+	}
+	if validated != nil {
+		if got, ok := validated.Bindings["identity_registration_number"]; ok && got != l.cfg.Station {
+			_ = km.Close()
+			return nil, codes.Refuse(codes.OriginRefused, "Source registration differs from station", nil)
+		}
+	}
+	principalJSON, err := json.Marshal(struct {
+		UID        uint32 `json:"uid"`
+		Generation string `json:"generation"`
+	}{inputPrincipal.UID, inputPrincipal.Generation})
 	if err != nil {
 		_ = km.Close()
 		return nil, err
@@ -269,13 +296,13 @@ func (l *Launcher) begin(ctx context.Context, inputPrincipal string, parent *run
 		LauncherUID:         l.cfg.LauncherUID,
 		LauncherGeneration:  gen,
 		StationRegistration: l.cfg.Station,
-		InputPrincipal:      inputPrincipal,
+		InputPrincipal:      string(principalJSON),
 		LaunchNonce:         nonce,
 		BindRequestID:       bindID,
 		ChildUID:            dec.ChildUID,
 		Launcher:            &self,
 	}
-	req := keymaker.BindRequest{IdentityRegistrationNumber: l.cfg.Station, InputPrincipal: inputPrincipal}
+	req := keymaker.BindRequest{IdentityRegistrationNumber: registration, InputPrincipal: inputPrincipal}
 	if parent == nil {
 		rec.Origin = append([]byte(nil), validated.Origin...)
 		rec.SourceIncarnation = validated.SourceIncarnation
@@ -285,6 +312,11 @@ func (l *Launcher) begin(ctx context.Context, inputPrincipal string, parent *run
 		rec.Origin = []byte("null")
 		rec.ParentRun = parent.RunID
 		req.ParentRun = parent.RunID
+	}
+	// Deterministic local encoding can refuse before any record or mutation.
+	if _, err := km.EncodeBind(bindID, req); err != nil {
+		_ = km.Close()
+		return nil, err
 	}
 	if err := l.d.Records.Create(rec); err != nil {
 		_ = km.Close()
@@ -299,18 +331,10 @@ func (l *Launcher) begin(ctx context.Context, inputPrincipal string, parent *run
 				return nil, errors.Join(err, uerr)
 			}
 			// Nothing was bound or spawned, but the uid still passes the release
-			// gate: proof plus an operator release, since no end and no archival
+			// gate: proof plus an operator release, since no end and no export
 			// can exist for a run that never ran.
 			_, _ = l.d.Quarantine.Release(nonce, dec.ChildUID, false, sweep.Enumerate(l.cfg.ProcRoot, dec.ChildUID))
-			return nil, codes.Refuse(codes.OriginRefused, "keymaker refused bind", err)
-		}
-		if codes.IsUnpinned(err) && km.Requests() == 0 {
-			// Nothing was sent: the seam refused before the request existed.
-			if _, uerr := l.d.Records.Update(nonce, func(r *runrecord.Record) error { r.State = runrecord.Refused; return nil }); uerr != nil {
-				return nil, errors.Join(err, uerr)
-			}
-			_, _ = l.d.Quarantine.Release(nonce, dec.ChildUID, false, sweep.Enumerate(l.cfg.ProcRoot, dec.ChildUID))
-			return nil, err
+			return nil, codes.Refuse(codes.BindRefused, "keymaker refused bind", err)
 		}
 		// HELD or undecodable: the record stays binding.
 		return nil, err
@@ -388,8 +412,8 @@ type EndOutcome struct {
 	TeardownErr error
 	// Sweep is the uid sweep outcome after teardown.
 	Sweep sweep.Outcome
-	// Release is the R_i release gate decision (proof AND archival or
-	// operator release); UIDReleased is its outcome.
+	// Release is proof AND (operator release OR (end ACK AND work-product
+	// export)); UIDReleased is its outcome.
 	Release     sweep.ReleaseDecision
 	UIDReleased bool
 }
@@ -432,7 +456,7 @@ func (r *Run) End(ctx context.Context, childStatus int, childKnown bool, teardow
 		return out, errors.New("launcher: end on a record that is neither bound nor ending")
 	}
 	if r.km != nil && r.km.Live() {
-		_, _, endErr = r.km.End(rec.EndRequestID, keymaker.EndRequest{RunID: rec.RunID})
+		_, _, endErr = r.km.EndExact(rec.EndRequestID, keymaker.EndRequest{RunID: rec.RunID}, rec.EndRequestBody)
 	} else {
 		endErr = codes.Refuse(codes.EndUnknown, "no live assigned connection for end", nil).With("run_id", rec.RunID)
 	}
@@ -480,11 +504,11 @@ func (l *Launcher) RetryEnd(ctx context.Context, key string) (EndOutcome, error)
 	}
 	var endErr error
 	if l.d.Keymaker == nil {
-		endErr = codes.Refuse(codes.EndUnknown, "no keymaker dialer", ErrKeymakerUnavailable)
+		endErr = codes.Refuse(codes.EndUnknown, "no keymaker dialer", nil)
 	} else if km, err := keymaker.Open(ctx, l.d.Keymaker, l.d.KeymakerWire, l.cfg.RequestTimeout); err != nil {
 		endErr = codes.Refuse(codes.EndUnknown, "keymaker connect", err).With("run_id", rec.RunID)
 	} else {
-		_, _, endErr = km.End(rec.EndRequestID, keymaker.EndRequest{RunID: rec.RunID})
+		_, _, endErr = km.EndExact(rec.EndRequestID, keymaker.EndRequest{RunID: rec.RunID}, rec.EndRequestBody)
 		_ = km.Close()
 	}
 	out.Sweep = sweep.Sweep(ctx, l.cfg.ProcRoot, rec.ChildUID, l.d.Killer, l.cfg.SweepBudget)
@@ -583,7 +607,7 @@ func (l *Launcher) endOrphan(ctx context.Context, key string, rec *runrecord.Rec
 	if err != nil {
 		return out, err
 	}
-	body, err := l.d.KeymakerWire.Encode(keymaker.Request{ID: endID, Method: keymaker.MethodEnd, End: &keymaker.EndRequest{RunID: rec.RunID}})
+	body, err := l.d.KeymakerWire.Encode(keymaker.Request{ID: endID, TimeoutMS: l.cfg.RequestTimeout.Milliseconds(), Method: keymaker.MethodEnd, End: &keymaker.EndRequest{RunID: rec.RunID}})
 	if err != nil {
 		return out, err
 	}

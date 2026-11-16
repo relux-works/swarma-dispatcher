@@ -1,0 +1,4 @@
+github.com/relux-works/a2a-swarm v0.1.2-0.20261115214635-f9d465ba4604 h1:efDdjbuyjEoy8OL6g8C82nMAjALDzvyynO1OyOA3yHQ=
+github.com/relux-works/a2a-swarm v0.1.2-0.20261115214635-f9d465ba4604/go.mod h1:yq8wi6p2OpgW9KaHhPTkKZo8tggL9tMYQCShq4+iqfM=
+github.com/relux-works/swarma-keymaker v0.1.1-0.20261115215735-e5d8f2484f8c h1:FMrePU6JAIUM23wa4TgjuqTFMCzjMy2iQv50lzX7Aqc=
+github.com/relux-works/swarma-keymaker v0.1.1-0.20261115215735-e5d8f2484f8c/go.mod h1:bDZMCcQmZU0O50kW5y/jmhh3qG9h1kqQ+Cb6bSk47ys=

@@ -30,7 +30,7 @@ func open(t *testing.T, script *fakes.KeymakerScript) (*keymaker.Conn, *fakes.Ke
 	return c, d
 }
 
-var bindReq = keymaker.BindRequest{IdentityRegistrationNumber: "station-1", InputPrincipal: "input-1", Origin: fakes.ValidOrigin()}
+var bindReq = keymaker.BindRequest{IdentityRegistrationNumber: 1, InputPrincipal: keymaker.Principal{UID: 22001, Generation: "input-generation-1"}, Origin: fakes.ValidOrigin()}
 
 // Claim (D4): the per-request timeout must be 1..2000 ms; 0, 2001 ms and a
 // sub-millisecond value refuse before dialing, 1 ms and 2000 ms are accepted.
@@ -68,7 +68,7 @@ func TestBindHappy(t *testing.T) {
 		t.Fatalf("binds %d", len(binds))
 	}
 	id, body, err := fakes.ParseBind(binds[0])
-	if err != nil || id != "req-1" || !bytes.Equal(body.Origin, fakes.ValidOrigin()) || body.ParentRun != "" || body.IdentityRegistrationNumber != "station-1" {
+	if err != nil || id != "req-1" || !bytes.Equal(body.Origin, fakes.ValidOrigin()) || body.ParentRun != "" || body.IdentityRegistrationNumber != 1 {
 		t.Fatalf("parsed %q %+v %v", id, body, err)
 	}
 }
@@ -181,17 +181,9 @@ func TestUnpinnedWire(t *testing.T) {
 	}
 }
 
-// Claim (pin B corpus): when the pinned vector corpus is supplied through
-// SWARMA_KEYMAKER_VECTORS it has exactly the pinned size and SHA-256; without
-// it this test is UNRUN, reported as a skip, never as a pass. Replaying the
-// vectors through the client needs the pinned codec, which this build does
-// not vendor (see keymaker.Pin).
+// Claim: the byte copy of pin B's corpus always has the pinned size and SHA-256.
 func TestPinnedVectorsDigest(t *testing.T) {
-	path := os.Getenv("SWARMA_KEYMAKER_VECTORS")
-	if path == "" {
-		t.Skipf("pinned vectors UNRUN: set SWARMA_KEYMAKER_VECTORS to %s of %s", keymaker.VectorsPath, keymaker.Pin)
-	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile("testdata/vectors.json")
 	if err != nil {
 		t.Fatal(err)
 	}

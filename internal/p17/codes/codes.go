@@ -1,7 +1,7 @@
 // Package codes holds the closed P17 launcher code set, its exit classes and
 // the typed refusal carried by every P17 client in this repository.
 //
-// The code set is closed: exactly five codes, three classes, three exit
+// The code set is closed: exactly seven codes, three classes, three exit
 // statuses. Nothing here maps an untyped error to a class; an error that is
 // neither a Refusal nor a SeamUnpinned cannot be turned into an exit status
 // and Exit reports that instead of guessing.
@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-// Code is one of the five P17 launcher codes.
+// Code is one of the seven P17 launcher codes.
 type Code string
 
 const (
@@ -27,6 +27,10 @@ const (
 	// BindUnknown is a lost bind response after the assigned connection is
 	// gone; the run is HELD.
 	BindUnknown Code = "run_bind_unknown"
+	// BindUnavailable is a pre-bind connection failure, with no run record.
+	BindUnavailable Code = "run_bind_unavailable"
+	// BindRefused is an exact, definite bind refusal on the live connection.
+	BindRefused Code = "run_bind_refused"
 	// EndUnknown is an end that was not acknowledged; the run stays fenced in
 	// state ending.
 	EndUnknown Code = "run_end_unknown"
@@ -54,6 +58,8 @@ var classes = map[Code]Class{
 	OriginRefused:        Definite,
 	OriginUnavailable:    Retryable,
 	BindUnknown:          Unknown,
+	BindUnavailable:      Retryable,
+	BindRefused:          Definite,
 	EndUnknown:           Unknown,
 	IsolationUnqualified: Definite,
 }

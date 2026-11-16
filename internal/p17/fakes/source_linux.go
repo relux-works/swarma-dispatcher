@@ -126,7 +126,7 @@ func (SourceWire) Validate(c net.Conn, req source.ValidateRequest) (source.Valid
 
 // ValidOrigin is a well-formed six-member admission origin.
 func ValidOrigin() []byte {
-	return []byte(`{"admission_id":"` + hexID('a') + `","session_id":"` + hexID('b') + `","event_id":"` + hexID('c') + `","issuer":"source","mode":"enforcing","command_id":""}`)
+	return []byte(`{"event_id":"` + hexID('a') + `","grant_id":"` + hexID('b') + `","tip_hash":"` + hexID('c') + `","kind":"admission","mode":"enforcing","command_id":""}`)
 }
 
 func hexID(c byte) string {
@@ -287,7 +287,7 @@ func (s *SourceScript) Serve(c net.Conn) {
 	case "bad-origin":
 		v.Origin = json.RawMessage(`{"mode":"enforcing","command_id":""}`)
 	case "matrix-origin":
-		v.Origin = json.RawMessage(`{"admission_id":"$` + hexID('a')[1:] + `","session_id":"` + hexID('b') + `","event_id":"` + hexID('c') + `","issuer":"source","mode":"enforcing","command_id":""}`)
+		v.Origin = json.RawMessage(`{"event_id":"$` + hexID('a')[1:] + `","grant_id":"` + hexID('b') + `","tip_hash":"` + hexID('c') + `","kind":"admission","mode":"enforcing","command_id":""}`)
 	}
 	_ = sendSource(c, sourceMsg{Validated: v})
 	// Hold until the client closes, so a repeated validate sees a live peer.

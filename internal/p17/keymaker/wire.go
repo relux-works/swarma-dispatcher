@@ -1,12 +1,9 @@
 // Package keymaker is the launcher-side Keymaker lifecycle client of the P17
 // hook interface: j7_run_bind (H2) and j7_run_end (H5, H6).
 //
-// The native codec (pin B, module swarma-keymaker, package j7lifecycle) is a
-// seam. This build does not vendor that codec, so the default Wire refuses by
-// name. The codec is pure in any case: it provides no peer authentication, no
-// generation check and no authority. Those duties, plus the per-request
-// timeout, the same-connection retry rule, the HELD outcome and the exact-end
-// check, live in this client.
+// Pinned explicitly selects the native j7lifecycle codec. The zero-value
+// client still selects Unpinned and refuses. The codec grants no authority:
+// peer/current-generation authentication remains the dialer's responsibility.
 package keymaker
 
 import (
@@ -14,13 +11,13 @@ import (
 	"io"
 
 	"github.com/relux-works/swarma-dispatcher/internal/p17/codes"
+	"github.com/relux-works/swarma-keymaker/j7lifecycle"
 )
 
 // Pin names the exact Keymaker lifecycle codec this client waits for.
 const Pin = "github.com/relux-works/swarma-keymaker j7lifecycle at e5d8f2484f8c17f76fceedeed908b2587e9b4d2e"
 
-// The pinned wire-v1 vector corpus the client tests must replay once the
-// codec is vendored. See TestPinnedVectorsDigest.
+// The pinned wire-v1 vector corpus replayed by the client tests.
 const (
 	VectorsPath   = "j7lifecycle/testdata/wire-v1/vectors.json"
 	VectorsSize   = 23676
@@ -38,9 +35,11 @@ const (
 // BindRequest is j7_run_bind({identity_registration_number, input_principal,
 // origin, parent_run}). Origin is the admission origin exactly as validate
 // returned it; nil means JSON null, which only a child run sends.
+type Principal = j7lifecycle.Principal
+
 type BindRequest struct {
-	IdentityRegistrationNumber string
-	InputPrincipal             string
+	IdentityRegistrationNumber uint64
+	InputPrincipal             Principal
 	Origin                     []byte
 	ParentRun                  string
 }
@@ -64,21 +63,25 @@ type EndResult struct {
 
 // Request is one native request: its ID, method and exactly one body.
 type Request struct {
-	ID     string
-	Method Method
-	Bind   *BindRequest
-	End    *EndRequest
+	ID        string
+	TimeoutMS int64
+	Method    Method
+	Bind      *BindRequest
+	End       *EndRequest
 }
 
-// Response is one decoded native response: the request ID it answers and
-// its opaque result body.
+// Response is decoded against the locally outstanding request, never context
+// inferred from the peer. Refused certifies membership in the pinned no-effect
+// set as well as exact non-null ID correlation; it is not a generic error flag.
 type Response struct {
-	ID   string
-	Body []byte
+	ID      string
+	Bind    *BindResult
+	End     *EndResult
+	Refused bool
 }
 
-// ErrRefused is an explicit, exact Keymaker refusal of a request. It is a
-// definite outcome: the run was not bound, or the end was refused.
+// ErrRefused certifies a correlated refusal in the pinned no-effect set.
+// An arbitrary native refusal, even nonretryable, must never carry it.
 var ErrRefused = errors.New("keymaker: refused")
 
 // Wire is the codec seam. Encode is deterministic for a given request so that
@@ -87,9 +90,9 @@ type Wire interface {
 	Encode(req Request) ([]byte, error)
 	WriteFrame(w io.Writer, b []byte) error
 	ReadFrame(r io.Reader) ([]byte, error)
-	DecodeResponse(b []byte) (Response, error)
-	ParseBindResult(body []byte) (BindResult, error)
-	ParseEndResult(body []byte) (EndResult, error)
+	DecodeResponse(expected Request, b []byte) (Response, error)
+	// DecodeEndRequest reads the launcher's own durable retry intent, not peer data.
+	DecodeEndRequest(b []byte) (Request, error)
 }
 
 // Unpinned is the default Wire; every method refuses by name.
@@ -97,9 +100,8 @@ type Unpinned struct{}
 
 func unpinned() error { return codes.Unpinned("keymaker wire codec", Pin) }
 
-func (Unpinned) Encode(Request) ([]byte, error)             { return nil, unpinned() }
-func (Unpinned) WriteFrame(io.Writer, []byte) error         { return unpinned() }
-func (Unpinned) ReadFrame(io.Reader) ([]byte, error)        { return nil, unpinned() }
-func (Unpinned) DecodeResponse([]byte) (Response, error)    { return Response{}, unpinned() }
-func (Unpinned) ParseBindResult([]byte) (BindResult, error) { return BindResult{}, unpinned() }
-func (Unpinned) ParseEndResult([]byte) (EndResult, error)   { return EndResult{}, unpinned() }
+func (Unpinned) Encode(Request) ([]byte, error)                   { return nil, unpinned() }
+func (Unpinned) WriteFrame(io.Writer, []byte) error               { return unpinned() }
+func (Unpinned) ReadFrame(io.Reader) ([]byte, error)              { return nil, unpinned() }
+func (Unpinned) DecodeResponse(Request, []byte) (Response, error) { return Response{}, unpinned() }
+func (Unpinned) DecodeEndRequest([]byte) (Request, error)         { return Request{}, unpinned() }

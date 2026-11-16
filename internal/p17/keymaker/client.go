@@ -41,6 +41,7 @@ type Conn struct {
 	gone    bool
 	sealed  bool
 	closed  bool
+	started bool
 	// Requests counts frames written; tests use it to prove retry identity.
 	requests int
 }
@@ -99,6 +100,27 @@ func (c *Conn) closeLocked() error {
 	return c.c.Close()
 }
 
+// startLocked negotiates once, after the caller has persisted binding/ending.
+// Thus Open fails only before any request bytes, as required by H2 step 4.
+func (c *Conn) startLocked() error {
+	if c.started {
+		return nil
+	}
+	c.started = true
+	if c.gone || c.closed {
+		return ErrConnectionGone
+	}
+	if h, ok := c.wire.(interface {
+		Hello(net.Conn, time.Duration) error
+	}); ok {
+		if err := h.Hello(c.c, c.timeout); err != nil {
+			c.gone = true
+			return err
+		}
+	}
+	return nil
+}
+
 func isTimeout(err error) bool {
 	var ne net.Error
 	return errors.As(err, &ne) && ne.Timeout()
@@ -107,15 +129,19 @@ func isTimeout(err error) bool {
 // exchange writes b once and waits for exactly one response with its own
 // timeout. A timeout leaves the connection assigned and returns ErrLost;
 // any other failure, including EOF, marks the connection gone.
-func (c *Conn) exchange(id string, b []byte) (Response, error) {
+func (c *Conn) exchange(req Request, b []byte) (Response, error) {
 	if c.gone || c.closed {
 		return Response{}, ErrConnectionGone
 	}
 	if c.sealed {
 		return Response{}, ErrSealed
 	}
+	budget := c.timeout
+	if req.TimeoutMS > 0 && req.TimeoutMS <= 2000 && time.Duration(req.TimeoutMS)*time.Millisecond < budget {
+		budget = time.Duration(req.TimeoutMS) * time.Millisecond
+	}
 	now := time.Now()
-	if err := c.c.SetDeadline(now.Add(c.timeout)); err != nil {
+	if err := c.c.SetDeadline(now.Add(budget)); err != nil {
 		c.gone = true
 		return Response{}, errors.Join(ErrConnectionGone, err)
 	}
@@ -126,18 +152,18 @@ func (c *Conn) exchange(id string, b []byte) (Response, error) {
 	}
 	fr, err := c.wire.ReadFrame(c.c)
 	if err != nil {
-		if isTimeout(err) {
+		if isTimeout(err) && !errors.Is(err, ErrConnectionGone) {
 			return Response{}, errors.Join(ErrLost, err)
 		}
 		c.gone = true
 		return Response{}, errors.Join(ErrConnectionGone, err)
 	}
-	resp, err := c.wire.DecodeResponse(fr)
+	resp, err := c.wire.DecodeResponse(req, fr)
 	if err != nil {
 		c.gone = true
 		return Response{}, errors.Join(ErrConnectionGone, err)
 	}
-	if resp.ID != id {
+	if resp.ID != req.ID {
 		c.gone = true
 		return Response{}, errors.Join(ErrConnectionGone, errors.New("keymaker: response id mismatch"))
 	}
@@ -147,13 +173,13 @@ func (c *Conn) exchange(id string, b []byte) (Response, error) {
 // EncodeBind returns the exact bytes Bind would send, for the durable record
 // written before the request. Encode is deterministic.
 func (c *Conn) EncodeBind(id string, req BindRequest) ([]byte, error) {
-	return c.wire.Encode(Request{ID: id, Method: MethodBind, Bind: &req})
+	return c.wire.Encode(Request{ID: id, TimeoutMS: c.timeout.Milliseconds(), Method: MethodBind, Bind: &req})
 }
 
 // EncodeEnd returns the exact bytes End would send, for the durable record
 // written before the request.
 func (c *Conn) EncodeEnd(id string, req EndRequest) ([]byte, error) {
-	return c.wire.Encode(Request{ID: id, Method: MethodEnd, End: &req})
+	return c.wire.Encode(Request{ID: id, TimeoutMS: c.timeout.Milliseconds(), Method: MethodEnd, End: &req})
 }
 
 // Bind sends j7_run_bind with the given request ID. A lost response is
@@ -170,27 +196,26 @@ func (c *Conn) Bind(id string, req BindRequest, attempts int) (BindResult, []byt
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	b, err := c.wire.Encode(Request{ID: id, Method: MethodBind, Bind: &req})
+	request := Request{ID: id, TimeoutMS: c.timeout.Milliseconds(), Method: MethodBind, Bind: &req}
+	b, err := c.wire.Encode(request)
 	if err != nil {
 		return BindResult{}, nil, err
 	}
+	if err := c.startLocked(); err != nil {
+		return BindResult{}, b, codes.Refuse(codes.BindUnknown, "native hello failed; run HELD", err)
+	}
 	var last error
 	for i := 0; i < attempts; i++ {
-		resp, err := c.exchange(id, b)
+		resp, err := c.exchange(request, b)
 		if err == nil {
-			res, perr := c.wire.ParseBindResult(resp.Body)
-			if perr != nil {
-				if errors.Is(perr, ErrRefused) {
-					return BindResult{}, b, perr
-				}
-				c.gone = true
-				return BindResult{}, b, codes.Refuse(codes.BindUnknown, "bind result undecodable; run HELD", perr).With("request_id", id)
+			if resp.Refused {
+				return BindResult{}, b, codes.Refuse(codes.BindRefused, "correlated no-effect bind refusal", ErrRefused)
 			}
-			if res.RunID == "" {
+			if resp.Bind == nil || resp.Bind.RunID == "" {
 				c.gone = true
 				return BindResult{}, b, codes.Refuse(codes.BindUnknown, "bind result without run_id; run HELD", nil).With("request_id", id)
 			}
-			return res, b, nil
+			return *resp.Bind, b, nil
 		}
 		last = err
 		if errors.Is(err, ErrLost) {
@@ -210,22 +235,43 @@ func (c *Conn) End(id string, req EndRequest) (EndResult, []byte, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	b, err := c.wire.Encode(Request{ID: id, Method: MethodEnd, End: &req})
+	request := Request{ID: id, TimeoutMS: c.timeout.Milliseconds(), Method: MethodEnd, End: &req}
+	b, err := c.wire.Encode(request)
 	if err != nil {
 		return EndResult{}, nil, err
 	}
-	unknown := func(op string, cause error) (EndResult, []byte, error) {
-		return EndResult{}, b, codes.Refuse(codes.EndUnknown, op, cause).With("request_id", id).With("run_id", req.RunID)
+	return c.endLocked(request, b)
+}
+
+// EndExact replays only the durable end intent, byte for byte, including its
+// original timeout. Fresh connection configuration cannot rewrite that intent.
+func (c *Conn) EndExact(id string, req EndRequest, body []byte) (EndResult, []byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	body = append([]byte(nil), body...)
+	request, err := c.wire.DecodeEndRequest(body)
+	if err != nil || request.ID != id || request.Method != MethodEnd || request.End == nil || request.End.RunID != req.RunID {
+		return EndResult{}, body, codes.Refuse(codes.EndUnknown, "durable end intent differs or is invalid", err).With("request_id", id).With("run_id", req.RunID)
 	}
-	resp, err := c.exchange(id, b)
+	return c.endLocked(request, body)
+}
+
+func (c *Conn) endLocked(request Request, b []byte) (EndResult, []byte, error) {
+	unknown := func(op string, cause error) (EndResult, []byte, error) {
+		return EndResult{}, b, codes.Refuse(codes.EndUnknown, op, cause).With("request_id", request.ID).With("run_id", request.End.RunID)
+	}
+	if err := c.startLocked(); err != nil {
+		return unknown("native hello failed before end", err)
+	}
+	resp, err := c.exchange(request, b)
 	if err != nil {
 		return unknown("end not acknowledged", err)
 	}
-	res, err := c.wire.ParseEndResult(resp.Body)
-	if err != nil {
-		return unknown("end result undecodable or refused", err)
+	if resp.Refused || resp.End == nil {
+		return unknown("end result refused or missing", ErrRefused)
 	}
-	if !res.Ended || res.RunID != req.RunID {
+	res := *resp.End
+	if !res.Ended || res.RunID != request.End.RunID {
 		return unknown("end result not the exact ended acknowledgement", nil)
 	}
 	c.sealed = true

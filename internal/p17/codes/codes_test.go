@@ -6,13 +6,15 @@ import (
 	"testing"
 )
 
-// Claim (r2.6 Codes table): exactly the five codes are known, each with its
+// Claim (r2.7 Codes table): exactly the seven codes are known, each with its
 // stated class, and a code outside the table is unknown with no class.
 func TestClosedCodeSet(t *testing.T) {
 	want := map[Code]Class{
 		OriginRefused:        Definite,
 		OriginUnavailable:    Retryable,
 		BindUnknown:          Unknown,
+		BindUnavailable:      Retryable,
+		BindRefused:          Definite,
 		EndUnknown:           Unknown,
 		IsolationUnqualified: Definite,
 	}
@@ -22,8 +24,8 @@ func TestClosedCodeSet(t *testing.T) {
 			t.Fatalf("%s: class=%s ok=%v", c, got, ok)
 		}
 	}
-	if len(classes) != 5 {
-		t.Fatalf("code set size %d, want 5", len(classes))
+	if len(classes) != 7 {
+		t.Fatalf("code set size %d, want 7", len(classes))
 	}
 	// Negative: a plausible-looking code outside the table has no class.
 	if _, ok := Code("run_origin_unknown").Class(); ok || Code("run_origin_unknown").Known() {
@@ -65,7 +67,7 @@ func TestExitEndUnknownNeverChildStatus(t *testing.T) {
 // definite refusal does not borrow the child status, and an untyped error or
 // an unknown-code refusal is ErrUnclassified rather than a guessed status.
 func TestExitClassesDistinct(t *testing.T) {
-	cases := map[Code]int{OriginRefused: 16, IsolationUnqualified: 16, OriginUnavailable: 1, BindUnknown: 17, EndUnknown: 17}
+	cases := map[Code]int{OriginRefused: 16, IsolationUnqualified: 16, OriginUnavailable: 1, BindUnknown: 17, EndUnknown: 17, BindUnavailable: 1, BindRefused: 16}
 	for c, st := range cases {
 		v, err := Exit(Refuse(c, "x", nil), 0, true)
 		if err != nil || v.Status != st {

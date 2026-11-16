@@ -2,7 +2,11 @@ package source
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+
 	"errors"
+	"github.com/relux-works/a2a-swarm/runorigin"
 	"io"
 	"net"
 	"sync"
@@ -34,6 +38,9 @@ type Client struct {
 	Dialer      Dialer
 	Wire        Wire
 	Generations Generations
+	// Event and InputPrincipal select retained event and input, not authority.
+	Event          runorigin.EventRef
+	InputPrincipal runorigin.Principal
 	// Budget caps each Source phase; zero means DefaultBudget. Larger values
 	// are clamped to DefaultBudget.
 	Budget time.Duration
@@ -135,6 +142,7 @@ type Prepared struct {
 	peer     Credential
 	hello    HelloMessage
 	prepared PreparedMessage
+	request  PrepareRequest
 	expected map[string]string
 	consumed bool
 	closed   bool
@@ -228,7 +236,12 @@ func (c *Client) Prepare(ctx context.Context, nonce string) (*Prepared, error) {
 	if hello.Incarnation == "" {
 		return fail(codes.Refuse(codes.OriginRefused, "hello incarnation missing", nil))
 	}
-	prepared, err := w.Prepare(conn, PrepareRequest{LaunchNonce: nonce})
+	var requestID [16]byte
+	if _, err := rand.Read(requestID[:]); err != nil {
+		return fail(classifyH1("request ID", err))
+	}
+	req := PrepareRequest{RequestID: hex.EncodeToString(requestID[:]), LaunchNonce: nonce, Event: c.Event, InputPrincipal: c.InputPrincipal, SourceIncarnation: hello.Incarnation}
+	prepared, err := w.Prepare(conn, req)
 	if err != nil {
 		return fail(classifyH1("prepare", err))
 	}
@@ -250,7 +263,7 @@ func (c *Client) Prepare(ctx context.Context, nonce string) (*Prepared, error) {
 	}
 	expected["source_incarnation"] = hello.Incarnation
 	expected["prepared_id"] = prepared.PreparedID
-	return &Prepared{client: c, conn: conn, peer: peer, hello: hello, prepared: prepared, expected: expected}, nil
+	return &Prepared{client: c, conn: conn, peer: peer, hello: hello, prepared: prepared, request: req, expected: expected}, nil
 }
 
 // Validated is the H2 validate result that the bind request must carry
@@ -285,7 +298,7 @@ func (p *Prepared) Validate(ctx context.Context) (*Validated, error) {
 	if err := p.conn.SetDeadline(p.client.deadline(ctx)); err != nil {
 		return nil, &Restart{Cause: err}
 	}
-	msg, err := p.client.wire().Validate(p.conn, ValidateRequest{PreparedID: p.prepared.PreparedID})
+	msg, err := p.client.wire().Validate(p.conn, ValidateRequest{RequestID: p.request.RequestID, LaunchNonce: p.request.LaunchNonce, PreparedID: p.prepared.PreparedID, SourceIncarnation: p.hello.Incarnation})
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrNotSupported), errors.Is(err, ErrRefused):

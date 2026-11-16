@@ -25,10 +25,10 @@ type kmRequest struct {
 	Body   json.RawMessage `json:"body"`
 }
 type kmBindBody struct {
-	IdentityRegistrationNumber string          `json:"identity_registration_number"`
-	InputPrincipal             string          `json:"input_principal"`
-	Origin                     json.RawMessage `json:"origin"`
-	ParentRun                  string          `json:"parent_run"`
+	IdentityRegistrationNumber uint64             `json:"identity_registration_number"`
+	InputPrincipal             keymaker.Principal `json:"input_principal"`
+	Origin                     json.RawMessage    `json:"origin"`
+	ParentRun                  string             `json:"parent_run"`
 }
 type kmEndBody struct {
 	RunID string `json:"run_id"`
@@ -74,13 +74,39 @@ func (KeymakerWire) Encode(req keymaker.Request) ([]byte, error) {
 }
 func (KeymakerWire) WriteFrame(w io.Writer, b []byte) error { return frame.Write(w, b) }
 func (KeymakerWire) ReadFrame(r io.Reader) ([]byte, error)  { return frame.Read(r) }
-func (KeymakerWire) DecodeResponse(b []byte) (keymaker.Response, error) {
+func (w KeymakerWire) DecodeResponse(expected keymaker.Request, b []byte) (keymaker.Response, error) {
 	var r kmResponse
 	if err := json.Unmarshal(b, &r); err != nil {
 		return keymaker.Response{}, err
 	}
-	return keymaker.Response{ID: r.ID, Body: append([]byte(nil), b...)}, nil
+	out := keymaker.Response{ID: r.ID, Refused: r.Refused != ""}
+	if out.Refused {
+		return out, nil
+	}
+	if expected.Method == keymaker.MethodBind {
+		res, err := w.ParseBindResult(b)
+		out.Bind = &res
+		return out, err
+	}
+	res, err := w.ParseEndResult(b)
+	out.End = &res
+	return out, err
 }
+func (KeymakerWire) DecodeEndRequest(b []byte) (keymaker.Request, error) {
+	var r kmRequest
+	if err := json.Unmarshal(b, &r); err != nil {
+		return keymaker.Request{}, err
+	}
+	var body kmEndBody
+	if err := json.Unmarshal(r.Body, &body); err != nil {
+		return keymaker.Request{}, err
+	}
+	if r.Method != string(keymaker.MethodEnd) || r.ID == "" || body.RunID == "" {
+		return keymaker.Request{}, errors.New("fakes: invalid durable end request")
+	}
+	return keymaker.Request{ID: r.ID, Method: keymaker.MethodEnd, End: &keymaker.EndRequest{RunID: body.RunID}}, nil
+}
+
 func (KeymakerWire) ParseBindResult(body []byte) (keymaker.BindResult, error) {
 	var r kmResponse
 	if err := json.Unmarshal(body, &r); err != nil {

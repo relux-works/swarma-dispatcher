@@ -361,28 +361,52 @@ uid and lease quarantine), `hygiene` (the H3 descriptor/argv/env assertion)
 and `launcher` (the composition the M0 launch path calls). `fakes` is test
 support only. No daemon command uses these packages yet.
 
-The Source origin codec (a2a-swarm `runorigin`) and the Keymaker lifecycle
-codec (swarma-keymaker `j7lifecycle`) are seams whose default implementations
-refuse by name with the exact pin they wait for; so do the privilege-drop
-helper (spawn and sweep modes), the authoritative generation reader, and the
-two R_i release seams (work-product archival evidence and operator release).
-A uid leaves quarantine only with the zero-process proof AND either archival
-evidence with an acknowledged end or an explicit operator release; unknown or
-unreadable evidence keeps it quarantined. The clients never substitute a local
-spelling of either wire.
+Explicit `source.Pinned{}` and `keymaker.Pinned{}` adapters use a2a-swarm
+`runorigin` public values and swarma-keymaker `j7lifecycle` public framing and
+codec respectively, at the exact versions in `go.mod`. Nil wires still select
+`Unpinned` and refuse by name. The helper (spawn and sweep), authoritative
+generation reader, work-product export and operator release seams also refuse
+by default. The Source adapter implements its documented closed protocol
+without importing any upstream internal package. The native Keymaker hello is
+sent only after the durable binding/ending record exists. A successful bind
+must become durably bound before input can be released. The no-effect refusal
+table is empty until the pinned Keymaker registry explicitly publishes it:
+correlation and nonretryability alone never make a refusal terminal. All such
+native bind refusals currently remain HELD, exit 17, with no input. Only an
+exact retry on the original assigned connection is permitted, never a second
+bind after a refusal or a fresh-connection bind replay.
+
+A uid leaves quarantine only with the zero-process proof AND (operator release
+OR (acknowledged end AND work-product export)). The export seam reports exactly
+`exported`, explicit `no_working_copy`, or `not_proved`. The first two satisfy
+the export obligation; missing, zero-value, unknown, partial or failed evidence
+is not proved and keeps the uid quarantined. The seam reports evidence only:
+it offers no operation to copy or snapshot a home directory. Home-operation
+requests cannot resolve through this closed, report-only API. Homes are never
+archived; preserving a home is a separate, explicit operator operation outside
+retirement. A qualified export producer must run a fixed program under the agent
+account to export the work product before home removal. This slice neither
+removes homes nor authorizes removal on partial, unknown or failed evidence.
+Operator release never bypasses the zero-process proof.
+
+Source generations are nonzero numeric values; root launcher input generations
+must therefore be canonical positive decimal strings. The native Keymaker
+client itself preserves opaque generation strings. The launcher retains the
+original validated origin bytes; the native codec encodes their exact typed
+values into its canonical frame without changing any origin fact.
 
 ```sh
 go test -v -count=1 -timeout=20m ./internal/p17/...
 go vet ./internal/p17/...
 gofmt -l internal/p17/
-SWARMA_KEYMAKER_VECTORS=/path/to/j7lifecycle/testdata/wire-v1/vectors.json go test -run PinnedVectors ./internal/p17/keymaker/
+go test -run 'PinnedVectors|Corpus|PinnedRefusalPolicy' ./internal/p17/keymaker/
 ```
 
 Tests are hermetic: fake Source and Keymaker servers over socket pairs, a
 fake procfs tree, temporary journal fixtures. Journal-backed tests print an
-explicit skip reason on filesystems other than ext4/XFS; the pinned vector
-digest test is UNRUN unless the corpus path is supplied. Results go to the
-test/CI log. Nothing here qualifies a deployment, a helper or a real Source
+explicit skip reason on filesystems other than ext4/XFS. The pinned corpus is
+an unchanged byte copy under `keymaker/testdata/`, always checked against its
+pinned size and SHA-256; its digest test never skips. Results go to the test/CI log. Nothing here qualifies a deployment, a helper or a real Source
 or Keymaker.
 
 ## Demo tools (not production)
@@ -450,7 +474,10 @@ It adds those `bin` directories to `PATH`, then runs these entrypoints:
   When neither exists, it explicitly reports **spec-only bootstrap**, with
   dispatcher build/vet/formatting/tests
   unrun. Installing Go to run CI tooling does not implement the dispatcher.
-- The root `go.mod` declares Go `1.26.0` and uses only the standard library.
+- The root `go.mod` declares Go `1.26.10`. The P17 clients use the exactly pinned
+  `github.com/relux-works/a2a-swarm/runorigin` and
+  `github.com/relux-works/swarma-keymaker/j7lifecycle` public packages; other code
+  uses the standard library.
   With that module present, the same step runs, in order, under Bash with
   `-e -o pipefail`:
 

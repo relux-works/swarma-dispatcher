@@ -170,11 +170,26 @@ func Sweep(ctx context.Context, procRoot string, uid uint32, k Killer, b Budget)
 	}
 }
 
-// Archival is release seam (a) of the R_i release gate (book ch. 07, Core
-// G1): work-product archival evidence for one run. The producer of that
-// evidence belongs to other slices; the default here refuses by name.
-type Archival interface {
-	Archived(runKey string) (bool, error)
+// WorkProductExportResult is the closed export evidence vocabulary. The zero
+// value and any unknown or partial status are not proved, never no working copy.
+type WorkProductExportResult string
+
+const (
+	ExportNotProved WorkProductExportResult = "not_proved"
+	Exported        WorkProductExportResult = "exported"
+	NoWorkingCopy   WorkProductExportResult = "no_working_copy"
+)
+
+// Satisfied requires explicit successful evidence, not absence of a failure.
+func (r WorkProductExportResult) Satisfied() bool {
+	return r == Exported || r == NoWorkingCopy
+}
+
+// WorkProductExport reports completed work-product export or explicit absence
+// of a working copy for one run. It never copies or snapshots a home directory.
+// Its producer belongs to other slices; the default refuses by name.
+type WorkProductExport interface {
+	ExportStatus(runKey string) (WorkProductExportResult, error)
 }
 
 // OperatorRelease is release seam (b): an explicit operator release of the
@@ -185,15 +200,15 @@ type OperatorRelease interface {
 
 // Pins the two release seams wait for.
 const (
-	ArchivalPin        = "work-product archival producer (S1/S8; book ch. 07, Core G1)"
-	OperatorReleasePin = "operator release record (operator recovery, r2.6 H6)"
+	WorkProductExportPin = "work-product export producer (S1/S8; book ch. 07, Core G1)"
+	OperatorReleasePin   = "operator release record (operator recovery, r2.6 H6)"
 )
 
-// UnpinnedArchival refuses by name: archival status is unknown.
-type UnpinnedArchival struct{}
+// UnpinnedWorkProductExport refuses by name: export is not proved.
+type UnpinnedWorkProductExport struct{}
 
-func (UnpinnedArchival) Archived(string) (bool, error) {
-	return false, codes.Unpinned("work-product archival evidence", ArchivalPin)
+func (UnpinnedWorkProductExport) ExportStatus(string) (WorkProductExportResult, error) {
+	return ExportNotProved, codes.Unpinned("work-product export evidence", WorkProductExportPin)
 }
 
 // UnpinnedOperatorRelease refuses by name: no operator release exists.
@@ -203,12 +218,17 @@ func (UnpinnedOperatorRelease) Released(string, uint32) (bool, error) {
 	return false, codes.Unpinned("operator release", OperatorReleasePin)
 }
 
-// StaticArchival is a fixed table keyed by run key, for tests and for
-// deployments that inject an already-read evidence table. A missing key is
-// "not archived", not an error.
-type StaticArchival map[string]bool
+// StaticWorkProductExport is a fixed evidence table. A missing key, including
+// a nil table, is not proved; no working copy must be an explicit entry.
+type StaticWorkProductExport map[string]WorkProductExportResult
 
-func (s StaticArchival) Archived(runKey string) (bool, error) { return s[runKey], nil }
+func (s StaticWorkProductExport) ExportStatus(runKey string) (WorkProductExportResult, error) {
+	result, ok := s[runKey]
+	if !ok {
+		return ExportNotProved, nil
+	}
+	return result, nil
+}
 
 // StaticOperatorRelease is a fixed table keyed by run key; the uid must match
 // the recorded one.
@@ -220,50 +240,52 @@ func (s StaticOperatorRelease) Released(runKey string, uid uint32) (bool, error)
 }
 
 // ReleaseGate is the R_i release decision: the D5a zero-process proof AND one
-// of (a) archival evidence with an acknowledged end, or (b) an explicit
+// of (a) work-product export with an acknowledged end, or (b) an explicit
 // operator release. A nil seam is the refusing default.
 type ReleaseGate struct {
-	Archival Archival
-	Operator OperatorRelease
+	WorkProductExport WorkProductExport
+	Operator          OperatorRelease
 }
 
 // ReleaseDecision records every input of one gate evaluation.
 type ReleaseDecision struct {
-	RunKey           string
-	UID              uint32
-	Proved           bool
-	EndAcknowledged  bool
-	Archived         bool
-	ArchivalErr      error
-	OperatorReleased bool
-	OperatorErr      error
-	Release          bool
-	Reason           string
+	RunKey                     string
+	UID                        uint32
+	Proved                     bool
+	EndAcknowledged            bool
+	WorkProductExport          WorkProductExportResult
+	WorkProductExportSatisfied bool
+	WorkProductExportErr       error
+	OperatorReleased           bool
+	OperatorErr                error
+	Release                    bool
+	Reason                     string
 }
 
 // ReleaseAllowed is the pure decision: proof AND (operator release OR
-// (acknowledged end AND archival)). Unknown evidence is passed as false.
-func ReleaseAllowed(e Enumeration, endAcknowledged, archived, operatorReleased bool) bool {
-	return e.Proved() && (operatorReleased || (endAcknowledged && archived))
+// (acknowledged end AND work-product export)). Unknown evidence is false.
+func ReleaseAllowed(e Enumeration, endAcknowledged, workProductExport, operatorReleased bool) bool {
+	return e.Proved() && (operatorReleased || (endAcknowledged && workProductExport))
 }
 
 // Decide evaluates the gate for one run. A missing, unreadable or unknown
-// archival or release status counts as absent and keeps the uid quarantined.
+// export or release status counts as not proved and keeps the uid quarantined.
 func (g ReleaseGate) Decide(runKey string, uid uint32, endAcknowledged bool, e Enumeration) ReleaseDecision {
 	d := ReleaseDecision{RunKey: runKey, UID: uid, EndAcknowledged: endAcknowledged}
 	d.Proved = e.UID == uid && e.Proved()
-	a := g.Archival
+	a := g.WorkProductExport
 	if a == nil {
-		a = UnpinnedArchival{}
+		a = UnpinnedWorkProductExport{}
 	}
 	o := g.Operator
 	if o == nil {
 		o = UnpinnedOperatorRelease{}
 	}
-	d.Archived, d.ArchivalErr = a.Archived(runKey)
-	if d.ArchivalErr != nil {
-		d.Archived = false
+	d.WorkProductExport, d.WorkProductExportErr = a.ExportStatus(runKey)
+	if d.WorkProductExportErr != nil || !d.WorkProductExport.Satisfied() {
+		d.WorkProductExport = ExportNotProved
 	}
+	d.WorkProductExportSatisfied = d.WorkProductExport.Satisfied()
 	d.OperatorReleased, d.OperatorErr = o.Released(runKey, uid)
 	if d.OperatorErr != nil {
 		d.OperatorReleased = false
@@ -277,12 +299,12 @@ func (g ReleaseGate) Decide(runKey string, uid uint32, endAcknowledged bool, e E
 		d.Reason = "operator release"
 	case !endAcknowledged:
 		d.Reason = "end not acknowledged and no operator release"
-	case !d.Archived:
-		d.Reason = "no archival evidence and no operator release"
+	case !d.WorkProductExportSatisfied:
+		d.Reason = "work-product export not proved and no operator release"
 	default:
-		d.Reason = "acknowledged end with archival evidence"
+		d.Reason = "acknowledged end with work-product export"
 	}
-	d.Release = d.Proved && ReleaseAllowed(e, endAcknowledged, d.Archived, d.OperatorReleased)
+	d.Release = d.Proved && ReleaseAllowed(e, endAcknowledged, d.WorkProductExportSatisfied, d.OperatorReleased)
 	return d
 }
 

@@ -857,11 +857,10 @@ func (r *Runtime) cancel(ctx context.Context, peer uint32, req *Request) (*Resul
 		}
 		if noEffect {
 			// Row 1: a reservation never reached intent, so no receiver effect
-			// exists; the transaction ends with no call.
-			if err := r.appendLocked(&frame{Type: frameStop, Now: event, Stop: &stopFrame{RequestID: target.RequestID, Outcome: stopNoEffect}}); err != nil {
-				r.mu.Unlock()
-				return nil, err
-			}
+			// exists. Reducing the cancel frame itself is the terminal
+			// transition (cancelled, no_effect): one frame, no second append,
+			// so no durable prefix exists in which the cancel is committed and
+			// the run is not terminal (row 1a). Publish the terminal record.
 			if err := r.materializeLocked(); err != nil {
 				r.mu.Unlock()
 				return nil, err

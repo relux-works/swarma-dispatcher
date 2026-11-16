@@ -254,22 +254,29 @@ func (f *typedFailLedger) Append(b []byte) (uint64, error) {
 	return f.ledger.Append(b)
 }
 
-// Row 1 (m0-launch.md:324, journal.md:194): the owned cancel of a
-// reservation that never reached intent journals the cancel record and the
-// no_effect outcome, issues no call and ends the transaction (state X). The
-// cancel of a run with launch intent is the positive control: it issues a Stop.
+// Row 1 (m0-launch.md:324, journal.md:169-174): the owned cancel of a
+// reservation that never reached intent appends exactly ONE frame, the cancel
+// record, whose reduction is the terminal transition (cancelled, no_effect);
+// no other frame is written, no call is issued (state X). The cancel of a run
+// with launch intent is the positive control: it issues a Stop.
 func TestStopTableRow01CancelOfReservation(t *testing.T) {
 	t.Run("reservation-no-effect", func(t *testing.T) {
 		e := newEnv(t)
 		l := reservationOnly(t, e)
+		e.store.mu.Lock()
+		before := len(e.store.frames)
+		e.store.mu.Unlock()
 		res, err := e.cancel(t)
 		must(t, err)
 		rec := e.record(t, dispatchID)
-		if res.State != string(phaseCancelled) || rec.Phase != phaseCancelled || rec.StopOutcome != stopNoEffect || rec.StopEffectID != "" || len(rec.StopObligations) != 0 {
+		if res.State != string(phaseCancelled) || rec.Phase != phaseCancelled || rec.StopOutcome != stopNoEffect || rec.StopEffectID != "" || len(rec.StopObligations) != 0 || !rec.CancelRequested {
 			t.Fatalf("ROW1: %+v %+v", res, rec)
 		}
-		if e.store.count(frameCancel) != 1 || e.store.count(frameStop) != 1 {
-			t.Fatalf("ROW1: cancel frames=%d stop frames=%d", e.store.count(frameCancel), e.store.count(frameStop))
+		e.store.mu.Lock()
+		appended := len(e.store.frames) - before
+		e.store.mu.Unlock()
+		if appended != 1 || e.store.count(frameCancel) != 1 || e.store.count(frameStop) != 0 {
+			t.Fatalf("ROW1: frames appended by the cancel=%d cancel frames=%d stop frames=%d", appended, e.store.count(frameCancel), e.store.count(frameStop))
 		}
 		wantSequence(t, l)
 		if p := memProjection(t, e.store); p.Dispatches[dispatchID].StopOutcome != stopNoEffect {
@@ -287,6 +294,112 @@ func TestStopTableRow01CancelOfReservation(t *testing.T) {
 			t.Fatalf("ROW1 control: %+v", res)
 		}
 		wantSequence(t, l, "start", "stop")
+	})
+}
+
+// noEffectStopFrame encodes the second frame an older process wrote after a
+// no-effect cancel (table row 1b).
+func noEffectStopFrame(t *testing.T, requestID string, now int64) []byte {
+	t.Helper()
+	b, err := encodeFrame(&frame{Type: frameStop, Now: now, Stop: &stopFrame{RequestID: requestID, Outcome: stopNoEffect}})
+	must(t, err)
+	return b
+}
+
+// Row 1b (journal.md:169-174 committed frames stay committed; row 1 derives X
+// from the cancel frame alone): a journal that holds BOTH the no-effect cancel
+// and the older second stop(no_effect) frame replays without error to the same
+// state X as the cancel-only journal (control), and the run stays inert. A
+// stop(no_effect) frame on a run past intent is still inconsistent.
+func TestStopTableRow01bOlderTwoFrameJournalReplays(t *testing.T) {
+	t.Run("both-frames-equal-cancel-only-control", func(t *testing.T) {
+		e := newEnv(t)
+		reservationOnly(t, e)
+		_, err := e.cancel(t)
+		must(t, err)
+		cancelOnly := e.record(t, dispatchID)
+		e.store.mu.Lock()
+		frames := append([][]byte(nil), e.store.frames...)
+		e.store.mu.Unlock()
+		control, err := replay(frames)
+		must(t, err)
+		both, err := replay(append(frames, noEffectStopFrame(t, dispatchID, cancelOnly.Deadlines.ReservedAt+1)))
+		must(t, err)
+		if !reflect.DeepEqual(*both.Dispatches[dispatchID], *control.Dispatches[dispatchID]) || !reflect.DeepEqual(*control.Dispatches[dispatchID], cancelOnly) {
+			t.Fatalf("ROW1b: states differ:\ncancel-only %+v\nboth-frames %+v", *control.Dispatches[dispatchID], *both.Dispatches[dispatchID])
+		}
+		if rec := both.Dispatches[dispatchID]; rec.Phase != phaseCancelled || rec.StopOutcome != stopNoEffect || rec.StopAttempts != 0 {
+			t.Fatalf("ROW1b: %+v", rec)
+		}
+		// The two-frame journal, reopened, is inert like row 12.
+		e.store.mu.Lock()
+		e.store.frames = append(e.store.frames, noEffectStopFrame(t, dispatchID, cancelOnly.Deadlines.ReservedAt+1))
+		e.store.mu.Unlock()
+		e.reopen(t)
+		l := traceLauncher(e)
+		e.clock.set(cancelOnly.Deadlines.Expiry + 1)
+		must(t, e.rt.Sweep(context.Background()))
+		must(t, e.rt.Reconcile(context.Background()))
+		res, err := e.cancel(t)
+		must(t, err)
+		if !res.Replayed || res.State != string(phaseCancelled) {
+			t.Fatalf("ROW1b: replay %+v", res)
+		}
+		wantSequence(t, l)
+	})
+	t.Run("past-intent-inconsistent", func(t *testing.T) {
+		e := newEnv(t)
+		_, err := e.dispatch(t)
+		must(t, err)
+		rec := e.record(t, dispatchID)
+		e.store.mu.Lock()
+		frames := append([][]byte(nil), e.store.frames...)
+		e.store.mu.Unlock()
+		if _, err := replay(frames); err != nil {
+			t.Fatalf("ROW1b control: healthy journal does not replay: %v", err)
+		}
+		_, err = replay(append(frames, noEffectStopFrame(t, dispatchID, rec.Deadlines.ReservedAt+1)))
+		wantCode(t, err, CodeStateInconsistent)
+	})
+}
+
+// Negative beside row 1 (m0-launch.md:299-301 a run past intent has an effect
+// to stop; its cancel carries a stop obligation): a cancel frame with NoEffect
+// set on a run past intent is inconsistent on replay, while the same frame on
+// a reservation reduces to state X (control).
+func TestStopTableRow01NoEffectCancelPastIntentInconsistent(t *testing.T) {
+	cancelFrameBytes := func(t *testing.T, e *testEnv, now int64) []byte {
+		t.Helper()
+		b, err := encodeFrame(&frame{Type: frameCancel, Now: now, Cancel: &cancelFrame{
+			RequestID: cancelID, Principal: e.policy.Association.ID + ":" + e.policy.Association.Generation, PeerUID: e.peer, Canonical: "{}",
+			Target: dispatchID, EffectID: strings.Repeat("a", 32), Event: now, Detection: now, NoEffect: true,
+		}})
+		must(t, err)
+		return b
+	}
+	t.Run("reservation-control", func(t *testing.T) {
+		e := newEnv(t)
+		reservationOnly(t, e)
+		rec := e.record(t, dispatchID)
+		e.store.mu.Lock()
+		frames := append([][]byte(nil), e.store.frames...)
+		e.store.mu.Unlock()
+		p, err := replay(append(frames, cancelFrameBytes(t, e, rec.Deadlines.ReservedAt+1)))
+		must(t, err)
+		if got := p.Dispatches[dispatchID]; got.Phase != phaseCancelled || got.StopOutcome != stopNoEffect || !got.CancelRequested || got.StopEffectID != "" {
+			t.Fatalf("NEG control: %+v", got)
+		}
+	})
+	t.Run("past-intent", func(t *testing.T) {
+		e := newEnv(t)
+		_, err := e.dispatch(t)
+		must(t, err)
+		rec := e.record(t, dispatchID)
+		e.store.mu.Lock()
+		frames := append([][]byte(nil), e.store.frames...)
+		e.store.mu.Unlock()
+		_, err = replay(append(frames, cancelFrameBytes(t, e, rec.Deadlines.ReservedAt+1)))
+		wantCode(t, err, CodeStateInconsistent)
 	})
 }
 
@@ -561,6 +674,81 @@ func TestStopTableRow06LaterObligationKeepsIdentity(t *testing.T) {
 			}
 			if rec.StopEvent != first.StopEvent || rec.StopDetection != first.StopDetection || rec.StopSource != first.StopSource || rec.Phase != phaseAbsent {
 				t.Fatalf("ROW6 %s: record provenance changed: first=%+v now=%+v", path, first, rec)
+			}
+		})
+	}
+}
+
+// Row 6 supplement for state I (m0-launch.md:351-354 earliest ceiling,
+// separate original events; journal.md:172 barrier): a second obligation added
+// to a fresh outcome-less transaction before its first Stop, by owned cancel
+// after a detected removal, by expiry Sweep after a detected removal, or by a
+// removal Sweep after a policy-frame-detected expiry, keeps the original effect,
+// first event and detection, carries both obligations materialized at the
+// call, never extends the ceiling, and issues exactly one Stop with no
+// observation. The single-obligation Sweep beside them is the control.
+func TestStopTableRow06FreshIntentAdditionalObligation(t *testing.T) {
+	for _, path := range []string{"single-obligation-control", "removal-then-cancel", "removal-then-expiry", "expiry-then-removal"} {
+		t.Run(path, func(t *testing.T) {
+			e := newEnv(t)
+			l := traceLauncher(e)
+			_, err := e.dispatch(t)
+			must(t, err)
+			original := e.record(t, dispatchID)
+			initialTime := original.Deadlines.ReservedAt + 1
+			e.clock.set(initialTime)
+			var obligations []StopObligation
+			if path == "expiry-then-removal" {
+				initialTime = original.Deadlines.Expiry
+				e.clock.set(initialTime)
+				e.source.edit(func(i *Installed) { i.InstallRevision++ })
+				probe := parseDoc(t, e.dispatchDoc.encode(nil))
+				setPath(t, probe, "request_id", text(strings.Repeat("5", 32)))
+				if _, err := e.rt.Handle(context.Background(), e.peer, signRequest(t, probe, e.key)); err == nil {
+					t.Fatal("probe should be refused, not admitted")
+				}
+				obligations = []StopObligation{obligation(sourceExpiry, initialTime, initialTime)}
+			} else {
+				detectRemovalByHandle(t, e)
+				obligations = []StopObligation{obligation(sourceRemoval, initialTime, initialTime)}
+			}
+			pending := e.record(t, dispatchID)
+			if pending.StopEffectID == "" || pending.StopOutcome != "" || pending.StopAttempts != 0 {
+				t.Fatalf("ROW6 I %s: not fresh I before the additional event: %+v", path, pending)
+			}
+			wantSequence(t, l, "start")
+			var observed *projection
+			l.atStop = func(StopRequest) { observed = memProjection(t, e.store) }
+			switch path {
+			case "single-obligation-control":
+				must(t, e.rt.Sweep(context.Background()))
+			case "removal-then-cancel":
+				e.clock.set(initialTime + 1)
+				obligations = append(obligations, obligation(sourceCancel, initialTime+1, initialTime+1))
+				_, err = e.cancel(t)
+				must(t, err)
+			case "removal-then-expiry":
+				e.clock.set(original.Deadlines.Expiry)
+				obligations = append(obligations, obligation(sourceExpiry, original.Deadlines.Expiry, original.Deadlines.Expiry))
+				must(t, e.rt.Sweep(context.Background()))
+			default:
+				e.clock.set(initialTime + 1)
+				e.source.edit(func(i *Installed) { i.Removed = true; i.InstallRevision++ })
+				obligations = append(obligations, obligation(sourceRemoval, initialTime+1, initialTime+1))
+				must(t, e.rt.Sweep(context.Background()))
+			}
+			wantSequence(t, l, "start", "stop")
+			final := e.record(t, dispatchID)
+			request := l.lastStopRequest(t)
+			wantStopRequest(t, request, final, obligations)
+			if request.EffectID != pending.StopEffectID || request.Event != pending.StopEvent || request.Detection != pending.StopDetection || request.Ceiling > pending.earliestCeiling() {
+				t.Fatalf("ROW6 I %s: provenance or ceiling changed: before=%+v request=%+v", path, pending, request)
+			}
+			if observed == nil || !reflect.DeepEqual(observed.Dispatches[dispatchID].StopObligations, obligations) {
+				t.Fatalf("ROW6 I %s: obligations not materialized before the first Stop: %+v", path, observed)
+			}
+			if final.Phase != phaseAbsent || final.StopAttempts != 1 {
+				t.Fatalf("ROW6 I %s: not terminal: %+v", path, final)
 			}
 		})
 	}

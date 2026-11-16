@@ -97,7 +97,10 @@ type resultFrame struct {
 
 // cancelFrame is the owner cancel record and its stop intent in one durable
 // transition. NoEffect marks a cancel of a reservation that never reached
-// intent: no receiver effect is possible and no stop is issued.
+// intent: no receiver effect is possible, no stop is issued, and reducing the
+// frame ends the run as cancelled with stop outcome no_effect. Journals
+// written before that rule carry a following stop(no_effect) frame, which
+// replays as a no-op.
 type cancelFrame struct {
 	RequestID string `json:"request_id"`
 	Principal string `json:"principal"`
@@ -448,8 +451,18 @@ func (p *projection) apply(f *frame) error {
 		if rec == nil {
 			return inconsistent("cancel of an unknown dispatch")
 		}
-		rec.CancelRequested = true
-		if !c.NoEffect {
+		if c.NoEffect {
+			// Table row 1: the cancel of a reservation that never reached
+			// intent is itself the terminal transition (state X). A run past
+			// intent has an effect to stop and never takes this branch.
+			if rec.Phase != phaseReserved {
+				return inconsistent("no-effect cancel after intent")
+			}
+			rec.CancelRequested = true
+			rec.Phase = phaseCancelled
+			rec.StopOutcome = stopNoEffect
+		} else {
+			rec.CancelRequested = true
 			if rec.StopEffectID != "" && rec.StopEffectID != c.EffectID {
 				return inconsistent("cancel names a different stop effect")
 			}
@@ -477,6 +490,12 @@ func (p *projection) apply(f *frame) error {
 		rec := p.Dispatches[s.RequestID]
 		if rec == nil {
 			return inconsistent("stop outcome for an unknown dispatch")
+		}
+		if s.Outcome == stopNoEffect && rec.Phase == phaseCancelled && rec.StopOutcome == stopNoEffect {
+			// Table row 1b: an older journal wrote the no-effect outcome as a
+			// second frame after the cancel; the cancel frame already reduced
+			// to this state, so the frame is an idempotent no-op.
+			return nil
 		}
 		if terminalStop(rec.StopOutcome) {
 			return inconsistent("stop outcome after a terminal stop")

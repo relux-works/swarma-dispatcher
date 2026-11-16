@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/relux-works/swarma-dispatcher/internal/journal"
@@ -95,6 +96,83 @@ func TestStopTableRow02ReservationSurvivesReopenInert(t *testing.T) {
 				t.Fatalf("ROW2 reopen: stop state on a reservation: %+v", after)
 			}
 			wantSequence(t, l)
+		})
+	}
+}
+
+// Row 1a (m0-launch.md:324 a reservation without intent has no effect;
+// journal.md:169-174 a committed frame stays committed): the cancel-only
+// journal, the exact bytes an interrupted older process leaves after its
+// cancel frame, replays through established recovery to state X: durable
+// phase cancelled, outcome no_effect; the same-ID cancel replay and the
+// dispatch replay answer cancelled, a new cancel ID is refused run_terminal,
+// and Sweep and Reconcile call the receiver zero times. The uninterrupted
+// cancel without a reopen is the control and yields the identical record.
+func TestStopTableRow01aCancelOnlyJournalRecoversTerminal(t *testing.T) {
+	for _, mode := range []string{"uninterrupted-control", "cancel-only-reopen"} {
+		t.Run(mode, func(t *testing.T) {
+			e, cfg, l := realEnv(t)
+			e.rt.store = &typedFailLedger{ledger: e.rt.store, fail: frameIntent}
+			_, err := e.dispatch(t)
+			wantCode(t, err, CodeStorageFailed)
+			reopenReal(t, e, cfg, l)
+			if rec := e.record(t, dispatchID); rec.Phase != phaseReserved || rec.EffectID != "" {
+				t.Fatalf("ROW1a fixture: %+v", rec)
+			}
+			at := e.record(t, dispatchID).Deadlines.ReservedAt + 1
+			e.clock.set(at)
+			res, err := e.cancel(t)
+			must(t, err)
+			if res.State != string(phaseCancelled) || res.Replayed {
+				t.Fatalf("ROW1a: first cancel %+v", res)
+			}
+			control := e.record(t, dispatchID)
+			if mode == "cancel-only-reopen" {
+				// The journal now ends with the cancel frame and nothing after
+				// it: the durable prefix an interrupted cancel leaves, replayed.
+				reopenReal(t, e, cfg, l)
+			}
+			recovered := e.record(t, dispatchID)
+			if recovered.Phase != phaseCancelled || recovered.StopOutcome != stopNoEffect || !recovered.CancelRequested || recovered.StopEffectID != "" {
+				t.Fatalf("ROW1a %s: durable state is not X: %+v", mode, recovered)
+			}
+			if !reflect.DeepEqual(recovered, control) {
+				t.Fatalf("ROW1a %s: recovered record differs from the uninterrupted one:\ncontrol   %+v\nrecovered %+v", mode, control, recovered)
+			}
+			replayed, err := e.cancel(t)
+			must(t, err)
+			if !replayed.Replayed || replayed.State != string(phaseCancelled) {
+				t.Fatalf("ROW1a %s: cancel replay %+v", mode, replayed)
+			}
+			dispatched, err := e.dispatch(t)
+			must(t, err)
+			if !dispatched.Replayed || dispatched.State != string(phaseCancelled) {
+				t.Fatalf("ROW1a %s: dispatch replay %+v", mode, dispatched)
+			}
+			fresh := parseDoc(t, e.cancelDoc.encode(nil))
+			setPath(t, fresh, "request_id", text(strings.Repeat("8", 32)))
+			e.source.edit(func(i *Installed) {
+				cp := parseDoc(t, i.Catalog.Cancel.Canonical)
+				setPath(t, cp, "request.request_id", text(strings.Repeat("8", 32)))
+				c, err := DecodeSigningPlan(cp.encode(nil))
+				must(t, err)
+				i.Catalog.Cancel = c
+			})
+			_, err = e.rt.Handle(context.Background(), e.peer, signRequest(t, fresh, e.key))
+			wantCode(t, err, CodeRunTerminal)
+			e.clock.set(recovered.Deadlines.Expiry + 1)
+			must(t, e.rt.Sweep(context.Background()))
+			must(t, e.rt.Reconcile(context.Background()))
+			if after := e.record(t, dispatchID); !reflect.DeepEqual(after, recovered) {
+				t.Fatalf("ROW1a %s: terminal state changed: %+v", mode, after)
+			}
+			wantSequence(t, l)
+			e.rt.mu.Lock()
+			holder := e.rt.proj.Debits[recovered.Lineage]
+			e.rt.mu.Unlock()
+			if holder != dispatchID {
+				t.Fatalf("ROW1a %s: debit rearmed or released", mode)
+			}
 		})
 	}
 }

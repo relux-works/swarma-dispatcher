@@ -13,10 +13,10 @@ const (
 	ExitAccepted = 0
 	// ExitRefused: the daemon answered a refusal envelope (ok:false).
 	ExitRefused = 16
-	// ExitUnknown: bytes were sent and no complete valid reply was read. The
-	// outcome is unknown; the stored request can be sent again with resend.
+	// ExitUnknown: request-frame bytes were sent without a complete valid reply.
+	// The outcome is unknown; resend can send the stored request again.
 	ExitUnknown = 17
-	// ExitLocal: refused locally before any byte was sent.
+	// ExitLocal: local refusal or failure before any request-frame byte was sent.
 	ExitLocal = 64
 )
 
@@ -58,7 +58,7 @@ type Outcome struct {
 	Reply     []byte
 	RequestID string
 	Stored    bool
-	Sent      int
+	Sent      int // Request-frame bytes, including its prefix; excludes hello.
 	Reason    string
 	Detail    error
 }
@@ -67,9 +67,9 @@ func local(reason string, detail error) Outcome {
 	return Outcome{Exit: ExitLocal, Reason: reason, Detail: detail}
 }
 
-// classify maps one completed transport attempt to an outcome: nothing sent
-// is a local refusal; a valid envelope is accepted or refused; everything
-// else after the first sent byte is unknown.
+// classify maps one completed transport attempt to an outcome. An unwritten
+// request frame is known not sent, regardless of hello timing; a valid reply
+// is accepted or refused; otherwise any request-frame byte makes it unknown.
 func classify(id string, stored bool, sent int, reply []byte, stage string, err error) Outcome {
 	o := Outcome{RequestID: id, Stored: stored, Sent: sent, Reason: stage, Detail: err}
 	switch {
@@ -81,7 +81,10 @@ func classify(id string, stored bool, sent int, reply []byte, stage string, err 
 		accepted, valid := classifyReply(reply, id)
 		switch {
 		case !valid:
-			o.Exit, o.Reason = ExitUnknown, "reply_invalid"
+			o.Exit, o.Reason = ExitLocal, "reply_invalid"
+			if sent > 0 {
+				o.Exit = ExitUnknown
+			}
 		case accepted:
 			o.Exit, o.Reply, o.Reason = ExitAccepted, reply, ""
 		default:
@@ -130,7 +133,10 @@ func report(o Outcome, stdout, stderr io.Writer) int {
 		if _, err := stdout.Write(o.Reply); err != nil {
 			fmt.Fprintln(stderr, "swarma-m0-caller: reply received but not written to stdout:", err)
 			fmt.Fprintln(stderr, "request_id="+o.RequestID)
-			return ExitUnknown
+			if o.Sent > 0 {
+				return ExitUnknown
+			}
+			return ExitLocal
 		}
 		if o.Exit == ExitRefused {
 			fmt.Fprintln(stderr, "swarma-m0-caller: refused by the dispatcher")
@@ -139,7 +145,7 @@ func report(o Outcome, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "swarma-m0-caller: outcome unknown: "+o.Reason+detail)
 		fmt.Fprintln(stderr, "request_id="+o.RequestID)
 	default:
-		fmt.Fprintln(stderr, "swarma-m0-caller: refused locally, nothing sent: "+o.Reason+detail)
+		fmt.Fprintln(stderr, "swarma-m0-caller: request not sent: "+o.Reason+detail)
 		if o.Stored {
 			fmt.Fprintln(stderr, "request_id="+o.RequestID+" stored, not sent")
 		}

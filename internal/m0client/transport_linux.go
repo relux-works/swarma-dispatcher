@@ -62,7 +62,12 @@ type ident struct {
 }
 
 func identity(st syscall.Stat_t) ident {
-	return ident{uint64(st.Dev), st.Ino, st.Uid, st.Gid, st.Mode, uint64(st.Nlink)}
+	links := uint64(st.Nlink)
+	if st.Mode&syscall.S_IFMT == syscall.S_IFDIR {
+		// Child directories change nlink without replacing this directory.
+		links = 0
+	}
+	return ident{uint64(st.Dev), st.Ino, st.Uid, st.Gid, st.Mode, links}
 }
 
 func (h host) identOf(fd int) (ident, error) {
@@ -450,7 +455,8 @@ func peerUID(f *os.File) (uint32, error) {
 // exchange is the whole client state machine of the transport contract for one
 // request: pin, connect, re-stat, verify the kernel peer, hello, one request
 // frame whose correlation ID is id, one reply, close. There is no retry. sent
-// counts the bytes written to the socket; stage names the step that failed.
+// counts only request-frame bytes, including its prefix, never hello bytes;
+// stage names the step that failed.
 func exchange(spec endpointSpec, id string, request []byte) (reply []byte, sent int, stage string, err error) {
 	if !groupMember(spec.gid) || groupMember(spec.serviceGID) || spec.host.realUID() != spec.caller.UID || spec.host.effectiveUID() != spec.caller.UID {
 		return nil, 0, stagePins, errIdentity
@@ -511,15 +517,16 @@ func exchange(spec endpointSpec, id string, request []byte) (reply []byte, sent 
 	}
 	w := &wire{file: f, raw: raw, start: start, spec: spec}
 	if err = w.writeFrame([]byte(helloFrame(id))); err != nil {
-		return nil, w.sent, stageHello, err
+		return nil, 0, stageHello, err
 	}
 	hello, err := w.readFrame()
 	if err != nil {
-		return nil, w.sent, stageHello, err
+		return nil, 0, stageHello, err
 	}
 	if string(hello) != helloResult(id) {
-		return nil, w.sent, stageHello, errHello
+		return nil, 0, stageHello, errHello
 	}
+	w.sent = 0
 	if err = w.writeFrame(request); err != nil {
 		return nil, w.sent, stageRequest, err
 	}

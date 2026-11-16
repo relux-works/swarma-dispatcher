@@ -33,7 +33,7 @@ func keyDirectoryEnv(t *testing.T) (*env, string) {
 // Claim: unsafe key parents or ancestors refuse locally without store/connect; restoring a caller-owned 0700 parent permits one runtime launch in each case.
 func TestKeyDirectoryProtection(t *testing.T) {
 	for _, kind := range []string{
-		"parent 0750", "parent 0755", "foreign parent", "root parent",
+		"parent 0750", "parent 0755", "parent setgid", "parent sticky", "foreign parent", "root parent",
 		"symlink parent", "symlink ancestor", "group-writable ancestor",
 		"other-writable ancestor", "foreign ancestor",
 	} {
@@ -48,6 +48,10 @@ func TestKeyDirectoryProtection(t *testing.T) {
 				must(t, os.Chmod(parent, 0750))
 			case "parent 0755":
 				must(t, os.Chmod(parent, 0755))
+			case "parent setgid":
+				must(t, syscall.Chmod(parent, 02700))
+			case "parent sticky":
+				must(t, syscall.Chmod(parent, 01700))
 			case "foreign parent", "root parent":
 				e.changeStat(func(name string, st *syscall.Stat_t) {
 					if name == parent {
@@ -100,54 +104,68 @@ func TestKeyDirectoryProtection(t *testing.T) {
 	}
 }
 
-// Claim: replacing the pinned key parent before its post-read recheck refuses without store/connect; the original parent restored then permits one runtime launch.
+// Claim: persistent key parent or grandparent replacement returns 64 without store/connect; restoring each original directory permits one runtime launch.
 func TestKeyDirectoryReplacement(t *testing.T) {
-	e, _ := keyDirectoryEnv(t)
-	b := e.newBackend(e.dispatchID, e.cancelID)
-	l := e.serveBackend(b)
-	parent := filepath.Dir(e.keyPath)
-	moved := parent + ".original"
-	originalHost := e.host
-	replaced, readBeforeRecheck := false, false
-	seedFD := -1
-	e.host.stat = func(fd int) (syscall.Stat_t, error) {
-		st, err := originalHost.fstat(fd)
-		if err != nil {
-			return st, err
-		}
-		if replaced {
-			// Inspect only the offset, never the seed, while its descriptor is
-			// still open during the ancestor recheck.
-			offset, err := syscall.Seek(seedFD, 0, 1)
-			readBeforeRecheck = readBeforeRecheck || err == nil && offset == seedBytes
-			return st, nil
-		}
-		name, err := os.Readlink("/proc/self/fd/" + fdString(fd))
-		if err != nil {
-			return st, err
-		}
-		if name == e.keyPath {
-			seedFD = fd
-			must(t, os.Rename(parent, moved))
-			must(t, os.Mkdir(parent, 0700))
-			replaced = true
-		}
-		return st, nil
-	}
-	code, stdout, stderr := e.run("dispatch", "--config", e.cfgPath)
-	if code != ExitLocal || stdout != "" || !strings.Contains(stderr, reasonKeyFileUnsafe) || !replaced || !readBeforeRecheck || e.storedCount() != 0 || len(l.drain()) != 0 {
-		t.Fatalf("replaced key directory: exit %d stdout %q stderr %q replaced %v read-before-recheck %v", code, stdout, stderr, replaced, readBeforeRecheck)
-	}
-	if starts, _ := b.launcher.count(); starts != 0 {
-		t.Fatal("replaced key directory launched", starts)
-	}
-
-	e.host = originalHost
-	must(t, os.Remove(parent))
-	must(t, os.Rename(moved, parent))
-	code, stdout, stderr = e.run("dispatch", "--config", e.cfgPath)
-	starts, _ := b.launcher.count()
-	if code != ExitAccepted || !strings.Contains(stdout, `"state":"started"`) || stderr != "" || starts != 1 || e.storedCount() != 1 || len(l.drain()) != 1 {
-		t.Fatalf("restored key directory control: exit %d stdout %q stderr %q starts %d", code, stdout, stderr, starts)
+	for _, component := range []string{"parent", "grandparent"} {
+		t.Run(component, func(t *testing.T) {
+			e, ancestor := keyDirectoryEnv(t)
+			b := e.newBackend(e.dispatchID, e.cancelID)
+			l := e.serveBackend(b)
+			name := filepath.Dir(e.keyPath)
+			if component == "grandparent" {
+				name = ancestor
+			}
+			moved := name + ".original"
+			originalHost := e.host
+			replaced, readBeforeRecheck := false, false
+			seedFD := -1
+			e.host.stat = func(fd int) (syscall.Stat_t, error) {
+				st, err := originalHost.fstat(fd)
+				if err != nil {
+					return st, err
+				}
+				actual, err := os.Readlink("/proc/self/fd/" + fdString(fd))
+				if err != nil {
+					return st, err
+				}
+				if replaced {
+					// Renaming a directory does not change the ownership of its
+					// descendants. Preserve the original ownership model there.
+					alias := name + strings.TrimPrefix(actual, moved)
+					if strings.HasPrefix(actual, moved+"/") && (alias == e.keyPath || alias == filepath.Dir(e.keyPath)) || actual == moved {
+						st.Uid = e.policy.Association.UID
+						if alias == e.keyPath || alias == filepath.Dir(e.keyPath) {
+							raw, err := fstat(fd)
+							must(t, err)
+							st.Gid = raw.Gid
+						}
+					}
+					// Inspect only the offset, never seed contents.
+					offset, err := syscall.Seek(seedFD, 0, 1)
+					readBeforeRecheck = readBeforeRecheck || err == nil && offset == seedBytes
+				} else if actual == e.keyPath {
+					seedFD = fd
+					must(t, os.Rename(name, moved))
+					must(t, os.Mkdir(name, 0700))
+					replaced = true
+				}
+				return st, nil
+			}
+			code, stdout, stderr := e.run("dispatch", "--config", e.cfgPath)
+			if code != ExitLocal || stdout != "" || !strings.Contains(stderr, reasonKeyFileUnsafe) || !replaced || !readBeforeRecheck || e.storedCount() != 0 || len(l.drain()) != 0 {
+				t.Fatalf("replaced key directory: exit %d stdout %q stderr %q replaced %v read-before-recheck %v", code, stdout, stderr, replaced, readBeforeRecheck)
+			}
+			if starts, _ := b.launcher.count(); starts != 0 {
+				t.Fatal("replaced key directory launched", starts)
+			}
+			e.host = originalHost
+			must(t, os.Remove(name))
+			must(t, os.Rename(moved, name))
+			code, stdout, stderr = e.run("dispatch", "--config", e.cfgPath)
+			starts, _ := b.launcher.count()
+			if code != ExitAccepted || !strings.Contains(stdout, `"state":"started"`) || stderr != "" || starts != 1 || e.storedCount() != 1 || len(l.drain()) != 1 {
+				t.Fatalf("restored key directory control: exit %d stdout %q stderr %q starts %d", code, stdout, stderr, starts)
+			}
+		})
 	}
 }

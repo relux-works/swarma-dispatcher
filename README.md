@@ -261,10 +261,12 @@ activation; the `m0_*` refusal codes are draft spellings pending publication.
 
 | Tool | Source | Purpose | Exit status |
 | --- | --- | --- | --- |
-| `swarma-m0-caller` | `cmd/swarma-m0-caller`, [`internal/m0client`](internal/m0client/) | Sign, store and send an installed M0 `dispatch` or `cancel` signing plan, or `resend` a stored request | `0` accepted, `16` refused by the daemon, `17` unknown, `64` refused locally |
+| `swarma-m0-caller` | `cmd/swarma-m0-caller`, [`internal/m0client`](internal/m0client/) | Sign, store and send an installed M0 `dispatch` or `cancel` signing plan, or `resend` a stored request | `0` accepted, `16` refused by the daemon, `17` unknown after request-frame bytes, `64` request not sent / local refusal |
 
-The caller side of the [M0 request form](spec/m0-launch.md#2-closed-proposed-forms-and-signing).
-It reads one closed, canonical ASCII JSON configuration (maximum 4096 bytes),
+The caller side of the [M0 request form](spec/m0-launch.md#2-closed-proposed-forms-and-signing),
+under the [first-run local caller-key cut](https://github.com/relux-works/swarma-dispatcher/blob/ce3b2bdcb26818e8b58b5995bf7d4ddd2e652e80/spec/m0-launch.md#first-run-static-cut-local-caller-key-proposed).
+That cut names the departures from purpose-6 association and Keymaker signing/custody;
+it does not relax R, auth or the receiver's checks. It reads one closed, canonical ASCII JSON configuration (maximum 4096 bytes),
 using the [transport client](spec/transport.md) member names: `v` (`1`),
 `caller` (exactly `uid`, `dir`, `dev`, `ino`), `endpoint_dev`, `endpoint_ino`,
 `service_uid`, `service_gid`, `connect_gid`; and the tool members `key_file`,
@@ -291,14 +293,31 @@ mode exactly `0600`; its public key must equal the plan's `association.key`.
 Its parent must be caller-owned, mode exactly `0700`, through non-symlink
 root/caller-owned ancestors not writable by group or others. The tool opens the
 key with `openat` and `O_NOFOLLOW` through that pinned parent, then rechecks the
-ancestors after reading and before using the seed. Installation must keep it
-outside every worker home, workspace, export and retention path; the key must
-never enter argv, the environment, logs, a journal, backup or export.
-The tool never creates, repairs, prints or copies a key. Canonical request bytes
-and spellings come from `internal/m0`, not a second canonicalizer.
+file and ancestors after reading and before using the seed. The shared snapshot
+check compares descriptor identity, mode, link count, size, mtime and ctime and
+the name under the pinned parent. Directory identity excludes link count and
+times: a transient directory change restored before recheck is not detected,
+nor is a change after the final check.
+
+Before opening the key the tool disables dumpability and sets both core limits
+to zero, refusing if either syscall fails. It clears its local seed buffer and
+expanded key on a best-effort basis; copies inside the standard library are not
+cleared. It verifies the signed wire with the daemon decoder before storage.
+Installation must keep the key outside every worker home, workspace, export and
+retention path, including aliases or bind mounts into those trees, and exclude
+it from backups; these are installer obligations, not tool checks. The key must
+never enter argv, the environment, logs, a journal, backup or export. The installer
+also enforces distinct caller/worker accounts and group separation, obtains consent
+and disposes of the key after terminal cleanup, as the cut requires. The contract
+requires dispatcher statement/window checks: dispatch must close at the statement's
+`not_after`; owned cancel skips only that window check. That dispatcher integration
+is separate work; this client adds no timestamp or local clock authority. The tool never creates, repairs, prints or copies a key. Canonical
+request bytes and spellings come from `internal/m0`, not a second canonicalizer.
 
 The exact signed wire bytes are stored in `state_dir/<request_id>.req`
-(directory `0700`, file `0600`, both synced) before the single exchange. A second
+(caller-owned directory exactly `0700`, file `0600`, both synced) before the single
+exchange. The state directory is pinned through the same protected ancestor walk
+as the key parent; it is never created or repaired. A second
 submission of that plan refuses locally and says to use `resend`; it never
 replaces an existing file. `resend` verifies the stored signature and exact R
 against the current operation plan, then sends the stored bytes unchanged
@@ -315,8 +334,12 @@ go test -race -count=1 ./internal/m0client/... ./cmd/swarma-m0-caller/...
 Stdout carries exactly the reply envelope bytes; diagnostics go to stderr. On
 `17` the `request_id` is printed on stderr for `resend`; there is no retry
 inside one invocation. A local transport refusal leaves the durable request and
-reports `request_id=... stored, not sent`. A bad hello result after hello was
-sent remains exit `17`. This tool activates nothing and qualifies nothing: the
+reports `request_id=... stored, not sent`. Connect or hello failures, including
+both close-before-hello-write and close-after-hello-write, are exit `64` while
+the request frame is unwritten; hello failures have the fixed reason `hello_failed`.
+Exit `17` requires at least one byte of the request frame, including its length
+prefix, to have been written; hello bytes do not count. This tool activates nothing
+and qualifies nothing: the
 request is the installed signing plan, and the caller must be on the daemon's
 managed M0 caller list. Managed-caller transport admission is separate work.
 Tests drive the real M0 runtime/extension behind a test Unix-socket listener,

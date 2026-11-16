@@ -21,7 +21,8 @@ func ValidRequestID(s string) bool {
 }
 
 // checkStored requires the exact canonical signed wire form and the installed
-// operation plan's canonical R. Resend never reconstructs or signs a request.
+// operation plan's canonical R. Initial signing and resend share this check;
+// resend never reconstructs or signs a request.
 func checkStored(plan *m0.SigningPlan, requestID string, wire []byte) error {
 	r, err := m0.DecodeRequest(wire)
 	if err != nil {

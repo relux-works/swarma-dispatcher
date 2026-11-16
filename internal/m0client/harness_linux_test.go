@@ -323,8 +323,8 @@ func findSeed(seed []byte, blobs ...[]byte) []string {
 	return found
 }
 
-// scan checks every captured stdout and stderr, the configuration and every
-// file of the state directory for the seed.
+// scan checks captured stdout/stderr and completed listener streams, the
+// configuration, plans and every state-directory file for the seed.
 func (e *env) scan() {
 	e.mu.Lock()
 	blobs := append([][]byte(nil), e.outputs...)
@@ -366,17 +366,22 @@ type listener struct {
 	probes   int
 	streams  [][]byte
 	done     chan struct{}
+	handlers sync.WaitGroup
+	closed   chan struct{}
+	closeOne sync.Once
 }
 
 const (
-	modeAccept   = "accept"
-	modeServe    = "serve"
-	modeClose    = "close"
-	modeTruncate = "truncate"
-	modeWrongID  = "wrong-id"
-	modeSilent   = "silent"
-	modeRights   = "rights"
-	modeBadHello = "bad-hello"
+	modeAccept           = "accept"
+	modeServe            = "serve"
+	modeClose            = "close"
+	modeTruncate         = "truncate"
+	modeWrongID          = "wrong-id"
+	modeSilent           = "silent"
+	modeRights           = "rights"
+	modeBadHello         = "bad-hello"
+	modeCloseBeforeHello = "close-before-hello"
+	modeCloseAfterHello  = "close-after-hello"
 )
 
 func refusalEnvelope(id string) string {
@@ -399,7 +404,7 @@ func (e *env) listenWith(mode string, serve func(id string, body []byte) (string
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: fmt.Sprintf("/proc/self/fd/%d/dispatcher.sock", dir.Fd())})
 	must(e.t, err)
 	ln.SetUnlinkOnClose(false)
-	l := &listener{t: e.t, e: e, ln: ln, path: filepath.Join(e.epDir, "dispatcher.sock"), mode: mode, serve: serve, done: make(chan struct{})}
+	l := &listener{t: e.t, e: e, ln: ln, path: filepath.Join(e.epDir, "dispatcher.sock"), mode: mode, serve: serve, done: make(chan struct{}), closed: make(chan struct{})}
 	must(e.t, os.Chmod(l.path, 0660))
 	go func() {
 		defer close(l.done)
@@ -411,6 +416,7 @@ func (e *env) listenWith(mode string, serve func(id string, body []byte) (string
 			l.mu.Lock()
 			l.accepted++
 			l.mu.Unlock()
+			l.handlers.Add(1)
 			go l.handle(c)
 		}
 	}()
@@ -421,16 +427,9 @@ func (e *env) listenWith(mode string, serve func(id string, body []byte) (string
 func (l *listener) close() {
 	_ = l.ln.Close()
 	<-l.done
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		l.mu.Lock()
-		idle := l.accepted == l.finished
-		l.mu.Unlock()
-		if idle {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+	// Each handler has a bounded connection deadline. Join all of them so
+	// the environment's later cleanup cannot scan before a stream is kept.
+	l.handlers.Wait()
 	_ = os.Remove(l.path)
 }
 
@@ -469,11 +468,17 @@ func (l *listener) handle(c *net.UnixConn) {
 	r := &recorder{c: c}
 	defer func() {
 		_ = c.Close()
+		l.e.keep(r.got)
 		l.mu.Lock()
 		l.streams = append(l.streams, r.got)
 		l.finished++
 		l.mu.Unlock()
+		l.closeOne.Do(func() { close(l.closed) })
+		l.handlers.Done()
 	}()
+	if l.mode == modeCloseBeforeHello {
+		return
+	}
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	// The kernel peer of every fixture connection is this process.
 	if raw, err := c.SyscallConn(); err == nil {
@@ -493,6 +498,9 @@ func (l *listener) handle(c *net.UnixConn) {
 		return
 	}
 	id := string(m[1])
+	if l.mode == modeCloseAfterHello {
+		return
+	}
 	if l.mode == modeBadHello {
 		// A well-formed refusal envelope is still not the hello result.
 		_, _ = c.Write(frameOf(refusalEnvelope(id)))
@@ -563,7 +571,6 @@ func (l *listener) drain() [][]byte {
 		ready := seen == l.probes && l.accepted == l.finished
 		l.mu.Unlock()
 		if ready {
-			l.e.keep(out...)
 			return out
 		}
 		if time.Now().After(deadline) {

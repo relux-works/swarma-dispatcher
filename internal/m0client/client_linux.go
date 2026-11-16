@@ -42,6 +42,9 @@ func SignRequest(c *Config, plan *m0.SigningPlan) (wire []byte, reason string, e
 	if err != nil {
 		return nil, reasonPlan, err
 	}
+	if err := checkStored(plan, r.RequestID, wire); err != nil {
+		return nil, "signed_request_invalid", err
+	}
 	return wire, "", nil
 }
 

@@ -300,10 +300,14 @@ func TestKeyFileShape(t *testing.T) {
 		{"control", func(*testing.T, *env) {}, false},
 		{"mode 0640", func(t *testing.T, e *env) { must(t, os.Chmod(e.keyPath, 0640)) }, true},
 		{"mode 0400", func(t *testing.T, e *env) { must(t, os.Chmod(e.keyPath, 0400)) }, true},
+		{"special mode", func(t *testing.T, e *env) { must(t, syscall.Chmod(e.keyPath, 04600)) }, true},
+		{"directory", func(t *testing.T, e *env) { must(t, os.Remove(e.keyPath)); must(t, os.Mkdir(e.keyPath, 0700)) }, true},
+		{"fifo", func(t *testing.T, e *env) { must(t, os.Remove(e.keyPath)); must(t, syscall.Mkfifo(e.keyPath, 0600)) }, true},
 		{"symlink", func(t *testing.T, e *env) {
 			real := e.keyPath + ".real"
 			must(t, os.Rename(e.keyPath, real))
 			must(t, os.Symlink(real, e.keyPath))
+			e.modelCallerTarget(real)
 		}, true},
 		{"two links", func(t *testing.T, e *env) { must(t, os.Link(e.keyPath, e.keyPath+".alias")) }, true},
 		{"31 bytes", func(t *testing.T, e *env) { must(t, os.WriteFile(e.keyPath, e.seed[:31], 0600)) }, true},
@@ -327,6 +331,13 @@ func TestKeyFileShape(t *testing.T) {
 			}
 			if code != ExitLocal || stdout != "" || !strings.Contains(stderr, reasonKeyFileUnsafe) || connections != 0 || e.storedCount() != 0 {
 				t.Fatalf("exit %d stdout %q stderr %q connections %d stored %d", code, stdout, stderr, connections, e.storedCount())
+			}
+			if tc.name == "symlink" && !strings.Contains(stderr, syscall.ELOOP.Error()) {
+				t.Fatal("key symlink did not fail with ELOOP", stderr)
+			}
+			e.restoreKey()
+			if code, _, stderr := e.dispatch(e.dispatchID); code != ExitAccepted || e.storedCount() != 1 || len(l.drain()) != 1 {
+				t.Fatalf("restored key control: exit %d stderr %q", code, stderr)
 			}
 		})
 	}
@@ -446,6 +457,7 @@ func TestResendStoredFileShape(t *testing.T) {
 			real := filepath.Join(e.root, "moved.req")
 			must(t, os.Rename(path, real))
 			must(t, os.Symlink(real, path))
+			e.modelCallerTarget(real)
 		}, true},
 		{"two links", func(t *testing.T, e *env, path string) { must(t, os.Link(path, filepath.Join(e.root, "alias.req"))) }, true},
 		{"mode 0640", func(t *testing.T, _ *env, path string) { must(t, os.Chmod(path, 0640)) }, true},
@@ -482,6 +494,11 @@ func TestResendStoredFileShape(t *testing.T) {
 			if code, _, stderr := e.dispatch(id); code != ExitAccepted {
 				t.Fatalf("setup: exit %d stderr %q", code, stderr)
 			}
+			if tc.refused {
+				if code, _, stderr := e.resend(id); code != ExitAccepted {
+					t.Fatalf("resend control: exit %d stderr %q", code, stderr)
+				}
+			}
 			tc.prepare(t, e, e.storedPath(id))
 			code, stdout, stderr := e.resend(id)
 			connections := len(l.drain())
@@ -491,8 +508,11 @@ func TestResendStoredFileShape(t *testing.T) {
 				}
 				return
 			}
-			if code != ExitLocal || stdout != "" || !strings.Contains(stderr, reasonStoredRequest) || connections != 1 {
+			if code != ExitLocal || stdout != "" || !strings.Contains(stderr, reasonStoredRequest) || connections != 2 {
 				t.Fatalf("exit %d stdout %q stderr %q connections %d", code, stdout, stderr, connections)
+			}
+			if tc.name == "symlink" && !strings.Contains(stderr, syscall.ELOOP.Error()) {
+				t.Fatal("stored symlink did not fail with ELOOP", stderr)
 			}
 		})
 	}
@@ -593,14 +613,7 @@ func TestConfigFileShape(t *testing.T) {
 				must(t, os.Chmod(e.keyPath, 0644))
 			}
 			code, stdout, stderr := e.run("dispatch", "--config", path)
-			connections := 0
-			if tc.name == "regular file" || tc.name == "missing socket" {
-				l.mu.Lock()
-				connections = l.accepted
-				l.mu.Unlock()
-			} else {
-				connections = len(l.drain())
-			}
+			connections := len(l.drain())
 			if !tc.refused {
 				if code != ExitAccepted || connections != 1 {
 					t.Fatalf("exit %d stderr %q", code, stderr)
@@ -628,6 +641,7 @@ func TestStateDirectoryShape(t *testing.T) {
 			real := e.stateDir + ".real"
 			must(t, os.Rename(e.stateDir, real))
 			must(t, os.Symlink(real, e.stateDir))
+			e.modelCallerTarget(real)
 		}, true},
 		{"missing", func(t *testing.T, e *env) { must(t, os.Remove(e.stateDir)) }, true},
 	}
@@ -635,6 +649,13 @@ func TestStateDirectoryShape(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)
 			l := e.listen(modeAccept)
+			if tc.refused {
+				id := randomID(t)
+				if code, _, stderr := e.dispatch(id); code != ExitAccepted {
+					t.Fatalf("state control: exit %d stderr %q", code, stderr)
+				}
+				must(t, os.Remove(e.storedPath(id)))
+			}
 			tc.prepare(t, e)
 			id := randomID(t)
 			code, stdout, stderr := e.dispatch(id)
@@ -647,8 +668,11 @@ func TestStateDirectoryShape(t *testing.T) {
 				}
 				return
 			}
-			if code != ExitLocal || stdout != "" || !strings.Contains(stderr, reasonState) || connections != 0 {
+			if code != ExitLocal || stdout != "" || !strings.Contains(stderr, reasonState) || connections != 1 {
 				t.Fatalf("exit %d stdout %q stderr %q connections %d", code, stdout, stderr, connections)
+			}
+			if tc.name == "symlink" && !strings.Contains(stderr, syscall.ELOOP.Error()) {
+				t.Fatal("state symlink did not fail with ELOOP", stderr)
 			}
 			if info, err := os.Lstat(e.stateDir); err == nil && info.IsDir() && info.Mode().Perm() == 0700 {
 				t.Fatal("state directory was repaired")
@@ -824,7 +848,7 @@ func TestEndpointRecheckedAfterConnect(t *testing.T) {
 	}
 }
 
-// Claim: A bad hello result sends no request and reports unknown; an exact hello result permits one answered request.
+// Claim: a bad hello result sends no request and returns 64 with stored-not-sent evidence; an exact hello result permits one answered request.
 func TestRequestOnlyAfterExactHelloResult(t *testing.T) {
 	for _, mode := range []string{modeAccept, modeBadHello} {
 		t.Run(mode, func(t *testing.T) {
@@ -843,7 +867,7 @@ func TestRequestOnlyAfterExactHelloResult(t *testing.T) {
 				}
 				return
 			}
-			if code != ExitUnknown || stdout != "" || !strings.Contains(stderr, "request_id="+id+"\n") || !bytes.Equal(streams[0], hello) {
+			if code != ExitLocal || stdout != "" || !strings.Contains(stderr, stageHello) || !strings.Contains(stderr, "request_id="+id+" stored, not sent") || !bytes.Equal(streams[0], hello) {
 				t.Fatalf("exit %d stdout %q stderr %q, listener received %d bytes beyond hello", code, stdout, stderr, len(streams[0])-len(hello))
 			}
 		})

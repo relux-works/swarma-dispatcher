@@ -90,21 +90,33 @@ func (h host) snapshot(name string, limit int, config bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	after, err := h.fstat(fd)
-	if err != nil {
-		return nil, err
-	}
-	named, err := dir.stat(path.Base(name))
-	if err != nil {
-		return nil, err
-	}
-	if n > limit || st.Size != int64(n) || after.Size != st.Size || after.Mtim != st.Mtim || after.Ctim != st.Ctim || identity(st) != identity(after) || named != identity(after) {
+	if n > limit {
 		return nil, errShape
+	}
+	if err := dir.recheckFile(fd, path.Base(name), st, n); err != nil {
+		return nil, err
 	}
 	if err := dir.recheck(path.Dir(name), owner); err != nil {
 		return nil, err
 	}
 	return buf[:n], nil
+}
+
+// recheckFile compares the opened file and its pinned name after a bounded read.
+// Both snapshots and the signing key use this same metadata/identity check.
+func (p *pinned) recheckFile(fd int, name string, before syscall.Stat_t, n int) error {
+	after, err := p.host.fstat(fd)
+	if err != nil {
+		return err
+	}
+	named, err := p.stat(name)
+	if err != nil {
+		return err
+	}
+	if before.Size != int64(n) || after.Size != before.Size || after.Mtim != before.Mtim || after.Ctim != before.Ctim || identity(before) != identity(after) || named != identity(after) {
+		return errShape
+	}
+	return nil
 }
 
 func loadConfig(name string) (*Config, error) { return (host{}).loadConfig(name) }
@@ -156,8 +168,9 @@ func (c *Config) loadPlan(op m0.Op) (*m0.SigningPlan, error) {
 // parent and protected root/caller-owned ancestors, without symlinks. The
 // file must be regular, single-link, effective-UID-owned and exactly 0600.
 // Recheck the pinned path after reading, before deriving the associated key
-// or signing. The seed and expanded key are zeroed before return; neither
-// is ever printed, logged or copied elsewhere.
+// or signing. Clearing the local seed buffer and expanded key is best effort;
+// copies inside the standard library are not cleared. Neither local buffer
+// is printed, logged or copied elsewhere.
 func signPreimage(c *Config, r *m0.Request) (sig string, reason string, err error) {
 	if !validAbsolute(c.KeyFile) {
 		return "", reasonKeyFileUnsafe, errShape
@@ -172,6 +185,9 @@ func signPreimage(c *Config, r *m0.Request) (sig string, reason string, err erro
 	leaf := dir.ids[len(dir.ids)-1]
 	if leaf.mode&syscall.S_IFMT != syscall.S_IFDIR || leaf.uid != owner || leaf.mode&permMask != 0700 {
 		return "", reasonKeyFileUnsafe, errShape
+	}
+	if err := protectKeyProcess(); err != nil {
+		return "", reasonKeyFileUnsafe, err
 	}
 	fd, err := syscall.Openat(dir.last(), path.Base(c.KeyFile), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
@@ -194,6 +210,9 @@ func signPreimage(c *Config, r *m0.Request) (sig string, reason string, err erro
 	if n != seedBytes {
 		return "", reasonKeyFileUnsafe, errShape
 	}
+	if err := dir.recheckFile(fd, path.Base(c.KeyFile), st, n); err != nil {
+		return "", reasonKeyFileUnsafe, err
+	}
 	if err := dir.recheck(parent, owner); err != nil {
 		return "", reasonKeyFileUnsafe, err
 	}
@@ -211,23 +230,50 @@ func signPreimage(c *Config, r *m0.Request) (sig string, reason string, err erro
 	return sig, "", nil
 }
 
-// openStateDir pins the state directory: a directory, not a symlink, owned by
-// the effective UID, mode exactly 0700. It is never created or repaired.
+// protectKeyProcess disables process dumps before any seed descriptor is opened.
+// These restrictions are intentionally not restored after signing.
+func protectKeyProcess() error {
+	if _, _, err := syscall.RawSyscall6(syscall.SYS_PRCTL, syscall.PR_SET_DUMPABLE, 0, 0, 0, 0, 0); err != 0 {
+		return err
+	}
+	return syscall.Setrlimit(syscall.RLIMIT_CORE, &syscall.Rlimit{Cur: 0, Max: 0})
+}
+
+// openStateDir pins all ancestors and a caller-owned, exactly 0700 leaf.
+// It returns the readable pinned directory descriptor for storage and fsync;
+// nothing is created or repaired.
 func openStateDir(name string) (int, error) { return (host{}).openStateDir(name) }
 
 func (h host) openStateDir(name string) (int, error) {
-	fd, err := syscall.Open(name, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if !validAbsolute(name) {
+		return -1, errShape
+	}
+	owner := h.effectiveUID()
+	dir, err := h.pinDirectory(path.Dir(name), owner)
 	if err != nil {
 		return -1, err
 	}
+	defer dir.close()
+	// O_NOFOLLOW alone gives ELOOP for a link. O_NONBLOCK avoids a FIFO
+	// blocking before fstat; the descriptor must then pass the directory rule.
+	fd, err := syscall.Openat(dir.last(), path.Base(name), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return -1, err
+	}
+	dir.fds = append(dir.fds, fd)
 	st, err := h.fstat(fd)
-	if err == nil && (st.Mode&syscall.S_IFMT != syscall.S_IFDIR || st.Uid != h.effectiveUID() || st.Mode&permMask != 0700) {
-		err = errShape
-	}
 	if err != nil {
-		syscall.Close(fd)
 		return -1, err
 	}
+	if st.Mode&syscall.S_IFMT != syscall.S_IFDIR || st.Uid != owner || st.Mode&permMask != 0700 {
+		return -1, errShape
+	}
+	dir.ids = append(dir.ids, identity(st))
+	if err := dir.recheck(name, owner); err != nil {
+		return -1, err
+	}
+	// Transfer only the final descriptor; the ancestor pins close on return.
+	dir.fds = dir.fds[:len(dir.fds)-1]
 	return fd, nil
 }
 

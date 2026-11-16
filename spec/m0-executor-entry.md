@@ -202,15 +202,28 @@ different artifact and tuple from a Codex one.
 The `run-claude` argv below is **PROPOSED**, pending the credential-broker
 contract for the Claude runner (broker slice S3a) at a named commit. No such
 commit is pinned in this spec: the only broker pin is the `run-codex` revision
-in §1. **Normative now:** until that pin is recorded in this spec, an artifact
-whose tuple names `run-claude` is refused before exec with adapter status 78,
-with no pipe write and no exec. Like every 78 in this spec, it is attributable
-only per §5: 78 only with trustworthy original fate evidence of no runner
-start, otherwise UNKNOWN with the original debt. The argv text below, the
-status requirement and a `run-claude` mapping witness are amended at that pin;
-until then this text follows no unnamed or future broker revision. The
-proposed shape is the same 19 elements in the same order, with only element 2
-changed:
+in §1. A variant is *pinned here* only when this spec records its broker
+commit, its argv and its status set; today that is `run-codex` alone. A broker
+commit that merely exists pins nothing.
+
+**Normative now, two refusal points.** Until a variant is pinned here:
+
+- **D, before handoff.** D refuses to bind or hand off a tuple that names that
+  variant: no C, no claim, no debit. This is the first line; a tuple that can
+  never launch must not spend the original claim.
+- **Adapter, before exec.** The adapter refuses with status 78 any runner
+  literal other than a variant pinned here: `run-claude` until that pin is
+  recorded in this spec, and any other literal until its variant is pinned
+  here. No pipe write and no exec. Like every 78 in this spec, it is
+  attributable only per §5: 78 only
+  with trustworthy original fate evidence of no runner start, otherwise
+  UNKNOWN with the original debt.
+
+The argv text below, the `run-claude` status set (which MUST exclude 78) and a
+`run-claude` mapping witness are amended at that pin; the pin cannot amend the
+exclusion rule itself. Until that pin is recorded in this spec this text
+follows no unnamed or future broker revision. The proposed shape is the same
+19 elements in the same order, with only element 2 changed:
 
 ```text
 [E, "run-claude", "--account", input.account,
@@ -232,31 +245,52 @@ qualification and native negatives, and Codex evidence does not carry over.
 
 **run-claude admission gate.** Independently of the argv pin, a `run-claude`
 tuple is inadmissible until the pinned broker contract and native evidence
-show all of the following:
+show all of the following. The gate is about reach, not location: the *worker
+UID* is the dropped UID this execution runs under (`worker.uid`), and the
+question is what that UID can obtain, wherever the credential sits.
 
-1. The vendor process and every descendant hold no vendor-valid credential in
-   argv, in the environment, or in any file under L, W or J or at the settings
-   path (every settings or config path the vendor reads).
-2. The vendor's only credential is a placeholder bound to this execution,
-   generation and lease. The gateway refuses it for any other run: another
-   execution, generation or lease, and after stop, expiry or release.
-3. The gateway endpoint and the settings file are not worker-writable and not
+1. **Reach.** No vendor-valid credential is readable or obtainable by the
+   worker UID or by any process of this execution: none in argv, in the
+   environment, in any file or directory that UID can read (the home H as a
+   whole, not only L, W, J and the settings path), in any descriptor, socket,
+   keyring, helper or IPC it can reach, nor in the environment or memory of
+   any process it can read or trace.
+2. **Custody.** The vendor-valid credential is held only by a principal
+   outside the worker UID's reach, namely a different UID. No process of the
+   worker UID holds it, the gateway included: a gateway that runs inside the
+   runner, or anywhere else under the worker UID, fails this item. A helper
+   that prints the credential to the worker UID fails it too.
+3. **Placeholder.** The vendor's only credential is a placeholder bound to
+   this execution, generation and lease. The gateway refuses it for any other
+   run: another execution, generation or lease, and after stop, expiry or
+   release.
+4. **Endpoint and settings.** The gateway endpoint and every settings or
+   config file the vendor reads are not worker-writable and not
    worker-redirectable: no worker-prepared setting, environment variable or
    helper selects or changes them. A settings file inside worker-prepared
    content does not satisfy this item.
 
-The gateway endpoint and the placeholder are runner-internal and never adapter
-inputs. Codex external token delivery ([v0 §6][v0]) is **not** the model for
-`run-claude` and is no evidence for this gate. Missing evidence for any item
-refuses qualification and admission; passing the adapter-side rules above
-proves none of them.
+The gateway endpoint is secret-free. It and the placeholder are broker-owned
+integration details and never adapter inputs; this does not place credential
+custody inside the worker-UID runner. Codex external token delivery
+([v0 §6][v0]) is **not** the model for `run-claude` and is no evidence for
+this gate. OPEN: whether the gateway limits what the placeholder can do during
+the execution (model, catalog, endpoint scope) is not settled here.
 
-**Runner status set per tuple.** For every admitted tuple, the pinned runner's
-status set MUST exclude the adapter refusal status 78. §5 shows this only for
-the pinned `run-codex` set. No `run-claude` status set is pinned; a tuple
-whose runner status set is unpinned or includes 78 is inadmissible, because 78
-would then be ambiguous between an adapter pre-exec refusal and a runner
-post-exec exit.
+**Enforcement point.** D and tuple qualification enforce this gate and the
+per-tuple status rule below, before handoff. Missing evidence for any item
+refuses qualification, and D refuses to bind or hand off the tuple: no C, no
+claim. The adapter cannot evaluate either rule; passing the adapter-side rules
+above proves none of them.
+
+**Runner status set per tuple.** A status set is complete and closed: it lists
+every exit status the pinned runner can return after exec, and the runner
+passes no other vendor exit code through. For every admitted tuple, that set
+MUST exclude the adapter refusal status 78. §5 shows this only for the pinned
+`run-codex` set. No `run-claude` status set is pinned; a tuple whose runner
+status set is unpinned, open or includes 78 is inadmissible, because 78 would
+then be ambiguous between an adapter pre-exec refusal and a runner post-exec
+exit.
 
 **Denied-literal set.** The adapter cannot decide whether a value "looks like"
 a credential, so the refusal rule is literal. The installation's denied-literal
@@ -269,13 +303,33 @@ never their values:
 - the **denied path prefix**: the absolute path prefix of the protected
   credential area that no worker argument or variable may name;
 - the **origin socket marker**: the literal that identifies the credential
-  origin socket.
+  origin socket. It is a deployment member like the other two, not a constant
+  fixed by this spec.
 
-A missing or empty REQUIRED member refuses. For both runner variants, the
-bytewise occurrence of any member in any argv element or in any environment
-name or value is an adapter pre-exec refusal with no exec (78 only with
-trustworthy original fate evidence of no runner start, otherwise UNKNOWN with
-the original debt). Argv values are otherwise only the closed entry fields
+The match rule is one rule for every member: a member matches when its bytes
+occur as a contiguous substring of an argv element, of an environment name or
+of an environment value. No normalisation, no case folding, no path
+resolution and no prefix-only reading is applied to either side.
+
+Three refusals follow, and each names its actor:
+
+- **Missing or empty REQUIRED member.** D refuses to bind such an artifact
+  before handoff: no C, no claim. An adapter that is nevertheless started from
+  such an artifact refuses before exec, with no exec (78 only with trustworthy
+  original fate evidence of no runner start, otherwise UNKNOWN with the
+  original debt).
+- **Self-collision.** D refuses to bind an artifact whose E, H, derived paths
+  (J, L, W, O), fixed argv literals (the runner literal and the option names
+  of the mapping), fixed environment names or fixed environment values match
+  any member, before handoff: no C, no claim. Otherwise every handoff of that installation would
+  end in the adapter refusal below, after C, and spend the original claim
+  each time.
+- **Occurrence.** For both runner variants, a match of any member in any argv
+  element or in any environment name or value is an adapter pre-exec refusal
+  with no exec (78 only with trustworthy original fate evidence of no runner
+  start, otherwise UNKNOWN with the original debt).
+
+Argv values are otherwise only the closed entry fields
 under D's catalog equality (§2, §3), and the environment is only the closed
 six names below: an environment name outside those six is likewise a refusal,
 never a silent clear. A deployment may add members to the denied-literal set
@@ -311,7 +365,9 @@ published complete profile, OS allowlist or native credit.
 FD3 is the immutable plan, **never runner stdin**. The native adapter parses it
 completely, retains only bounded decoded values needed for mapping/audit, and
 closes the plan kernel object and EVERY duplicate **before creating the stdin
-pipe**. Never reopen it by path.
+pipe**. Never reopen it by path. A failed close of the plan object or of a
+duplicate is in the closed refusal set below: no pipe is created and nothing
+is exec'd.
 
 **Pre-filled stdin pipe (no feeder).** M0 has no feeder process or thread. After
 closing the plan, the adapter creates one fresh pipe with `pipe2(O_CLOEXEC)`,
@@ -328,14 +384,22 @@ input, second prompt or lease retry is allowed. A blocking write is never used,
 so no pre-exec step waits for a reader.
 
 The refusal set is closed. A failure of any of these steps is an adapter
-pre-exec refusal with status 78 and no exec: `pipe2`; `F_GETPIPE_SZ`, including
-capacity below the length; `F_SETFL`; the write; `close`; `dup2`; and the
-identity and access-mode check below. The write fails when it returns an error
-(`EAGAIN` included) or fewer bytes than the Prompt length. It is retried on
-`EINTR` ONLY when zero bytes were written; any partial write is a refusal and
-nothing is retried after it. Each of these refusals is attributable only per
-§5: 78 only with trustworthy original fate evidence of no runner start,
-otherwise UNKNOWN with the original debt.
+pre-exec refusal with status 78 and no exec: the plan close above; `pipe2`;
+`F_GETPIPE_SZ`, including capacity below the length; `F_SETFL`; the write;
+`close`; `dup2`; and the identity and access-mode check below. No step's
+failure is ignored and none is replaced by a default. The write fails when it
+returns an error (`EAGAIN` included) or fewer bytes than the Prompt length. It
+is retried on `EINTR` at most once, and ONLY when zero bytes were written; a
+second `EINTR` is a refusal, any partial write is a refusal, and nothing is
+retried after either. Each of these refusals is attributable only per §5: 78
+only with trustworthy original fate evidence of no runner start, otherwise
+UNKNOWN with the original debt.
+
+Some of these negatives cannot be produced natively on a fresh pipe and need
+syscall fault injection (a ptrace or seccomp harness, or a build-tagged
+syscall seam): the partial write, `EINTR`, and failing `F_GETPIPE_SZ`,
+`pipe2`, `F_SETFL`, `close` and `dup2`. The evidence rule below applies to
+them unchanged: missing native evidence for any of them closes use.
 
 The adapter installs the pipe read end as 0 with `dup2` and closes both
 original pipe descriptors. Every descriptor other than 0–2 is closed or
@@ -509,8 +573,10 @@ Independent review, joint user-manager + credential-broker review and catalog/po
 owner exact-content selection precede adapter code; owning typed catalog/install/profile,
 FD3/C/platform qualification and authenticated Result joins precede activation.
 Required hosted checks and signed delivery remain delivery gates.
-No local runtime/build/project test or live broker/credential operation is
-required or claimed for this documentary slice.
+One documentary-consistency project test is supplied; no conformance test.
+It checks the fixture files against each other and proves nothing about an
+adapter. No adapter runtime or live broker/credential operation is supplied
+or qualified by this documentary slice.
 
 [manager]: https://github.com/relux-works/swarma-user-manager/blob/5db5b8bbeba8af7ed6962c87586ef48a0cd5b0b3/spec/helper.md#7-the-launcher-swarma-user-launcher
 [d-path]: https://github.com/relux-works/swarma-user-manager/blob/5db5b8bbeba8af7ed6962c87586ef48a0cd5b0b3/spec/helper.md#L481

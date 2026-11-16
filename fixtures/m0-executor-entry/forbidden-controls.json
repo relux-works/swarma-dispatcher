@@ -73,7 +73,7 @@
   },
   {
     "id": "noninteger",
-    "change": "replace top v token with 1.0 or 1e0",
+    "change": "replace the top v token with each of, in turn: 1.0; 1e0",
     "obligation": "lexical/shape",
     "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt",
     "neighbors": [
@@ -172,7 +172,7 @@
   },
   {
     "id": "selectors",
-    "change": "set account to --config or model to --resume",
+    "change": "set a leading-dash value, each in turn: /input/account to --config; /input/model to --resume",
     "obligation": "argv/stdin",
     "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt",
     "neighbors": [
@@ -181,7 +181,7 @@
   },
   {
     "id": "injected-member",
-    "change": "add any of path,argv,env,token,resume,config,prompt_file to input",
+    "change": "add to input each of, in turn: path; argv; env; token; resume; config; prompt_file",
     "obligation": "argv/stdin",
     "expected": "Adapter rejects malformed mapping before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt",
     "neighbors": [
@@ -208,29 +208,29 @@
   },
   {
     "id": "fd",
-    "change": "deliver an extra descriptor 4 or mutable/truncated FD3",
+    "change": "deliver an extra descriptor 4 to executor code",
     "obligation": "handle/drop/FD",
-    "expected": "Manager refuses descriptor/immutable FD3 admission or its native profile qualification before target code; observe only 0-3 and complete immutable plan object. No invented manager status or no-effect inference; original debt remains",
+    "expected": "Manager refuses descriptor admission or its native profile qualification before target code; observe only 0-3. No invented manager status or no-effect inference; original debt remains",
     "neighbors": [
-      "matching-control"
+      "descriptors-0-3-only"
     ]
   },
   {
     "id": "clock",
-    "change": "use timeout 300 after original 290 deadline, or round 0.9 remainder to 1",
+    "change": "Pass --timeout 300 where deadline_ms 290000, now_ms 20000 and slack_ms 10000 give T=240",
     "obligation": "original clocks/stop/replay",
-    "expected": "Adapter refuses T outside original bound or fractional upward rounding before exec; 78 requires attributable original fate evidence of no runner start, otherwise UNKNOWN with original debt",
+    "expected": "Adapter refuses T above the original bound and the 240 cap before exec; 78 requires attributable original fate evidence of no runner start, otherwise UNKNOWN with original debt",
     "neighbors": [
-      "matching-control"
+      "bound-timing-control"
     ]
   },
   {
     "id": "second-start",
-    "change": "retry physical start/prompt after unknown original effect",
+    "change": "Perform a second physical start after an unknown original start effect",
     "obligation": "original clocks/stop/replay",
-    "expected": "D rejects repeat start/prompt after unknown original effect; retain original clocks/claim/all debt",
+    "expected": "D rejects the repeat start after unknown original effect; retain original clocks/claim/all debt",
     "neighbors": [
-      "matching-control"
+      "single-physical-start"
     ]
   },
   {
@@ -239,43 +239,45 @@
     "obligation": "qualification/config",
     "expected": "Protected runner Resolve refuses 69 lease_harness_unqualified under attributable runner observation; no lease/admitted app-server, earlier qualification measurement remains possible; unknown observation retains original debt",
     "neighbors": [
-      "matching-control"
+      "qualified-control"
     ]
   },
   {
     "id": "config",
-    "change": "treat unreadable dedicated-service config as absent/public-copy eligible",
+    "change": "treat an unreadable dedicated-service config as absent and continue from a public copy",
     "obligation": "qualification/config",
     "expected": "Runner protected configuration read/admission refuses when unreadable; require attributable original runner phase/outcome evidence, no public copy or widened read. Unknown outcome retains original debt, no invented adapter status",
     "neighbors": [
-      "matching-control"
+      "protected-config-readable"
     ]
   },
   {
     "id": "result",
-    "change": "consume old 0600 output after nonzero/unknown or call stdout authenticated durable Result",
+    "change": "Consume old 0600 O as this run's Result after a known prepublication failure",
     "obligation": "Result/debt",
-    "expected": "D rejects status/bytes/stdout as Result or read authority; retain original publication/Result/effect and unknown cleanup debt",
+    "expected": "D rejects status/bytes as Result or read authority; retain original publication/Result/effect and unknown cleanup debt",
     "neighbors": [
-      "matching-control"
+      "prepublication-failure-old"
     ]
   },
   {
     "id": "qualification-measurement-order",
-    "change": "infer no native qualification measurement from absent/malformed qualified.json with readable protected root/lock and no in-progress/pending-activation",
+    "change": "infer that no native qualification measurement occurred, from each of, in turn: an absent qualified.json; a malformed qualified.json (readable protected root/lock, no in-progress/pending-activation)",
     "obligation": "qualification/config",
     "expected": "Reject inference: Resolve may invoke Observe (Version first) before qualified.json; refusal 69 admits no lease/app-server, later runner versionProbe requires successful qualification; no probe authorized here",
     "neighbors": [
-      "matching-control"
+      "absent-qualified-record",
+      "malformed-qualified-record"
     ]
   },
   {
     "id": "unknown-publication",
-    "change": "infer old O preserved or absent O still absent after successful rename when D loses completion observation, or consume new 0600 bytes as authenticated Result",
+    "change": "After a successful rename whose completion D did not observe, infer that O is unchanged, in each of, in turn: old O taken as preserved; previously absent O taken as still absent",
     "obligation": "Result/debt",
     "expected": "Reject inference: rename replaces/creates O and fixes runner 0 despite later stop; retain original publication/Result/effect and unknown cleanup debt, no D read/consumption, success/failure disposition or fresh admission",
     "neighbors": [
-      "matching-control"
+      "publication-unobserved-old",
+      "publication-unobserved-absent"
     ]
   },
   {
@@ -284,52 +286,53 @@
     "obligation": "Result/debt",
     "expected": "D preserves runner terminal 0 after successful rename; separate D disposition/deadline, no inferred read authority",
     "neighbors": [
-      "matching-control"
+      "publication-success-old",
+      "publication-success-absent"
     ]
   },
   {
     "id": "native-adapter",
-    "change": "substitute a shebang adapter or npm/node Codex wrapper for the protected native binary",
+    "change": "substitute a shebang script for the protected native adapter executable",
     "obligation": "handle/drop/FD; qualification/config",
     "expected": "REFUSE qualification/selection; digest equality does not pin an interpreter",
     "neighbors": [
-      "matching-control"
+      "native-adapter-executable"
     ]
   },
   {
     "id": "fd3-left-open",
-    "change": "Retain admitted plan kernel object or any duplicate in run-codex or downstream, irrespective of descriptor number",
+    "change": "Retain any descriptor that names the admitted plan kernel object in the runner, irrespective of descriptor number",
     "obligation": "handle/drop/FD",
     "expected": "Kernel object-identity observation must fail qualification; broker later reusing numeric 3 for another object is not a failure",
     "neighbors": [
-      "matching-control"
+      "plan-object-absent-in-runner"
     ]
   },
   {
     "id": "environment",
-    "change": "adapter adds CODEX_HOME/model/endpoint variables or rewrites helper PATH",
+    "change": "Adapter passes the runner an environment that differs from the one it received, in each of, in turn: an added CODEX_HOME; an added model variable; an added endpoint variable; a rewritten helper PATH value",
     "obligation": "argv/stdin; qualification/config",
     "expected": "REFUSE adapter mapping; pass only unchanged helper environment, broker constructs vendor environment",
     "neighbors": [
-      "matching-control"
+      "environment-unchanged-six"
     ]
   },
   {
     "id": "d-path",
-    "change": "Claim the proposed vendor /usr/bin:/bin narrowing is already selected, or use it without full protected profile/plan equality",
+    "change": "Claim the proposed vendor /usr/bin:/bin narrowing is selected before its owners select it",
     "obligation": "protected identity/provenance; qualification/config",
     "expected": "Pending owning selection, D refuses use without full protected profile/plan equality; if narrowing is selected, a protected PATH differing from fixed vendor /usr/bin:/bin refuses. No adapter rewrite, broker flag or R-EXEC permission",
     "neighbors": [
-      "matching-control"
+      "vendor-path-selected-and-equal"
     ]
   },
   {
     "id": "transitive-exec",
-    "change": "infer an empty OS allowlist from text-only prompt, or admit an unqualified transitive shell/tool",
+    "change": "admit a transitive shell/tool exec that has no complete R-EXEC invocation qualification",
     "obligation": "qualification/config",
     "expected": "REFUSE use until actual minimum inventory and full R-EXEC invocation qualification exist",
     "neighbors": [
-      "matching-control"
+      "transitive-exec-qualified"
     ]
   },
   {
@@ -338,21 +341,21 @@
     "obligation": "handle/drop/FD",
     "expected": "REFUSE manager qualification; preserve original receipt/effect debt",
     "neighbors": [
-      "matching-control"
+      "verified-drop-before-adapter"
     ]
   },
   {
     "id": "before-c",
-    "change": "run adapter decoder/loader/constructor before receiver durable C",
+    "change": "run any adapter code before receiver durable C, each of, in turn: decoder; loader; constructor",
     "obligation": "original clocks/stop/replay",
     "expected": "REFUSE selected-A qualification; no decoder exemption",
     "neighbors": [
-      "matching-control"
+      "receiver-c-before-target-code"
     ]
   },
   {
     "id": "pin-drift",
-    "change": "mutate each request plan pin, execution effect/epoch or protected original independently",
+    "change": "mutate, each independently in turn: each request plan pin; the execution effect_id; the controller_epoch; the protected original",
     "obligation": "protected identity/provenance",
     "expected": "D refuses exact protected equality before handoff; worker cannot replace protected reads, substitute pins or allocate new claim",
     "neighbors": [
@@ -361,20 +364,20 @@
   },
   {
     "id": "result-overflow",
-    "change": "discard unknown original outcome or stop/token/custody debt when capture fills",
+    "change": "discard the retained original debt (unknown outcome, stop, token, custody) when capture fills",
     "obligation": "Result/debt",
     "expected": "Keep admission closed and original debt; no inferred no-effect or new launch",
     "neighbors": [
-      "matching-control"
+      "capture-full-debt-retained"
     ]
   },
   {
     "id": "agent-handle-reexec",
-    "change": "model tool inherits/reopens pinned agent executable or re-execs via inherited descriptor or /proc fd/exe path",
+    "change": "model tool re-executes the pinned agent executable object through each of, in turn: an inherited descriptor; /proc/<pid>/fd; /proc/<pid>/exe; fexecve; execveat with AT_EMPTY_PATH",
     "obligation": "handle/drop/FD; qualification/config",
     "expected": "REFUSE qualification/use until broker fix and actual native trace; path allowlist alone does not establish this property",
     "neighbors": [
-      "matching-control"
+      "agent-started-once-from-pinned-digest"
     ]
   },
   {
@@ -383,30 +386,30 @@
     "obligation": "handle/drop/FD",
     "expected": "Reject evidence inference; identify original plan object/all duplicates, distinguish later broker objects",
     "neighbors": [
-      "matching-control"
+      "broker-descriptor-reuses-number-3"
     ]
   },
   {
     "id": "path-kernel-conflation",
-    "change": "claim OS exec refusal because PATH differs or executable is absent from PATH",
+    "change": "claim OS exec refusal from PATH content alone, without an observed forbidden exec attempt",
     "obligation": "qualification/config",
     "expected": "Reject evidence inference; protected environment conformance and actual OS forbidden-exec evidence are separate",
     "neighbors": [
-      "matching-control"
+      "forbidden-exec-observed-natively"
     ]
   },
   {
     "id": "worker-protected-read",
-    "change": "Make worker adapter resolve protected R/catalog/current policy or infer equality from FD3 hashes",
+    "change": "Make the worker adapter resolve protected metadata (R, catalog, current policy)",
     "obligation": "protected identity/provenance",
-    "expected": "Reject worker authority inference: D alone checks protected equality before handoff; manager binds immutable FD3 digest; adapter audit copy grants no protected lookup",
+    "expected": "Reject worker protected read: D alone checks protected equality before handoff; manager binds immutable FD3 digest; adapter audit copy grants no protected lookup",
     "neighbors": [
-      "matching-control"
+      "d-equality-no-worker-read"
     ]
   },
   {
     "id": "missing-timing",
-    "change": "Remove timing/deadline_ms or slack_ms",
+    "change": "Remove, each in turn: /timing/deadline_ms; /timing/slack_ms",
     "obligation": "lexical/shape; original clocks/stop/replay",
     "expected": "D refuses unbound timing before handoff; adapter refuses missing closed members before exec; no worker defaults or fresh deadline",
     "neighbors": [
@@ -415,7 +418,7 @@
   },
   {
     "id": "tampered-timing",
-    "change": "Change FD3 deadline_ms or slack_ms without changing independently authenticated original/qualified tuple",
+    "change": "Change, each in turn, without changing the independently authenticated original/qualified tuple: FD3 deadline_ms; FD3 slack_ms",
     "obligation": "protected identity/provenance; original clocks/stop/replay",
     "expected": "D refuses timing equality/provenance before handoff; no worker choice or hash-only authority",
     "neighbors": [
@@ -424,43 +427,45 @@
   },
   {
     "id": "clock-coordinate",
-    "change": "Use unrelated/unqualified clock or hidden protected clock-metadata read in adapter",
+    "change": "Read now_ms from a clock other than the one selected by the qualified tuple's installed clock profile",
     "obligation": "original clocks/stop/replay; qualification/config",
-    "expected": "Refuse clock qualification/use; common original-deadline coordinate/confidence/currentness and finite bounds required, no worker protected read",
+    "expected": "Refuse clock qualification/use; common original-deadline coordinate/confidence/currentness and finite bounds required",
     "neighbors": [
-      "matching-control"
+      "qualified-clock-now"
     ]
   },
   {
     "id": "timing-reset-rounding",
-    "change": "Reset original D/S on retry, overflow, or round 900 ms remainder upward",
+    "change": "Round the 900 ms remainder of deadline_ms 30900, now_ms 20000, slack_ms 10000 upward to T=1",
     "obligation": "original clocks/stop/replay",
-    "expected": "Reject new deadline/slack or upward rounding; checked integer floor cap, T below 1 refuses and all original clocks/debt remain",
+    "expected": "Reject upward rounding; checked integer floor gives T=0, T below 1 refuses and all original clocks/debt remain",
     "neighbors": [
-      "matching-control"
+      "fractional-remainder"
     ]
   },
   {
     "id": "status-attribution",
-    "change": "Treat numeric 78 or mixed/raw signal/lost exec observation as known no-effect adapter refusal",
+    "change": "Treat as a known no-effect adapter refusal each of, in turn: numeric 78 without installed original fate evidence; a raw signal; a lost exec observation",
     "obligation": "handle/drop/FD; Result/debt",
     "expected": "UNKNOWN completion without trustworthy original fate actor/phase/no-start evidence; retain original publication/Result/effect/cleanup/lease/token/stop debt",
     "neighbors": [
-      "matching-control"
+      "unattributed-reserved-number",
+      "raw-signal-or-lost-completion",
+      "unknown-exec"
     ]
   },
   {
     "id": "status-collision",
-    "change": "Remap runner status to adapter 78, or extend pinned run-codex runner status set with 78",
+    "change": "Extend the pinned run-codex runner status set with 78",
     "obligation": "qualification/config; Result/debt",
-    "expected": "Reject collision/remap; 78 is proposed adapter pre-exec only pending owning review; unknown attribution retains all original debt",
+    "expected": "Reject the collision; 78 is the proposed adapter pre-exec status only, pending owning review, and an observed 78 from such a tuple is UNKNOWN completion with all original debt",
     "neighbors": [
-      "matching-control"
+      "runner-status-set-excludes-78"
     ]
   },
   {
     "id": "stdin-pipe-blocking-write",
-    "change": "Write the prompt with a blocking write, or leave the write end without O_NONBLOCK",
+    "change": "Write the prompt through a write end that lacks O_NONBLOCK",
     "obligation": "handle/drop/FD; original clocks/stop/replay",
     "expected": "Refuse native qualification; the write end is O_NONBLOCK and no pre-exec step waits for a reader. At run time EAGAIN is an adapter pre-exec refusal with no exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt",
     "neighbors": [
@@ -469,16 +474,16 @@
   },
   {
     "id": "stdin-pipe-partial-write",
-    "change": "Accept a write that returns fewer bytes than the exact decoded prompt length, continue or retry after it, or retry EINTR after any byte was written",
+    "change": "Do anything other than refuse after a write that returns fewer bytes than the exact decoded prompt length",
     "obligation": "handle/drop/FD; original clocks/stop/replay",
-    "expected": "Adapter pre-exec refusal with no exec and no second write; EINTR is retried only when zero bytes were written; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt",
+    "expected": "Adapter pre-exec refusal with no exec, no second write and no retry; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. Native evidence needs syscall fault injection",
     "neighbors": [
       "pipe-valid-lifecycle"
     ]
   },
   {
     "id": "stdin-pipe-capacity-raise",
-    "change": "Raise pipe capacity with F_SETPIPE_SZ, before or after reading it",
+    "change": "Call F_SETPIPE_SZ on the stdin pipe",
     "obligation": "handle/drop/FD; original clocks/stop/replay",
     "expected": "Refuse native qualification; capacity is only read with F_GETPIPE_SZ and a shrunk pipe refuses instead of adapting",
     "neighbors": [
@@ -486,17 +491,35 @@
     ]
   },
   {
-    "id": "stdin-pipe-write-end-survives",
-    "change": "Let a pipe write end, a second descriptor naming the pipe, or a read-write fd 0 survive to exec",
+    "id": "stdin-pipe-write-end-inherited",
+    "change": "A pipe write end without FD_CLOEXEC survives to exec at descriptor 5",
     "obligation": "handle/drop/FD; original clocks/stop/replay",
-    "expected": "Adapter pre-exec identity and access-mode refusal with no exec, so the runner can observe EOF; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. Refuse native qualification if such a descriptor reaches the runner",
+    "expected": "Adapter pre-exec refusal with no exec by the rule that only 0-2 lack FD_CLOEXEC, so the runner can observe EOF; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. Refuse native qualification if such a descriptor reaches the runner",
+    "neighbors": [
+      "pipe-write-end-closed-eof"
+    ]
+  },
+  {
+    "id": "stdin-pipe-second-descriptor",
+    "change": "A second descriptor naming the pipe read end is installed at fd 1, inside 0-2 where the close-on-exec rule does not apply",
+    "obligation": "handle/drop/FD; original clocks/stop/replay",
+    "expected": "Adapter pre-exec refusal with no exec by kernel object identity: no descriptor other than fd 0 names the pipe; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. Refuse native qualification if such a descriptor reaches the runner",
+    "neighbors": [
+      "pipe-write-end-closed-eof"
+    ]
+  },
+  {
+    "id": "stdin-fd0-read-write",
+    "change": "fd 0 is an O_RDWR open file description of the pipe (same kernel object, reopened through /proc/self/fd), so identity matches and only the access mode differs",
+    "obligation": "handle/drop/FD; original clocks/stop/replay",
+    "expected": "Adapter pre-exec refusal with no exec by the access-mode check: fd 0 must be the read-only end, else the runner holds a writer on its own stdin and never observes EOF; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. Refuse native qualification if such a descriptor reaches the runner",
     "neighbors": [
       "pipe-write-end-closed-eof"
     ]
   },
   {
     "id": "stdin-feeder",
-    "change": "Reintroduce a feeder process or thread, or any writer that runs beside the runner after exec",
+    "change": "Leave a writer of the stdin pipe (a feeder process, a feeder thread) running beside the runner after exec",
     "obligation": "handle/drop/FD; original clocks/stop/replay",
     "expected": "Refuse native qualification; the prompt is written once, whole, before exec and nothing runs beside the runner",
     "neighbors": [
@@ -504,8 +527,8 @@
     ]
   },
   {
-    "id": "stdin-pipe-capacity-short",
-    "change": "Accept a pipe whose F_GETPIPE_SZ capacity is below the exact decoded prompt length, at the boundary capacity one byte below the length (for example a pipe shrunk by the per-user pipe-buffer soft limit), or treat a failed F_GETPIPE_SZ as success",
+    "id": "stdin-pipe-capacity-below-length",
+    "change": "Accept a pipe whose F_GETPIPE_SZ capacity is 8192 for a prompt of 8193 decoded bytes, one byte above the capacity",
     "obligation": "handle/drop/FD; original clocks/stop/replay",
     "expected": "Adapter pre-exec refusal with no write and no exec; never truncate, retry or adapt capacity; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt",
     "neighbors": [
@@ -513,30 +536,48 @@
     ]
   },
   {
+    "id": "stdin-pipe-getpipesz-failure",
+    "change": "Treat a failed F_GETPIPE_SZ as success by substituting a default capacity",
+    "obligation": "handle/drop/FD; original clocks/stop/replay",
+    "expected": "Adapter pre-exec refusal with no write and no exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. Native evidence needs syscall fault injection",
+    "neighbors": [
+      "pipe-valid-lifecycle"
+    ]
+  },
+  {
     "id": "prompt-replay",
-    "change": "Deliver prompt twice or restart the runner after unknown original start",
+    "change": "Deliver the prompt a second time within one original execution",
     "obligation": "argv/stdin; original clocks/stop/replay",
     "expected": "Reject replay; one exact prompt then EOF per original execution, retain original claim and unknown effect/debt",
     "neighbors": [
-      "matching-control"
+      "single-prompt-delivery"
     ]
   },
   {
     "id": "runner-variant-selection",
-    "change": "Choose the runner command from entry, environment or argv content, or fall back from run-claude to run-codex",
+    "change": "Take argv element 2 from anything other than the artifact literal, each of, in turn: entry content; an environment variable; the adapter's own arguments; a fallback from a refused run-claude to run-codex",
     "obligation": "argv/stdin; qualification/config",
     "expected": "Refuse qualification/selection; the runner command is an immutable artifact literal bound to the installation tuple",
     "neighbors": [
-      "matching-control"
+      "runner-literal-from-artifact"
     ]
   },
   {
-    "id": "claude-credential-in-adapter",
-    "change": "Adapter sets or passes a Claude token, base URL, settings path or config directory: an environment name outside the closed six, or an argv element or environment name or value that contains a member of the installation's denied-literal set",
+    "id": "adapter-env-name-outside-six",
+    "change": "The environment the adapter receives carries one name outside the closed six (HOME, USER, LOGNAME, PATH, LANG, TMPDIR), for example ANTHROPIC_BASE_URL",
     "obligation": "argv/stdin; handle/drop/FD",
-    "expected": "Adapter pre-exec refusal with no exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. The gateway endpoint and the run-bound placeholder are runner-internal",
+    "expected": "Adapter pre-exec refusal with no exec, never a silent clear; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt",
     "neighbors": [
-      "matching-control"
+      "environment-unchanged-six"
+    ]
+  },
+  {
+    "id": "adapter-denied-literal-occurrence",
+    "change": "A member of the installation's denied-literal set occurs as a bytewise substring in each of, in turn: an argv element; an environment name; an environment value",
+    "obligation": "argv/stdin; handle/drop/FD",
+    "expected": "Adapter pre-exec refusal with no exec; no normalisation or case folding is applied before the match; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt",
+    "neighbors": [
+      "denied-literals-absent"
     ]
   },
   {
@@ -550,47 +591,216 @@
   },
   {
     "id": "runner-variant-unpinned",
-    "change": "Launch an artifact whose tuple names run-claude before the credential broker contract for it is pinned at a named commit in the spec",
+    "change": "Launch an artifact whose tuple names run-claude before the pin of its credential-broker contract at a named commit is recorded in the spec",
     "obligation": "argv/stdin; qualification/config",
-    "expected": "Adapter pre-exec refusal with no pipe write and no exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. The run-claude argv is PROPOSED text until that pin",
+    "expected": "Adapter pre-exec refusal with no pipe write and no exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. The run-claude argv is PROPOSED text until that pin is recorded in the spec",
     "neighbors": [
       "matching-control"
     ]
   },
   {
     "id": "claude-vendor-valid-credential",
-    "change": "Broker or worker places a vendor-valid credential in the vendor process argv or environment, or in a file under L, W or J or at the settings path",
+    "change": "A vendor-valid credential is present in this execution in each of, in turn: the vendor process argv; its environment; a file under L, W, J; a settings path the vendor reads",
     "obligation": "qualification/config; handle/drop/FD",
-    "expected": "Refuse run-claude qualification and admission; the vendor process and its descendants hold only the run-bound placeholder",
+    "expected": "Refuse run-claude qualification and admission (reach item); the worker UID and every process of the execution can obtain only the run-bound placeholder",
     "neighbors": [
       "claude-placeholder-only"
-    ]
+    ],
+    "reachable_after": "run-claude pin recorded in spec §4"
   },
   {
     "id": "claude-placeholder-not-run-bound",
-    "change": "Present the placeholder of one execution for another execution, generation or lease, or after stop, expiry or release; or issue a placeholder the gateway accepts for more than one run",
+    "change": "Present the placeholder of execution X in each of, in turn: another execution; another generation; another lease; X after stop; X after expiry; X after release",
     "obligation": "qualification/config; original clocks/stop/replay",
     "expected": "Gateway refuses the placeholder; a tuple whose gateway accepts it is refused run-claude qualification and admission",
     "neighbors": [
       "claude-placeholder-same-run"
-    ]
+    ],
+    "reachable_after": "run-claude pin recorded in spec §4"
   },
   {
     "id": "claude-worker-settings",
-    "change": "Worker-prepared or worker-writable settings, environment or helper sets or redirects the gateway endpoint, a credential helper or the settings file",
+    "change": "Worker content selects the vendor's gateway endpoint through each of, in turn: a worker-prepared settings file; a worker-set environment variable; a worker-prepared helper; a worker-writable settings file",
     "obligation": "qualification/config; handle/drop/FD",
     "expected": "Refuse run-claude qualification and admission; the gateway endpoint and the settings file are not worker-writable or worker-redirectable",
     "neighbors": [
       "claude-protected-settings"
-    ]
+    ],
+    "reachable_after": "run-claude pin recorded in spec §4"
   },
   {
     "id": "status-collision-run-claude",
-    "change": "Admit a run-claude tuple whose pinned runner status set includes 78, or whose status set is not pinned",
+    "change": "Admit a run-claude tuple whose pinned runner status set includes 78",
     "obligation": "qualification/config; Result/debt",
-    "expected": "Refuse qualification and admission of the tuple; adapter status 78 must be outside the runner status set of every admitted tuple, and an observed 78 from such a tuple is UNKNOWN completion with all original debt",
+    "expected": "D and tuple qualification refuse the tuple before handoff; adapter status 78 must be outside the complete, closed runner status set of every admitted tuple, and an observed 78 from such a tuple is UNKNOWN completion with all original debt",
     "neighbors": [
-      "runner-status-set-excludes-78"
+      "run-claude-status-set-excludes-78"
+    ],
+    "reachable_after": "run-claude pin recorded in spec §4"
+  },
+  {
+    "id": "claude-credential-same-uid-reachable",
+    "change": "A worker-readable process of the worker UID holds the vendor-valid credential, for example a dumpable gateway inside the runner",
+    "obligation": "qualification/config; handle/drop/FD",
+    "expected": "D and tuple qualification refuse run-claude admission before handoff: no C, no claim. A worker tool can obtain the credential from that reachable process; custody requires a different UID even if a same-UID process were non-dumpable",
+    "neighbors": [
+      "claude-credential-separate-principal"
+    ],
+    "reachable_after": "run-claude pin recorded in spec §4"
+  },
+  {
+    "id": "claude-credential-helper-prints",
+    "change": "A helper that the worker UID can run prints the vendor-valid credential",
+    "obligation": "qualification/config; handle/drop/FD",
+    "expected": "Refuse run-claude qualification and admission (custody item): no helper, socket, keyring or IPC returns the vendor-valid credential to the worker UID",
+    "neighbors": [
+      "claude-credential-separate-principal"
+    ],
+    "reachable_after": "run-claude pin recorded in spec §4"
+  },
+  {
+    "id": "claude-credential-file-under-home",
+    "change": "A vendor-valid credential file readable by the worker UID exists under H outside L, W and J, for example one left by an earlier interactive vendor login of the station account",
+    "obligation": "qualification/config; handle/drop/FD",
+    "expected": "Refuse run-claude qualification and admission (reach item): the home H as a whole is in scope, not only L, W, J and the settings path",
+    "neighbors": [
+      "claude-placeholder-only"
+    ],
+    "reachable_after": "run-claude pin recorded in spec §4"
+  },
+  {
+    "id": "denied-literal-member-missing",
+    "change": "The denied-literal set bound to the artifact lacks a non-empty value for each of, in turn: the Keymaker marker; the denied path prefix; the origin socket marker",
+    "obligation": "protected identity/provenance; argv/stdin",
+    "expected": "D refuses to bind the artifact before handoff: no C, no claim. An adapter that is still started from such an artifact refuses before exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt",
+    "neighbors": [
+      "denied-literal-set-complete"
+    ]
+  },
+  {
+    "id": "denied-literal-self-collision",
+    "change": "A member of the denied-literal set occurs as a bytewise substring in each of, in turn: E; H; a derived path J, L, W, O; a fixed argv literal; a fixed environment name; a fixed environment value",
+    "obligation": "protected identity/provenance; argv/stdin",
+    "expected": "D refuses to bind the artifact before handoff: no C, no claim. Without this check every handoff would end in an adapter refusal after C and spend the original claim",
+    "neighbors": [
+      "denied-literal-no-self-collision"
+    ]
+  },
+  {
+    "id": "runner-unpinned-bound-by-d",
+    "change": "D binds a tuple whose runner variant is not pinned in the spec, today run-claude, and hands it off",
+    "obligation": "protected identity/provenance; qualification/config",
+    "expected": "D refuses to bind or hand off the tuple before handoff: no C, no claim. The adapter refusal in runner-variant-unpinned is the second line, never the first",
+    "neighbors": [
+      "pinned-variant-tuple"
+    ]
+  },
+  {
+    "id": "runner-literal-unknown",
+    "change": "Launch an artifact whose runner literal is run-other, neither run-codex nor any variant pinned in the spec",
+    "obligation": "argv/stdin; qualification/config",
+    "expected": "Adapter pre-exec refusal with no pipe write and no exec; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. D refuses to bind such a tuple before handoff",
+    "neighbors": [
+      "pinned-variant-tuple"
+    ]
+  },
+  {
+    "id": "status-remap",
+    "change": "Report a runner-owned post-exec status as adapter status 78",
+    "obligation": "qualification/config; Result/debt",
+    "expected": "Reject the remap; there is no wrapper after exec and runner statuses keep their own meaning; a 78 of unknown attribution is UNKNOWN completion with all original debt",
+    "neighbors": [
+      "successful-exec-runner-refusal"
+    ]
+  },
+  {
+    "id": "stdin-pipe-eintr-retry-bound",
+    "change": "Retry the write a second time after a second EINTR",
+    "obligation": "handle/drop/FD; original clocks/stop/replay",
+    "expected": "Adapter pre-exec refusal with no exec after the one permitted zero-byte retry; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. Native evidence needs syscall fault injection",
+    "neighbors": [
+      "pipe-eintr-single-retry"
+    ]
+  },
+  {
+    "id": "stdin-pipe-step-failure-ignored",
+    "change": "Ignore the failure of a step in the closed refusal set and proceed, each of, in turn: plan close; pipe2; F_SETFL; close of the write end; dup2",
+    "obligation": "handle/drop/FD; original clocks/stop/replay",
+    "expected": "Adapter pre-exec refusal with no exec at the failed step; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt. Native evidence needs syscall fault injection",
+    "neighbors": [
+      "pipe-valid-lifecycle"
+    ]
+  },
+  {
+    "id": "fd3-mutable",
+    "change": "deliver FD3 as a plan object that can still be written after admission",
+    "obligation": "handle/drop/FD",
+    "expected": "Manager refuses immutable FD3 admission or its native profile qualification before target code. No invented manager status or no-effect inference; original debt remains",
+    "neighbors": [
+      "fd3-complete-immutable"
+    ]
+  },
+  {
+    "id": "fd3-truncated",
+    "change": "deliver FD3 holding fewer bytes than the plan admitted by the bound entry digest",
+    "obligation": "handle/drop/FD",
+    "expected": "Manager refuses complete FD3 admission or its native profile qualification before target code. No invented manager status or no-effect inference; original debt remains",
+    "neighbors": [
+      "fd3-complete-immutable"
+    ]
+  },
+  {
+    "id": "result-stdout-as-result",
+    "change": "Call captured stdout the authenticated durable Result",
+    "obligation": "Result/debt",
+    "expected": "D rejects stdout as Result or read authority; existing stdio is a capture candidate only; retain original publication/Result/effect debt",
+    "neighbors": [
+      "stdout-capture-candidate"
+    ]
+  },
+  {
+    "id": "vendor-wrapper-binary",
+    "change": "pin an npm/node wrapper as the Codex binary in broker policy",
+    "obligation": "handle/drop/FD; qualification/config",
+    "expected": "REFUSE qualification/selection; digest equality does not pin an interpreter",
+    "neighbors": [
+      "native-vendor-binary-pinned"
+    ]
+  },
+  {
+    "id": "transitive-exec-empty-inference",
+    "change": "infer an empty OS exec allowlist from the text-only prompt",
+    "obligation": "qualification/config",
+    "expected": "REFUSE use until the actual minimum inventory exists; a text-in/text-out turn does not establish an empty transitive exec list",
+    "neighbors": [
+      "transitive-exec-qualified"
+    ]
+  },
+  {
+    "id": "worker-hash-equality-inference",
+    "change": "Treat agreement of hashes the worker computed over FD3 as D's protected equality",
+    "obligation": "protected identity/provenance",
+    "expected": "Reject worker authority inference: worker parsing or hash agreement establishes none of D's joins; D alone checks protected equality before handoff",
+    "neighbors": [
+      "d-equality-no-worker-read"
+    ]
+  },
+  {
+    "id": "timing-reset-on-reread",
+    "change": "On the exec-time clock re-read, replace the original deadline_ms with a later value",
+    "obligation": "original clocks/stop/replay",
+    "expected": "Reject new deadline/slack; only now_ms is re-read and the cap is recomputed downward; all original clocks/debt remain",
+    "neighbors": [
+      "timing-reread-cap-downward"
+    ]
+  },
+  {
+    "id": "timing-arithmetic-wrap",
+    "change": "Compute deadline_ms - now_ms - slack_ms in arithmetic narrower than the member range, so deadline_ms 9007199254740991 wraps",
+    "obligation": "original clocks/stop/replay",
+    "expected": "Checked integer arithmetic over the full range; an overflow refuses before exec, never a wrapped T; 78 only with trustworthy original fate evidence of no runner start, otherwise UNKNOWN with original debt",
+    "neighbors": [
+      "timing-full-range-arithmetic"
     ]
   }
 ]

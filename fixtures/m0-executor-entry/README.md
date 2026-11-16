@@ -5,8 +5,9 @@ The [closed proposal](../../spec/m0-executor-entry.md) governs this inert family
 execution authority. Synthetic identities, catalog/model/effort and pins grant
 nothing. Matching independently authenticated durable originals and a complete
 current protected tuple are hypothetical controls, never supplied by these files.
-Production coverage remains **0/8**; no runtime, build, project test, native
-execution, probe, rename or product validator was run or supplied.
+Production coverage remains **0/8**; no adapter runtime, native qualification,
+live probe, rename or product validator is supplied. One
+documentary-consistency project test is supplied; no conformance test.
 
 Dispatcher D performs protected equality once before handoff, including original
 request/effect/claim/execution, current policy/association/registration/epochs,
@@ -54,14 +55,17 @@ duplicate before creating the stdin pipe. The runner must lack that object;
 only 0–2 reach runner. There is no feeder: the adapter writes the exact prompt
 once, non-blocking, into a fresh `pipe2(O_CLOEXEC)` pipe whose `F_GETPIPE_SZ`
 capacity covers it (capacity equal to the length is accepted, one byte below is
-refused) and closes the write end, without raising capacity. A failure of
-`pipe2`, `F_GETPIPE_SZ`, `F_SETFL`, the write, `close`, `dup2` or the identity
-and access-mode check is an adapter pre-exec refusal: 78 only with trustworthy
-original fate evidence of no runner start, otherwise UNKNOWN with the original
-debt. Pipe-capacity, order and
-descriptor-identity qualification remain UNQUALIFIED, including whole-account
-absence after exec. No second prompt/start
-or lease replay is permitted after unknown effect.
+refused) and closes the write end, without raising capacity. The write is
+retried on `EINTR` at most once and only with zero bytes written. The refusal
+set is closed: a failure of the plan close, `pipe2`, `F_GETPIPE_SZ`, `F_SETFL`,
+the write, `close`, `dup2` or the identity and access-mode check is an adapter
+pre-exec refusal: 78 only with trustworthy original fate evidence of no runner
+start, otherwise UNKNOWN with the original debt. The partial-write and `EINTR`
+negatives and failing `F_GETPIPE_SZ`, `pipe2`, `F_SETFL`, `close` and `dup2`
+need syscall fault injection; missing native evidence for them closes use.
+Pipe-capacity, order and descriptor-identity qualification remain UNQUALIFIED,
+including whole-account absence after exec. No second prompt/start or lease
+replay is permitted after unknown effect.
 
 Status 78 is a proposed reserved adapter pre-exec refusal, pending owning review,
 disjoint from pinned `run-codex` runner statuses 0, 1, 64, 69, 75, 124, 130;
@@ -87,35 +91,92 @@ observation/disposition is separate. Unknown retains original publication/Result
 effect and cleanup debt. Bytes/mode 0600 grant no read/consumption, disposition
 or fresh admission. No Result protocol, ACL, quota or wipe authority is added.
 
-`forbidden-controls.json` preserves the original 42 controls and the two
-qualification/publication additions in relative order, with 22 additional
-controls (66 total). Descriptive spacing and actor-specific expectations were
-revised; these strings are not preserved-byte claims. The pipe controls are one
-mutation each (`stdin-pipe-blocking-write`, `stdin-pipe-partial-write`,
-`stdin-pipe-capacity-raise`, `stdin-pipe-write-end-survives`, `stdin-feeder`,
-`stdin-pipe-capacity-short`), and `prompt-decoded-size` pins 24577 decoded
-bytes against the accepted 24576.
+`forbidden-controls.json` keeps the original 42 control ids and the two
+qualification/publication additions in relative order, with 44 additional
+controls (88 total). Descriptive strings were revised and narrowed; they are
+not preserved-byte claims.
 
-The `run-claude` runner variant is PROPOSED and not launchable:
-`runner-variant-unpinned` refuses every such artifact before exec until the
-credential-broker contract is pinned in the spec. `runner-variant-selection`
-and `claude-credential-in-adapter` are adapter-side controls;
-`claude-vendor-valid-credential`, `claude-placeholder-not-run-bound` and
-`claude-worker-settings` are the admission-gate controls, and
-`status-collision-run-claude` requires a runner status set without 78. Their
-valid neighbors are hypothetical until that pin.
+**One mechanism per row.** Each `change` names one mutation that one check
+refuses. No row's `change` may contain an alternative between different check
+mechanisms. Where a `change` lists several instances after "each of, in turn"
+or "each in turn", the same check refuses
+every instance, and the row counts as covered only when every listed instance
+was planted. Rows that once bundled mechanisms are separate rows now:
 
-Each control lists in `neighbors` at least one valid neighbor witness by id;
-the witnesses are the `valid_neighbors` cases in `boundary.witnesses.json`.
-`matching-control` is the unchanged matching hypothetical control;
-lexical changes apply to raw bytes, protected identity changes hold originals
-fixed. A repository test checks only that control ids are unique, that every
-neighbor id resolves and that the total stated here equals the file. That
-check is documentary consistency evidence, not conformance or production
-coverage. Native substitutions require a qualified tuple, never supplied here.
-These are review vectors, not executable tests: valid JSON is no conformance
-verdict. Local static JSON/hash/arithmetic/link/diff checks and bounded instrument
-plants provide documentary consistency evidence only.
+- pipe descriptors at exec: `stdin-pipe-write-end-inherited` (the rule that
+  only 0–2 lack close-on-exec), `stdin-pipe-second-descriptor` (kernel object
+  identity) and `stdin-fd0-read-write` (access mode);
+- pipe capacity: `stdin-pipe-capacity-below-length` (capacity 8192: a prompt
+  of 8192 bytes is accepted, 8193 is refused) and
+  `stdin-pipe-getpipesz-failure`;
+- the write: `stdin-pipe-blocking-write`, `stdin-pipe-partial-write` and
+  `stdin-pipe-eintr-retry-bound`;
+- the rest of the pipe lifecycle: `stdin-pipe-capacity-raise`, `stdin-feeder`
+  and `stdin-pipe-step-failure-ignored`, the one row for an ignored failure of
+  the other steps in the closed refusal set;
+- adapter environment and literals: `adapter-env-name-outside-six` and
+  `adapter-denied-literal-occurrence`;
+- D-side binding of the denied-literal set: `denied-literal-member-missing`
+  and `denied-literal-self-collision`;
+- FD3 admission: `fd`, `fd3-mutable` and `fd3-truncated`;
+- timing: `clock`, `timing-reset-rounding`, `timing-reset-on-reread` and
+  `timing-arithmetic-wrap`;
+- status: `status-collision`, `status-remap` and `status-attribution`;
+- Result: `result` and `result-stdout-as-result`;
+- native code: `native-adapter` and `vendor-wrapper-binary`;
+- transitive exec: `transitive-exec` and `transitive-exec-empty-inference`;
+- worker authority: `worker-protected-read` and
+  `worker-hash-equality-inference`.
+
+`prompt-decoded-size` pins 24577 decoded bytes against the accepted 24576.
+Rows whose `expected` says "Native evidence needs syscall fault injection"
+cannot be produced on a fresh pipe without it.
+
+The `run-claude` runner variant is PROPOSED and not launchable. Until the pin
+of its credential-broker contract is recorded in the spec,
+`runner-unpinned-bound-by-d` has D refuse to bind or hand off the tuple and
+`runner-variant-unpinned` has the adapter refuse every such artifact before
+exec; `runner-literal-unknown` is the same adapter refusal for any other
+literal. `runner-variant-selection` is the adapter-side selection control.
+The admission-gate controls are `claude-vendor-valid-credential` and
+`claude-credential-file-under-home` (reach),
+`claude-credential-same-uid-reachable` and `claude-credential-helper-prints`
+(custody), `claude-placeholder-not-run-bound` and `claude-worker-settings`;
+`status-collision-run-claude` requires a runner status set without 78.
+
+**Masked rows.** Those seven gate and status rows carry the member
+`reachable_after` with the value "run-claude pin recorded in spec §4". Until
+that pin is recorded they end in the same refusal as their neighbors, so they
+do not discriminate today and must be exercised when the pin is recorded. A
+row carries `reachable_after` exactly when one of its neighbors says
+"Hypothetical after" in its `expected`; no other row has the member.
+
+**Neighbors.** Each control lists in `neighbors` at least one valid neighbor
+witness by id: the valid state that differs from the control in the one
+property the `change` names. A neighbor may be any case id in
+`boundary.witnesses.json`; case ids are unique across all its sections, and
+every `valid_neighbors` case is named by at least one control.
+`matching-control` is the unchanged matching hypothetical control. It is named
+alone only by the 27 rows for which it is an exact single-mutation neighbor:
+one edit of the specimen bytes, of the mapping or of a protected original
+(lexical changes apply to raw bytes, protected identity changes hold originals
+fixed). Every other row names a witness for its own property.
+
+A repository test checks the files against each other: each fixture JSON file
+is one document with no trailing data and no duplicate member name; member
+names have their exact case; control and case ids are unique; every neighbor
+id resolves; every `valid_neighbors` case is used; `matching-control` alone
+appears only on the 27 allowed rows; every `expected` that mentions 78 carries
+the attribution qualifier or says UNKNOWN;
+`reachable_after` follows the rule above; every back-quoted name in this file
+is a control id, a case id or a known literal; and the total stated here
+equals the file. The one-mechanism-per-row rule needs semantic review; the
+test is not a natural-language parser. That check is documentary consistency
+evidence, not conformance or production coverage. Native substitutions require a qualified
+tuple, never supplied here. These are review vectors, not executable tests:
+valid JSON is no conformance verdict. Local static JSON/hash/arithmetic/link/
+diff checks and bounded instrument plants provide documentary consistency
+evidence only.
 
 Selected A still requires receiver C before ANY adapter/loader/constructor code.
 Native/no-shebang, FD kernel-object/all-copy isolation, full per-tool R-EXEC

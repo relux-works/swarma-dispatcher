@@ -30,9 +30,25 @@ var (
 // complete response payload (at most 508 bytes) or an error that closes the
 // connection without a reply. A nil Extension keeps the reference subset
 // unchanged: such frames close without a reply. Daemon attaches none; only
-// DaemonWith can.
+// DaemonWith can. ManagedCallers exposes protected M0 installation data, not
+// request-supplied authority. It is snapshotted and pinned before listening.
+// An empty list admits no managed peers (NewExtension without Attach); M0
+// Attach itself requires 1..4 entries. Managed peers can send only M0 frames.
 type Extension interface {
+	ManagedCallers() []Principal
 	Serve(peer uint32, id string, body []byte) (string, error)
+}
+
+// M0RequestKind is the only post-hello discriminator available to managed peers.
+const M0RequestKind = "swarma-dispatcher m0-request/1"
+
+func m0Request(b []byte) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(b, &fields) != nil {
+		return false
+	}
+	var kind string
+	return json.Unmarshal(fields["kind"], &kind) == nil && kind == M0RequestKind
 }
 
 // scanCanonical gates bytes before typed decoding; it never normalizes input.

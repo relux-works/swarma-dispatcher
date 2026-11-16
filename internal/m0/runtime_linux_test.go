@@ -137,7 +137,7 @@ func TestAttachOpensLedger(t *testing.T) {
 	syscall.Umask(previous)
 	t.Cleanup(func() { syscall.Umask(previous) })
 	e := newEnv(t)
-	doc := `{"enabled":true,"entry":"initialize","kind":"swarma-dispatcher m0-config/1","recovery_attested":true,"state_dir":"` + cfg.Directory + `","supported_local_storage":true,"v":1}`
+	doc := `{"callers":[{"dev":1,"dir":"/example/caller","ino":2,"uid":30001}],"enabled":true,"entry":"initialize","kind":"swarma-dispatcher m0-config/2","recovery_attested":true,"state_dir":"` + cfg.Directory + `","supported_local_storage":true,"v":2}`
 	read := func(string) ([]byte, error) { return []byte(doc), nil }
 	if _, err := Attach("/m0.json", DefaultSeams(), read); CodeOf(err) != CodeClosed {
 		t.Fatalf("ATTACH: default seams %v", err)
@@ -147,6 +147,14 @@ func TestAttachOpensLedger(t *testing.T) {
 	}
 	ext, err := Attach("/m0.json", e.seams(), read)
 	must(t, err)
+	callers := ext.ManagedCallers()
+	if len(callers) != 1 || callers[0].UID != 30001 {
+		t.Fatal("ATTACH: protected callers not exposed")
+	}
+	callers[0].UID++
+	if ext.ManagedCallers()[0].UID != 30001 {
+		t.Fatal("ATTACH: caller snapshot is mutable")
+	}
 	reply, err := ext.Serve(e.peer, dispatchID, e.dispatchWire)
 	must(t, err)
 	if !strings.Contains(reply, `"state":"started"`) {

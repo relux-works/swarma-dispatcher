@@ -50,7 +50,7 @@ var (
 	requestLimits = limits{maxBytes: MaxRequestWire, maxDepth: 16, maxTokens: 1024}
 	policyLimits  = limits{maxBytes: 16384, maxDepth: 16, maxTokens: 2048}
 	entryLimits   = limits{maxBytes: 49152, maxDepth: 8, maxTokens: 512}
-	configLimits  = limits{maxBytes: 4096, maxDepth: 2, maxTokens: 64}
+	configLimits  = limits{maxBytes: 4096, maxDepth: 3, maxTokens: 256}
 )
 
 func invalid(detail string) *Refusal { return refuse(CodeRequestInvalid, detail) }

@@ -225,14 +225,16 @@ prints `m0 closed` and stays capacity-only:
 
 The M0 configuration is a separate protected server-mode file (same ownership
 and mode rules as the server configuration) holding exactly the canonical
-object `{"enabled","entry","kind","recovery_attested","state_dir","supported_local_storage","v"}`
-with `kind` `swarma-dispatcher m0-config/1`, `entry` `initialize` or
+object `{"callers","enabled","entry","kind","recovery_attested","state_dir","supported_local_storage","v"}`
+with `kind` `swarma-dispatcher m0-config/2`, `v=2`, `entry` `initialize` or
 `established`, and an absolute `state_dir` that already contains the journal
 `records` and `inputs` directories. The transport server configuration is
 unchanged. `recovery_attested` is the operator's recovery-prerequisite
 attestation for the journal; without it an established reopen refuses
 `m0_recovery_held`. A journal sync failure makes the daemon exit and must not be
 reopened in the same boot.
+The protected `callers` list contains 1..4 ascending managed UID/directory pins admitted only to M0 frames while the extension is attached, with the same pin rechecks and slot limits; configuration /1 now refuses.
+Membership grants no M0 authority, current-generation checks remain in M0, and default seams still keep attachment closed.
 
 On an admitted isolated Linux runner:
 

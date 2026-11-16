@@ -19,11 +19,18 @@ const (
 // It answers only frames whose kind is the M0 request discriminator; every
 // other frame keeps the reference subset's close-without-reply behavior.
 type Extension struct {
-	rt *Runtime
+	rt      *Runtime
+	callers []transport.Principal
 }
 
 // NewExtension wraps a runtime.
 func NewExtension(rt *Runtime) *Extension { return &Extension{rt: rt} }
+
+// ManagedCallers returns a copy of the protected list supplied by Attach.
+// NewExtension alone enrolls nobody; only Attach reads installation data.
+func (e *Extension) ManagedCallers() []transport.Principal {
+	return append([]transport.Principal(nil), e.callers...)
+}
 
 // Close ends the ledger session.
 func (e *Extension) Close() error {
@@ -142,5 +149,5 @@ func Attach(configPath string, seams Seams, read func(string) ([]byte, error)) (
 	if err != nil {
 		return nil, err
 	}
-	return NewExtension(rt), nil
+	return &Extension{rt: rt, callers: append([]transport.Principal(nil), cfg.Callers...)}, nil
 }

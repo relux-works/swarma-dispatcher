@@ -106,9 +106,9 @@ func serveOperation(f *os.File, start time.Time, recheck func() error) error {
 }
 
 // serveOperationExt is serveOperation with an optional post-hello extension.
-// With ext nil the behavior is exactly the reference subset. With ext set, a
-// post-hello frame outside the closed grammar is offered to ext once; its
-// response is written after the same pin recheck, and ErrFatal propagates.
+// Unmanaged peers keep the reference grammar, with other frames offered once
+// to ext when attached. Managed peers can reach only the M0 discriminator and
+// require ext. Results share the pin recheck, and ErrFatal propagates.
 func serveOperationExt(f *os.File, start time.Time, recheck func() error, peer uint32, ext Extension) error {
 	wire, err := newSocketIO(f, start)
 	if err != nil {
@@ -138,6 +138,16 @@ func serveOperationExt(f *os.File, start time.Time, recheck func() error, peer u
 	allowed, err := parseOperation(b, id)
 	var response string
 	switch {
+	case managed(peer):
+		// Managed admission never reaches the reference-subset recognizers.
+		if ext == nil || !m0Request(b) {
+			return ErrInvalid
+		}
+		response, err = ext.Serve(peer, id, b)
+		clear(b)
+		if err != nil {
+			return err
+		}
 	case err == nil:
 		response = invalid(id)
 		if allowed {
@@ -193,6 +203,52 @@ func serve(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown) err
 // serveExt is serve with an optional extension. An extension ErrFatal from any
 // connection requests daemon shutdown with that cause.
 func serveExt(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, ext Extension) error {
+	return serveObserved(ctx, e, c, stop, ext, admissionCalls{peerUID, principalPin})
+}
+
+// admissionCalls is an internal observation seam, never configurable by a caller.
+// Production always supplies the kernel credential lookup and principalPin.
+type admissionCalls struct {
+	peer func(*os.File) (uint32, error)
+	pin  func(principal) (*directory, error)
+}
+
+func managedCallers(c serverConfig, ext Extension, pin func(principal) (*directory, error)) ([]principal, error) {
+	if ext == nil {
+		return nil, nil
+	}
+	callers := append([]principal(nil), ext.ManagedCallers()...)
+	if len(callers) > 4 {
+		return nil, ErrConfig
+	}
+	for i, p := range callers {
+		if !p.ValidManaged() || p.UID == c.ServiceUID || i > 0 && callers[i-1].UID >= p.UID {
+			return nil, ErrConfig
+		}
+		// The ranges are disjoint, but assert that the two roles never overlap.
+		for _, other := range c.Callers {
+			if other.UID == p.UID {
+				return nil, ErrConfig
+			}
+		}
+		d, err := pin(p)
+		if err != nil {
+			return nil, err
+		}
+		d.close()
+	}
+	return callers, nil
+}
+
+func serveObserved(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, ext Extension, calls admissionCalls) error {
+	callers, err := managedCallers(c, ext, calls.pin)
+	if err != nil {
+		return err
+	}
+	return serveAdmitted(ctx, e, c, stop, ext, callers, calls)
+}
+
+func serveAdmitted(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, ext Extension, managedPins []principal, calls admissionCalls) error {
 	resources := newSlots()
 	var workers sync.WaitGroup
 	watcherDone := make(chan struct{})
@@ -223,16 +279,23 @@ func serveExt(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, 
 			resources.release(nil)
 			continue
 		}
-		uid, err := peerUID(f)
+		uid, err := calls.peer(f)
 		if err != nil {
 			wakeClose(f)
 			resources.release(nil)
 			continue
 		}
 		var caller *principal
-		for i := range c.Callers {
-			if c.Callers[i].UID == uid {
-				caller = &c.Callers[i]
+		candidates := c.Callers
+		if managed(uid) {
+			candidates = nil
+			if ext != nil {
+				candidates = managedPins
+			}
+		}
+		for i := range candidates {
+			if candidates[i].UID == uid {
+				caller = &candidates[i]
 				break
 			}
 		}
@@ -241,7 +304,7 @@ func serveExt(ctx context.Context, e *endpoint, c serverConfig, stop *shutdown, 
 			resources.release(nil)
 			continue
 		}
-		pin, err := principalPin(*caller)
+		pin, err := calls.pin(*caller)
 		if err != nil {
 			wakeClose(f)
 			resources.release(nil)
@@ -351,6 +414,11 @@ func DaemonWith(configPath string, ext Extension) (result error) {
 		}
 		pin.close()
 	}
+	managedPins, err := managedCallers(c, ext, principalPin)
+	if err != nil {
+		stop.request(err)
+		return err
+	}
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -372,7 +440,7 @@ func DaemonWith(configPath string, ext Extension) (result error) {
 			result = errors.Join(result, ErrShutdown)
 		}
 	}()
-	return serveExt(ctx, e, c, stop, ext)
+	return serveAdmitted(ctx, e, c, stop, ext, managedPins, admissionCalls{peerUID, principalPin})
 }
 
 // Capacity performs exactly one authenticated exchange, returning the closed

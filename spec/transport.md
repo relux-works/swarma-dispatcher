@@ -49,7 +49,7 @@ Missing/unreadable/empty/malformed/oversize configuration, duplicates, unknown m
 with runtime identity refuses startup/connect with local failure and zero protocol bytes; server/client configuration is never repaired or merged.
 Peer UID and endpoint checks also enforce disagreement between separately provisioned snapshots; there is no agreement negotiation or downgrade.
 
-Only unmanaged principals are admitted. Managed `(uid, generation)` identities require the helper's current active ledger and are excluded entirely.
+Only unmanaged principals are admitted by the reference subset. Managed `(uid, generation)` identities require the helper's current active ledger and are otherwise excluded, with the sole named exception **Managed M0 callers** below.
 For each pin, open the directory `O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC` through nonsymlink ancestors owned by root or that pin's UID,
 not group/other-writable. `fstat` must show the configured device/inode, owner UID and exact mode `0700`.
 Server validates every caller pin at configuration load, the selected pin before hello and again before the operation result;
@@ -60,6 +60,45 @@ remove the old enrollment and replace its directory identity before reusing a UI
 Directory checks prevent a replacement from inheriting an old pin. They cannot detect root reassigning a UID while deliberately retaining its old
 pinned directory/configuration; non-reuse is a deployment invariant, not a fabricated ledger check. If it is not assured, do not deploy this subset.
 JSON UIDs, names, PID claims and group membership never establish the protocol principal. Same-UID processes remain the same principal.
+
+## Managed M0 callers
+
+The separate protected file selected by `--m0-config`, not `server.json`, holds
+`callers`: 1..4 closed `dev`, `dir`, `ino`, `uid` principal objects, strictly
+ascending by UID in `30000..59999`, none the service UID. Its canonical closed
+configuration is `callers`, `enabled`, `entry`, `kind`, `recovery_attested`,
+`state_dir`, `supported_local_storage`, `v`, with `kind` equal to
+`swarma-dispatcher m0-config/2` and `v=2`; configuration /1 now refuses rather
+than acquiring new meaning. Missing, empty, oversized, unordered, duplicate,
+out-of-range or malformed caller lists refuse attach with a named `callers`
+refusal. The configuration byte cap remains 4096, depth is at most 3, and the
+bounded canonical parser permits at most 256 tokens. The transport snapshots
+extension-supplied principals before listening, asserts no overlap with server
+callers and validates every managed pin using the same `principalPin` checks;
+a failed pin refuses startup. Server configuration retains its seven members
+and unmanaged-only caller list.
+
+For a managed kernel peer: (1) with no extension attached, or (2) absent from
+its protected list, admission is exactly the base zero-byte close, releasing
+the global slot without reserving a UID slot or reading hello; (3) when listed,
+the same pin checks, hello, per-UID limit of eight and global limit of 64 apply.
+After hello, only frames with kind `swarma-dispatcher m0-request/1` go to the M0
+extension; capacity and every other reference-subset operation close without an
+operation result. The pin is rechecked before hello and the M0 result. An
+unmanaged server-listed caller retains capacity behavior and may still reach
+the extension with an M0 frame, where M0 refuses a non-association kernel UID.
+The current active generation check remains in M0 (`generationCurrent`), never
+in allowlist membership. There are at most 32 unmanaged plus four managed pins.
+No new client grammar, flags, authority, enrollment, policy or generation
+fallback is introduced; default seams still keep M0 closed and nothing is
+activated by this exception. The reference-subset operation/result grammar and
+response-size examples below remain reference-only; M0 validates its own bodies
+and results behind the same framing, descriptor and deadline gates.
+
+The installation digest of the daemon's protected configuration is defined over
+both files as `SHA-256(CCJ-1({"m0":<sha256 hex of the M0 config bytes>,"server":<sha256 hex of server.json bytes>}))`,
+with exactly those two member names; the separate daemon configuration unit
+implements it, not this transport unit.
 
 ## Endpoint ownership, startup and shutdown
 
@@ -173,7 +212,7 @@ These finite choices are transport resources, never launch/quota authority or a 
 Use listen backlog parameter 16. Accept loop has at most one transient newly accepted descriptor beyond the 64 active global slots;
 try a global slot first (full: close without peer lookup/read), then SO_PEERCRED/allowlist/pin validation, then a per-UID slot (8 maximum).
 Only after both slots start connection work/goroutines or allocate frame buffers. Admission checks stay in the bounded accept path;
-configuration has at most 32 pins. Failure closes and releases acquired slots; no pending worker queue. Persistent accept errors initiate shutdown.
+configuration has at most 32 unmanaged pins plus four managed M0 pins when attached. Failure closes and releases acquired slots; no pending worker queue. Persistent accept errors initiate shutdown.
 Each connection has one payload buffer at most 131072 bytes, a separate 4-byte prefix, a 4096-byte ancillary buffer and a 512-byte outbound buffer
 including its prefix. Maximum specified response payload is 165 bytes (64-byte ID), wire 169. Release hello payload before reading operation.
 These explicit buffers total 135684 bytes/connection, 8683776 for 64; stacks, bounded records/config and kernel overhead are separate, not a total RSS promise.
@@ -193,7 +232,7 @@ EOF/timeouts/slot exhaustion are not protocol error envelopes. Release all descr
 | Surface | Positive control | Required forbidden outcome/control |
 | --- | --- | --- |
 | Config | Both separate complete protected snapshots; 1/32 caller entries; exact size caps | Empty/33 entries, duplicates, extra/missing keys, max+1 bytes, wrong owner/group/mode, symlink, partial read/replacement, impossible numeric/path/depth values: refuse before serving/writing |
-| Principal | Enrolled unmanaged UID and original directory; recheck before hello/result | Root/service/managed UID, forged JSON UID, replaced/missing/wrong-owned pin, stale enrollment after UID reuse: no result; non-reuse deployment invariant independently checked |
+| Principal | Enrolled unmanaged UID and original directory; recheck before hello/result | Root/service/managed UID outside the named M0 exception, forged JSON UID, replaced/missing/wrong-owned pin, stale enrollment after UID reuse: no result; non-reuse deployment invariant independently checked |
 | Service | Correct pinned endpoint and service UID | Wrong/unavailable credentials or identity/GID/mode change around connect: zero client protocol bytes |
 | Hello/state | Exact ordered hello/capacity/hold | Unknown/empty/mixed/duplicate version; op-before-hello, second hello, wrong ID, error at client hello stage: close; no second operation processed |
 | JSON/IDs | Canonical literals, ID lengths 1/64, generated 32-hex IDs | Empty/65-byte ID, duplicate/escaped-alias key, whitespace/order/Unicode/BOM/null/number/extra member/depth>2/trailing byte: close for intended invalid input |

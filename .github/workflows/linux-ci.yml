@@ -74,6 +74,21 @@ jobs:
           fi
           test -z "$out"
           go test -v -p 1 -count=1 -timeout=20m ./...
+      - name: Real managed M0 kernel peer control (hosted runner only)
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          binary_dir="$(mktemp -d "$RUNNER_TEMP/managed-peer.XXXXXX")"
+          trap 'rm -rf "$binary_dir"' EXIT
+          go test -c -o "$binary_dir/transport.test" ./internal/transport/
+          sudo env TEST_BINARY="$binary_dir/transport.test" bash -euo pipefail -c '
+            test "$(id -u)" -eq 0
+            scratch="$(mktemp -d /var/lib/managed-peer.XXXXXX)"
+            trap '\''rm -rf "$scratch"'\'' EXIT
+            mkdir "$scratch/home" "$scratch/tmp"
+            HOME="$scratch/home" TMPDIR="$scratch/tmp" GOTMPDIR="$scratch/tmp" \
+              DISPATCHER_REQUIRE_ROOT=1 "$TEST_BINARY" \
+              -test.run="^TestManagedM0RealPeer$" -test.v -test.count=1
+          '
       - name: Qualify CI behavior with isolated fixtures
         run: python3 .scripts/test_linux_ci.py -v
       - name: Test demo mutation runner controls

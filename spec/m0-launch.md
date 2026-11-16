@@ -183,6 +183,13 @@ must be selected before activation, not filled with unbounded opaque records.
 
 ## 3. Protected installation, currentness and ordering
 
+The managed M0 caller list in the protected `--m0-config` file is protected
+installation data, installed only by the protected operator path together with
+policy and association, under the [Managed M0 callers](transport.md#managed-m0-callers)
+transport exception. Membership admits a kernel UID to M0 frames only; it never
+modifies authority or replaces current active generation, association, policy or
+any other M0 check.
+
 Only the protected operator path may install, replace or remove policy,
 association, catalog or qualification pins, after exact-content owner acceptance.
 Agent-writable files, a signed request, an active station, key availability and

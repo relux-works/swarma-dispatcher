@@ -14,12 +14,15 @@ const (
 	maxIdentity       = 9007199254740991
 )
 
-type principal struct {
+// Principal pins a numeric caller UID to its protected directory identity.
+type Principal struct {
 	Dev uint64 `json:"dev"`
 	Dir string `json:"dir"`
 	Ino uint64 `json:"ino"`
 	UID uint32 `json:"uid"`
 }
+type principal = Principal
+
 type commonConfig struct {
 	ConnectGID  uint32 `json:"connect_gid"`
 	EndpointDev uint64 `json:"endpoint_dev"`
@@ -38,7 +41,8 @@ type clientConfig struct {
 }
 
 func validNumber(v uint32) bool { return v > 0 && v < 4294967295 }
-func unmanaged(v uint32) bool   { return validNumber(v) && (v < 30000 || v > 59999) }
+func managed(v uint32) bool     { return v >= 30000 && v <= 59999 }
+func unmanaged(v uint32) bool   { return validNumber(v) && !managed(v) }
 func validPath(v string, limit int) bool {
 	if len(v) < 2 || len(v) > limit || v[0] != '/' || path.Clean(v) != v {
 		return false
@@ -53,8 +57,16 @@ func validPath(v string, limit int) bool {
 func (c commonConfig) valid() bool {
 	return c.Version == 1 && unmanaged(c.ServiceUID) && validNumber(c.ServiceGID) && validNumber(c.ConnectGID) && c.ConnectGID != c.ServiceGID && c.EndpointDev > 0 && c.EndpointDev <= maxIdentity && c.EndpointIno > 0 && c.EndpointIno <= maxIdentity
 }
-func (p principal) valid(service uint32) bool {
-	return unmanaged(p.UID) && p.UID != service && p.Dev > 0 && p.Dev <= maxIdentity && p.Ino > 0 && p.Ino <= maxIdentity && validPath(p.Dir, 512)
+func (p Principal) validPin() bool {
+	return p.Dev > 0 && p.Dev <= maxIdentity && p.Ino > 0 && p.Ino <= maxIdentity && validPath(p.Dir, 512)
+}
+
+// ValidManaged checks a managed principal's closed numeric and path bounds.
+// Filesystem identity and service-UID exclusion are checked by the transport.
+func (p Principal) ValidManaged() bool { return managed(p.UID) && p.validPin() }
+
+func (p Principal) valid(service uint32) bool {
+	return unmanaged(p.UID) && p.UID != service && p.validPin()
 }
 func parseServer(b []byte) (serverConfig, error) {
 	var c serverConfig

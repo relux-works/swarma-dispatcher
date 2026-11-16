@@ -18,6 +18,8 @@ type fakeExtension struct {
 	lastID   string
 }
 
+func (f *fakeExtension) ManagedCallers() []Principal { return nil }
+
 func (f *fakeExtension) Serve(peer uint32, id string, body []byte) (string, error) {
 	f.calls++
 	f.lastPeer, f.lastID = peer, id

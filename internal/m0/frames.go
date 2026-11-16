@@ -140,9 +140,14 @@ const (
 	observeStop  = "stop"
 )
 
+// removalFrame is the original removal/replacement intent: Event is the
+// authoritative event time known to the dispatcher and Detection the time it
+// was first detected (equal here; older frames omit Detection and read it as
+// Event). Both are fixed once and never re-timed by a later caller.
 type removalFrame struct {
-	Event  int64  `json:"event"`
-	Reason string `json:"reason"`
+	Event     int64  `json:"event"`
+	Detection int64  `json:"detection,omitempty"`
+	Reason    string `json:"reason"`
 }
 
 type phase string
@@ -265,14 +270,15 @@ type cancelRecord struct {
 
 // projection is the in-memory reduction of the ledger.
 type projection struct {
-	Epoch           uint64
-	Policy          *policySeen
-	Watermark       int64
-	Removal         int64
-	RemovalRecorded bool
-	Dispatches      map[string]*dispatchRecord
-	Debits          map[string]string
-	Cancels         map[string]*cancelRecord
+	Epoch            uint64
+	Policy           *policySeen
+	Watermark        int64
+	Removal          int64
+	RemovalDetection int64
+	RemovalRecorded  bool
+	Dispatches       map[string]*dispatchRecord
+	Debits           map[string]string
+	Cancels          map[string]*cancelRecord
 }
 
 func newProjection() *projection {
@@ -309,6 +315,33 @@ func decodeFrame(b []byte) (*frame, error) {
 	return &f, nil
 }
 
+// stopDebtPossible reports whether a record can carry stop debt: an intent
+// (effect) was issued and the launch is not terminal. A reservation that never
+// reached intent has no effect to stop; cancelled and absent records are done.
+func (rec *dispatchRecord) stopDebtPossible() bool {
+	return rec.EffectID != "" && rec.Phase != phaseAbsent && rec.Phase != phaseCancelled
+}
+
+func (rec *dispatchRecord) stopEffect() string {
+	return effectID(rec.Principal, rec.RequestID, lineageRecordID, componentLaunch, operationStop, 1)
+}
+
+// detectExpiry records the expiry obligation of every record that can carry
+// stop debt the first time a durable frame proves the dispatcher saw qualified
+// time at or past that record's original expiry. The frame's own time is the
+// detection; a later caller cannot re-time it (m0-launch section 5: «Neither
+// receipt arrival nor delayed polling may reset them»).
+func (p *projection) detectExpiry(now int64) {
+	if now <= 0 {
+		return
+	}
+	for _, rec := range p.Dispatches {
+		if rec.stopDebtPossible() && !rec.hasObligation(sourceExpiry) && now >= rec.Deadlines.Expiry {
+			rec.addObligation(rec.stopEffect(), sourceExpiry, rec.Deadlines.Expiry, now)
+		}
+	}
+}
+
 // apply reduces one frame. Every forbidden transition is an inconsistency,
 // never silently repaired.
 func (p *projection) apply(f *frame) error {
@@ -318,6 +351,7 @@ func (p *projection) apply(f *frame) error {
 	if f.Now > p.Watermark {
 		p.Watermark = f.Now
 	}
+	p.detectExpiry(f.Now)
 	switch f.Type {
 	case frameOpen:
 		if f.Epoch == 0 || f.Epoch <= p.Epoch {
@@ -479,7 +513,20 @@ func (p *projection) apply(f *frame) error {
 		}
 		if !p.RemovalRecorded {
 			p.Removal = f.Removal.Event
+			p.RemovalDetection = f.Removal.Detection
+			if p.RemovalDetection == 0 {
+				p.RemovalDetection = f.Removal.Event
+			}
 			p.RemovalRecorded = true
+		}
+		// The recorded removal becomes the stop obligation of every run that
+		// can carry stop debt, with the original event and detection. This
+		// is the single source of the removal obligation: cancel, Sweep,
+		// continuation and replay all read it from here and never re-detect.
+		for _, rec := range p.Dispatches {
+			if rec.stopDebtPossible() {
+				rec.addObligation(rec.stopEffect(), sourceRemoval, p.Removal, p.RemovalDetection)
+			}
 		}
 	default:
 		return inconsistent("unknown frame type")

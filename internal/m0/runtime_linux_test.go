@@ -287,3 +287,162 @@ func TestOriginalExpiryCeilingSurvivesReopen(t *testing.T) {
 		t.Fatalf("CEILING-REOPEN: first=%+v retried=%+v rec=%+v starts=%d stops=%d", first, retried, rec, starts, stops)
 	}
 }
+
+// recordRemoval marks the installed policy removed and lets a fresh signed
+// dispatch detect and durably record it (refused m0_policy_removed).
+func recordRemoval(t *testing.T, e *testEnv) {
+	t.Helper()
+	e.source.edit(func(i *Installed) { i.Removed = true; i.InstallRevision++ })
+	probe := parseDoc(t, e.dispatchDoc.encode(nil))
+	setPath(t, probe, "request_id", text(strings.Repeat("5", 32)))
+	_, err := e.rt.Handle(context.Background(), e.peer, signRequest(t, probe, e.key))
+	wantCode(t, err, CodePolicyRemoved)
+}
+
+// Claim (real journal, recorded removal carried into every stop entry): once
+// a removal is durably detected, the removal obligation with its original
+// event and detection is on the started run; a delayed Sweep (control) and a
+// delayed owner cancel forty seconds later, with and without a journal close
+// and established reopen, hand the receiver a ceiling no later than
+// removal + detect + stop, with exactly one start and one stop.
+func TestRecordedRemovalCeiling(t *testing.T) {
+	for _, mode := range []string{"sweep-control", "cancel", "cancel-reopen"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newEnv(t)
+			cfg := journalFixture(t)
+			rt, err := Initialize(cfg, e.seams())
+			must(t, err)
+			e.rt = rt
+			t.Cleanup(func() { _ = e.rt.Close() })
+			_, err = e.dispatch(t)
+			must(t, err)
+			original := e.record(t, dispatchID)
+			removalEvent := original.Deadlines.ReservedAt + 1
+			e.clock.set(removalEvent)
+			recordRemoval(t, e)
+			if mode == "cancel-reopen" {
+				must(t, e.rt.Close())
+				e.rt, err = OpenEstablished(cfg, e.seams())
+				must(t, err)
+			}
+			rec := e.record(t, dispatchID)
+			if !rec.hasObligation(sourceRemoval) || rec.StopObligations[0] != (StopObligation{Source: sourceRemoval, Event: removalEvent, Detection: removalEvent}) {
+				t.Fatalf("REMOVAL-CEILING: removal obligation not carried: %+v", rec.StopObligations)
+			}
+			detection := removalEvent + original.Deadlines.DetectSeconds + 10
+			e.clock.set(detection)
+			if mode == "sweep-control" {
+				must(t, e.rt.Sweep(context.Background()))
+			} else {
+				_, err = e.cancel(t)
+				must(t, err)
+			}
+			stop := e.launcher.lastStop
+			latest := removalEvent + original.Deadlines.DetectSeconds + original.Deadlines.StopSeconds
+			if starts, stops := e.launcher.count(); starts != 1 || stops != 1 {
+				t.Fatalf("REMOVAL-CEILING: starts=%d stops=%d", starts, stops)
+			}
+			if stop.Ceiling == 0 || stop.Ceiling > latest {
+				t.Fatalf("REMOVAL-CEILING: ceiling=%d exceeds removal total %d; obligations=%+v", stop.Ceiling, latest, stop.Obligations)
+			}
+		})
+	}
+}
+
+// Claim (real journal, removal detection survives delay): a removal detected
+// through Handle keeps its original detection; an immediate Sweep (control), a
+// Sweep delayed past the detect bound, and a delayed Sweep after a journal
+// close and established reopen all hand the receiver the original
+// detection + stop component, never a ceiling restarted at the sweep time.
+func TestRemovalDetectionSurvivesDelay(t *testing.T) {
+	for _, mode := range []string{"immediate-control", "delayed-sweep", "delayed-reopen-sweep"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newEnv(t)
+			cfg := journalFixture(t)
+			rt, err := Initialize(cfg, e.seams())
+			must(t, err)
+			e.rt = rt
+			t.Cleanup(func() { _ = e.rt.Close() })
+			_, err = e.dispatch(t)
+			must(t, err)
+			original := e.record(t, dispatchID)
+			detectedAt := original.Deadlines.ReservedAt + 1
+			e.clock.set(detectedAt)
+			recordRemoval(t, e)
+			if mode == "delayed-reopen-sweep" {
+				must(t, e.rt.Close())
+				e.rt, err = OpenEstablished(cfg, e.seams())
+				must(t, err)
+			}
+			if mode != "immediate-control" {
+				e.clock.set(detectedAt + original.Deadlines.DetectSeconds + 10)
+			}
+			must(t, e.rt.Sweep(context.Background()))
+			stop := e.launcher.lastStop
+			if want := detectedAt + original.Deadlines.StopSeconds; stop.Ceiling != want {
+				t.Fatalf("REMOVAL-DETECTION: ceiling=%d want original detection component %d; obligations=%+v", stop.Ceiling, want, stop.Obligations)
+			}
+			if rec := e.record(t, dispatchID); rec.StopDetection != detectedAt || rec.StopSource != sourceRemoval {
+				t.Fatalf("REMOVAL-DETECTION: provenance re-timed: %+v", rec)
+			}
+		})
+	}
+}
+
+// Claim (real journal, unknown stop after refused start): a cancel that wins
+// before C with a transiently failing receiver leaves a refused start with an
+// unknown stop; once the receiver is healthy, Sweep (with Reconcile around it)
+// continues the SAME stop effect with the same ceiling to absence, with and
+// without a journal close and established reopen, one start and two stops. The
+// same-ID cancel retry is the control. No launch is started and absence comes
+// only from the stop receipt.
+func TestUnknownStopAfterRefusedStart(t *testing.T) {
+	for _, mode := range []string{"retry-control", "sweep", "reopen-sweep"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newEnv(t)
+			cfg := journalFixture(t)
+			rt, err := Initialize(cfg, e.seams())
+			must(t, err)
+			e.rt = rt
+			t.Cleanup(func() { _ = e.rt.Close() })
+			e.launcher.stopErr = errFixture
+			e.launcher.onStart = func() {
+				_, cancelErr := e.cancel(t)
+				wantCode(t, cancelErr, CodeObservationUnknown)
+			}
+			_, err = e.dispatch(t)
+			wantCode(t, err, CodeStartInvalidated)
+			original := e.record(t, dispatchID)
+			if original.Phase != phaseRefused || original.StopOutcome != stopUnknown {
+				t.Fatalf("REFUSED-STOP: ordering not reached: %+v", original)
+			}
+			first := e.launcher.lastStop
+			e.launcher.mu.Lock()
+			e.launcher.stopErr = nil
+			e.launcher.onStart = nil
+			e.launcher.mu.Unlock()
+			if mode == "reopen-sweep" {
+				must(t, e.rt.Close())
+				e.rt, err = OpenEstablished(cfg, e.seams())
+				must(t, err)
+			}
+			if mode == "retry-control" {
+				_, err = e.cancel(t)
+				must(t, err)
+			} else {
+				must(t, e.rt.Reconcile(context.Background()))
+				must(t, e.rt.Sweep(context.Background()))
+				must(t, e.rt.Reconcile(context.Background()))
+			}
+			recovered := e.record(t, dispatchID)
+			starts, stops := e.launcher.count()
+			last := e.launcher.lastStop
+			if starts != 1 || last.EffectID != first.EffectID || last.Ceiling != first.Ceiling || last.Event != first.Event || last.Detection != first.Detection {
+				t.Fatalf("REFUSED-STOP: original effect changed: starts=%d first=%+v last=%+v", starts, first, last)
+			}
+			if recovered.StopOutcome != stopAbsent || recovered.Phase != phaseAbsent || stops != 2 || len(recovered.StopEvidence) == 0 {
+				t.Fatalf("REFUSED-STOP: healthy receiver not revisited: %+v stops=%d", recovered, stops)
+			}
+		})
+	}
+}

@@ -328,7 +328,7 @@ func (r *Runtime) currentInstallation(now Reading, forward bool) (*Installed, er
 				if inst.Removed {
 					reason = "removed"
 				}
-				if err := r.appendLocked(&frame{Type: frameRemoval, Now: timeOrZero(now), Removal: &removalFrame{Event: timeOrZero(now), Reason: reason}}); err != nil {
+				if err := r.appendLocked(&frame{Type: frameRemoval, Now: timeOrZero(now), Removal: &removalFrame{Event: timeOrZero(now), Detection: timeOrZero(now), Reason: reason}}); err != nil {
 					return nil, err
 				}
 				break
@@ -762,15 +762,10 @@ func (r *Runtime) cancel(ctx context.Context, peer uint32, req *Request) (*Resul
 		noEffect := target.Phase == phaseReserved
 		event := timeOrZero(now)
 		stopEffect := effectID(principal, target.RequestID, lineageRecordID, componentLaunch, operationStop, 1)
-		// A cancel that arrives after the original expiry does not replace the
-		// expiry obligation: that earlier clock is retained with its own
-		// detection so the stop ceiling cannot move later.
-		if !noEffect && now.Confident && effectiveNow(now.Unix, r.proj.Watermark) >= target.Deadlines.Expiry && !target.hasObligation(sourceExpiry) {
-			if err := r.appendLocked(&frame{Type: frameStopIntent, Now: event, StopIntent: &stopIntentFrame{RequestID: target.RequestID, EffectID: stopEffect, Event: target.Deadlines.Expiry, Detection: event, Source: sourceExpiry}}); err != nil {
-				r.mu.Unlock()
-				return nil, err
-			}
-		}
+		// A late cancel never replaces earlier obligations: a recorded removal
+		// is already on the record (removal frame), and the cancel frame's own
+		// time makes the reducer record expiry detection before the cancel
+		// obligation when the original expiry has passed.
 		if err := r.appendLocked(&frame{Type: frameCancel, Now: event, Cancel: &cancelFrame{
 			RequestID: req.RequestID, Principal: principal, PeerUID: peer, Canonical: string(req.Canonical),
 			Target: target.RequestID, EffectID: stopEffect, Event: event, Detection: event, NoEffect: noEffect,
@@ -936,10 +931,13 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 	return first
 }
 
-// Sweep records the dispatcher's automatic stop obligations after policy
-// removal/replacement and at original expiry, each with its own event and
-// detection, and issues or continues every non-terminal stop under its
-// original effect and earliest ceiling. It never starts anything.
+// Sweep records the dispatcher's automatic expiry stop obligation when the
+// qualified clock first reaches a run's original expiry, then issues or
+// continues every unresolved stop transaction (a recorded stop effect with a
+// non-terminal outcome) under its original effect and earliest ceiling,
+// independently of the launch phase. The removal obligation is never added
+// here: the removal frame already carried it to every run with its original
+// event and detection. Sweep never starts anything.
 func (r *Runtime) Sweep(ctx context.Context) error {
 	now, clockErr := r.seams.Clock.Now()
 	if clockErr != nil {
@@ -955,36 +953,21 @@ func (r *Runtime) Sweep(ctx context.Context) error {
 	}
 	var work []string
 	for _, rec := range r.proj.Dispatches {
-		live := rec.Phase == phaseInFlight || rec.Phase == phaseCommitted || rec.Phase == phaseStarted || rec.Phase == phaseLate || rec.Phase == phaseUnknown
-		if !live {
-			continue
-		}
 		expired := now.Confident && effectiveNow(now.Unix, r.proj.Watermark) >= rec.Deadlines.Expiry
-		var due []StopObligation
-		if expired && !rec.hasObligation(sourceExpiry) {
-			due = append(due, StopObligation{Source: sourceExpiry, Event: rec.Deadlines.Expiry, Detection: timeOrZero(now)})
-		}
-		if r.proj.RemovalRecorded && !rec.hasObligation(sourceRemoval) {
-			due = append(due, StopObligation{Source: sourceRemoval, Event: r.proj.Removal, Detection: timeOrZero(now)})
-		}
-		// Earliest original event first, so the primary provenance is the
-		// earliest obligation when both are detected in one sweep.
-		if len(due) == 2 && due[1].Event < due[0].Event {
-			due[0], due[1] = due[1], due[0]
-		}
-		effect := effectID(rec.Principal, rec.RequestID, lineageRecordID, componentLaunch, operationStop, 1)
-		for _, o := range due {
-			if err := r.appendLocked(&frame{Type: frameStopIntent, Now: timeOrZero(now), StopIntent: &stopIntentFrame{RequestID: rec.RequestID, EffectID: effect, Event: o.Event, Detection: o.Detection, Source: o.Source}}); err != nil {
+		if rec.stopDebtPossible() && expired && !rec.hasObligation(sourceExpiry) {
+			// The frame's time is the durable expiry detection; the reducer
+			// records the obligation from it (detectExpiry) before applying
+			// this intent, so both carry the same event and detection.
+			if err := r.appendLocked(&frame{Type: frameStopIntent, Now: timeOrZero(now), StopIntent: &stopIntentFrame{RequestID: rec.RequestID, EffectID: rec.stopEffect(), Event: rec.Deadlines.Expiry, Detection: timeOrZero(now), Source: sourceExpiry}}); err != nil {
 				r.mu.Unlock()
 				return err
 			}
-		}
-		if len(due) > 0 {
 			if err := r.materializeLocked(); err != nil {
 				r.mu.Unlock()
 				return err
 			}
 		}
+		// Unresolved stop debt is selected by the stop transaction alone.
 		if rec.StopEffectID != "" && !terminalStop(rec.StopOutcome) {
 			work = append(work, rec.RequestID)
 		}

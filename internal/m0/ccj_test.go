@@ -57,14 +57,14 @@ func TestCanonicalizeLexicalRefusals(t *testing.T) {
 	}{
 		{"duplicate", `{"a":1,"b":2}`, `{"a":1,"a":2}`},
 		{"plain-duplicate-after-two", `{"a":1,"b":2,"c":3}`, `{"a":1,"b":2,"a":3}`},
-		// The escaped spelling "a" decodes to "a": a duplicate after
-		// unescaping; "b" decodes to the distinct name "b" and is accepted.
-		{"escaped-alias", `{"a":1,"b":2}`, `{"a":1,"a":2}`},
+		// The escaped spelling "\u0061" decodes to "a": a duplicate after
+		// unescaping; "\u0062" decodes to the distinct name "b" and is accepted.
+		{"escaped-alias", `{"a":1,"\u0062":2}`, `{"a":1,"\u0061":2}`},
 		{"nested-duplicate", `{"o":{"a":1}}`, `{"o":{"a":1,"a":1}}`},
 		{"bom", `{"a":1}`, "\xEF\xBB\xBF{\"a\":1}"},
 		{"invalid-utf8", `{"a":"é"}`, "{\"a\":\"\xC3\"}"},
-		{"lone-high-surrogate", `{"a":"😀"}`, `{"a":"\ud83d"}`},
-		{"lone-low-surrogate", `{"a":"😀"}`, `{"a":"\ude00"}`},
+		{"lone-high-surrogate", `{"a":"\ud83d\ude00"}`, `{"a":"\ud83d"}`},
+		{"lone-low-surrogate", `{"a":"\ud83d\ude00"}`, `{"a":"\ude00"}`},
 		{"fraction", `{"a":1}`, `{"a":1.0}`},
 		{"exponent", `{"a":1}`, `{"a":1e0}`},
 		{"negative-zero", `{"a":0}`, `{"a":-0}`},
@@ -137,14 +137,14 @@ func TestCanonicalReferenceVectors(t *testing.T) {
 		{"all-32-controls", `{"s": "\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f"}`,
 			`{"s":"\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f"}`, true},
 		{"quote-backslash-slash-html", `{"s": "\"\\/<>&"}`, `{"s":"\"\\/<>&"}`, true},
-		{"unicode-literals", `{"s": "é😀  "}`, "{\"s\":\"é😀  \"}", true},
-		{"scalar-not-utf16-key-order", `{"😀": 1, "": 2}`, "{\"\":2,\"😀\":1}", true},
-		{"no-normalization", `{"é": 1, "é": 2}`, "{\"é\":2,\"é\":1}", true},
-		{"surrogate-pair", `{"s":"😀"}`, `{"s":"😀"}`, true},
+		{"unicode-literals", `{"s": "\u00e9\ud83d\ude00\u2028\u2029"}`, `{"s":"é😀  "}`, true},
+		{"scalar-not-utf16-key-order", `{"\ud83d\ude00": 1, "\ue000": 2}`, `{"":2,"😀":1}`, true},
+		{"no-normalization", `{"\u00e9": 1, "e\u0301": 2}`, `{"é":2,"é":1}`, true},
+		{"surrogate-pair", `{"s":"\ud83d\ude00"}`, `{"s":"😀"}`, true},
 		{"safe-integers", `{"low": -9007199254740991, "high": 9007199254740991, "zero": 0}`, `{"high":9007199254740991,"low":-9007199254740991,"zero":0}`, true},
 		{"nested-order", `{"z": [3, 2, 1, {"b": null, "a": true}], "a": false}`, `{"a":false,"z":[3,2,1,{"a":true,"b":null}]}`, true},
-		{"escaped-distinct-alias", `{"a":1,"b":2}`, `{"a":1,"b":2}`, true},
-		{"escaped-duplicate-alias", `{"a":1,"a":2}`, "", false},
+		{"escaped-distinct-alias", `{"a":1,"\u0062":2}`, `{"a":1,"b":2}`, true},
+		{"escaped-duplicate-alias", `{"a":1,"\u0061":2}`, "", false},
 		{"integer-control", `{"a": 1}`, `{"a":1}`, true},
 		{"fraction-refusal", `{"a":1.0}`, "", false},
 		{"zero-control", `{"a": 0}`, `{"a":0}`, true},

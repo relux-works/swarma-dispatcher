@@ -257,6 +257,43 @@ for the Linux recovery tests. Results go to the test log. Nothing here
 qualifies a receiver, a signer, protected installation, native timing or an
 activation; the `m0_*` refusal codes are draft spellings pending publication.
 
+## M0 caller tool (draft)
+
+| Tool | Source | Purpose | Exit status |
+| --- | --- | --- | --- |
+| `swarma-m0-caller` | `cmd/swarma-m0-caller`, [`internal/m0client`](internal/m0client/) | Build, sign, store and send one M0 `dispatch` or `cancel` request, or `resend` a stored one | `0` accepted, `16` refused by the daemon, `17` unknown, `64` refused locally |
+
+The caller side of the [M0 request form](spec/m0-launch.md#2-closed-proposed-forms-and-signing).
+It reads one closed JSON configuration (`kind` `swarma-dispatcher m0-caller-config/1`:
+`receiver`, `policy`, the complete `association`, `worker`, `plan`, the client's
+`endpoint_dir`, `endpoint`, `service_uid`, `connect_gid`, `stage_timeout_ms` (at most 2000),
+`session_timeout_ms` (at most 5000), `key_file`, `state_dir`, `v`), which must be
+a regular file, not a symlink and not group- or other-writable. The key file is
+the 32-byte Ed25519 seed: regular, one link, owned by the effective UID, mode
+exactly `0600`; its public key must be `association.key`. The tool never creates,
+repairs, prints or copies a key. Canonical bytes and spellings come from the
+daemon's own code in `internal/m0`. The exact wire bytes are written to
+`state_dir/<request_id>.req` (directory `0700`, file `0600`, synced) before the
+single [transport](spec/transport.md) exchange; `resend` sends those bytes
+unchanged without reading the key file. Linux only.
+
+```sh
+go build -o .temp/swarma-m0-caller ./cmd/swarma-m0-caller
+.temp/swarma-m0-caller dispatch --config /absolute/caller.json
+.temp/swarma-m0-caller cancel --config /absolute/caller.json --dispatch-request-id ID
+.temp/swarma-m0-caller resend --config /absolute/caller.json --request-id ID
+go test -race -count=1 ./internal/m0client/... ./cmd/swarma-m0-caller/...
+```
+
+Stdout carries exactly the reply envelope bytes; diagnostics go to stderr. On
+`17` the `request_id` is printed on stderr for `resend`; there is no retry
+inside one invocation. This tool activates nothing and qualifies nothing: the
+daemon stays closed without an installed policy, it accepts only the request
+its protected signing plan pins (including the `request_id`), and the reference
+transport admits only unmanaged caller UIDs while the M0 association UID is a
+managed one. Tests drive the landed runtime behind a test listener on a real
+Unix socket, not a deployed daemon.
+
 ## Demo tools (not production)
 
 The separate [demo contract](spec/demo-launch.md) defines protected configuration,

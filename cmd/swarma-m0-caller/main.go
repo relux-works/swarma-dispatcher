@@ -1,5 +1,5 @@
-// Command swarma-m0-caller builds, signs, stores and sends one DRAFT M0
-// dispatch or cancel request, or sends a stored one again. See
+// Command swarma-m0-caller signs, stores and sends an installed DRAFT M0
+// dispatch or cancel signing plan, or sends a stored request again. See
 // internal/m0client for the contract and the exit statuses.
 package main
 

@@ -1,3 +1,5 @@
+//go:build linux
+
 package m0client
 
 import (
@@ -7,11 +9,9 @@ import (
 
 const formsID = "0123456789abcdef0123456789abcdef"
 
-// Claim: classifyReply accepts exactly the daemon's result envelope (accepted)
-// and refusal envelope (refused) for this correlation ID; another ID, an
-// escape, trailing bytes, an oversize body and the hello result are not valid
-// replies.
+// Claim: only matching canonical result/refusal envelopes are recognized, beside malformed and wrong-stage controls.
 func TestReplyEnvelopeForms(t *testing.T) {
+	_ = newEnv(t)
 	result := `{"ok":true,"request_id":"` + formsID + `","result":{"effect_id":"e1","state":"started"},"v":1}`
 	refusal := `{"error":{"code":"signature_invalid","message":"signature does not verify over the preimage"},"ok":false,"request_id":"` + formsID + `","v":1}`
 	if accepted, valid := classifyReply([]byte(result), formsID); !accepted || !valid {
@@ -37,12 +37,12 @@ func TestReplyEnvelopeForms(t *testing.T) {
 	}
 }
 
-// Claim: only the three exact command forms parse; anything else is a usage
-// refusal with exit 64 and empty stdout.
+// Claim: the three exact command forms parse; other forms refuse usage with exit 64 and empty stdout.
 func TestCommandForms(t *testing.T) {
+	e := newEnv(t)
 	for _, args := range [][]string{
 		{"dispatch", "--config", "/c"},
-		{"cancel", "--config", "/c", "--dispatch-request-id", formsID},
+		{"cancel", "--config", "/c"},
 		{"resend", "--config", "/c", "--request-id", formsID},
 	} {
 		if _, ok := parseArgs(args); !ok {
@@ -54,7 +54,7 @@ func TestCommandForms(t *testing.T) {
 		{"dispatch"},
 		{"dispatch", "--config", "/c", "extra"},
 		{"dispatch", "--key", "/c"},
-		{"cancel", "--config", "/c"},
+		{"cancel", "--config", "/c", "--dispatch-request-id", formsID},
 		{"cancel", "--config", "/c", "--request-id", formsID},
 		{"resend", "--config", "/c", "--dispatch-request-id", formsID},
 		{"status", "--config", "/c"},
@@ -63,25 +63,23 @@ func TestCommandForms(t *testing.T) {
 			t.Errorf("%v parsed", args)
 		}
 		var stdout, stderr strings.Builder
-		if code := Run(args, &stdout, &stderr); code != ExitLocal || stdout.Len() != 0 {
+		code := Run(args, &stdout, &stderr)
+		e.keep([]byte(stdout.String()), []byte(stderr.String()))
+		if code != ExitLocal || stdout.Len() != 0 {
 			t.Errorf("%v: exit %d stdout %q", args, code, stdout.String())
 		}
 	}
 }
 
-// Claim: a request ID is exactly 32 lowercase hex characters, and the
-// generator spells 16 source bytes that way.
+// Claim: stored-request names accept exactly 32 lowercase hex characters, with no generator.
 func TestRequestIDForm(t *testing.T) {
-	id, err := NewRequestID(strings.NewReader("\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\xaa\xbb\xcc\xdd\xee\xff"))
-	if err != nil || id != "00010203040506070809aabbccddeeff" || !ValidRequestID(id) {
-		t.Fatalf("control: %q %v", id, err)
+	_ = newEnv(t)
+	if !ValidRequestID(formsID) {
+		t.Fatal("control: valid ID refused")
 	}
 	for _, bad := range []string{"", strings.Repeat("a", 31), strings.Repeat("a", 33), strings.Repeat("A", 32), strings.Repeat("g", 32)} {
 		if ValidRequestID(bad) {
 			t.Errorf("%q accepted", bad)
 		}
-	}
-	if _, err := NewRequestID(strings.NewReader("short")); err == nil {
-		t.Error("short random source accepted")
 	}
 }

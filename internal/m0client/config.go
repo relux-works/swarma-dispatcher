@@ -8,44 +8,35 @@ import (
 	"path"
 	"strconv"
 	"time"
-
-	"github.com/relux-works/swarma-dispatcher/internal/m0"
 )
 
 const (
-	// ConfigKind is the closed caller configuration discriminator.
-	ConfigKind = "swarma-dispatcher m0-caller-config/1"
-	// MaxConfigBytes bounds the configuration file before parsing.
-	MaxConfigBytes = 8192
-	// Stage and session timeouts may only narrow the transport contract's
-	// 2 s stage and 5 s session budgets.
+	// MaxConfigBytes is the transport client snapshot limit, including tool members.
+	MaxConfigBytes      = 4096
 	MaxStageTimeoutMs   = 2000
 	MaxSessionTimeoutMs = 5000
-
-	maxPathBytes = 4095
-	maxNameBytes = 64
-	probeID      = "00000000000000000000000000000000"
+	maxPathBytes        = 4095
+	maxSerial           = 9007199254740991
+	endpointDir         = "/opt/swarma/run/dispatcher"
+	endpointName        = "dispatcher.sock"
 )
 
-// Config is one validated caller configuration: the values of R that are not
-// per-request, the client's transport pins, the key file and the state
-// directory.
+// Principal pins one caller UID and its enrolled directory identity.
+type Principal struct {
+	UID      uint32
+	Dir      string
+	Dev, Ino uint64
+}
+
+// Config is a closed transport client snapshot with local signing-plan,
+// key and state paths. Request members come only from a signing plan.
 type Config struct {
-	Receiver    string
-	Policy      m0.PolicyPin
-	Association m0.Association
-	Worker      m0.Worker
-	Plan        m0.Plan
-
-	EndpointDir    string
-	Endpoint       string
-	ServiceUID     uint32
-	ConnectGID     uint32
-	StageTimeout   time.Duration
-	SessionTimeout time.Duration
-
-	KeyFile  string
-	StateDir string
+	Caller                                      Principal
+	EndpointDev, EndpointIno                    uint64
+	ServiceUID, ServiceGID, ConnectGID          uint32
+	StageTimeout, SessionTimeout                time.Duration
+	KeyFile, StateDir, DispatchPlan, CancelPlan string
+	host                                        host
 }
 
 var errConfig = errors.New("configuration is not the closed form")
@@ -54,13 +45,21 @@ type node struct {
 	text    string
 	number  string
 	members map[string]*node
-	kind    byte // 's' string, 'n' number, 'o' object
+	kind    byte
 }
 
-// parseTree reads one JSON document of objects, strings and unsigned integer
-// tokens. Duplicate member names, arrays, booleans, null, fractions and
-// trailing bytes refuse; nothing is normalized into acceptance.
+// parseTree gates canonical ASCII bytes before JSON recognition: no escapes,
+// whitespace, duplicate/nonascending keys or alternate integer spellings.
 func parseTree(b []byte) (*node, error) {
+	inside := false
+	for _, ch := range b {
+		if ch < 0x20 || ch > 0x7e || ch == '\\' || (!inside && ch == ' ') {
+			return nil, errConfig
+		}
+		if ch == '"' {
+			inside = !inside
+		}
+	}
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.UseNumber()
 	n, err := parseNode(d, 0)
@@ -82,31 +81,32 @@ func parseNode(d *json.Decoder, depth int) (*node, error) {
 	case string:
 		return &node{kind: 's', text: v}, nil
 	case json.Number:
-		return &node{kind: 'n', number: v.String()}, nil
+		s := v.String()
+		u, err := strconv.ParseUint(s, 10, 64)
+		if err != nil || strconv.FormatUint(u, 10) != s {
+			return nil, errConfig
+		}
+		return &node{kind: 'n', number: s}, nil
 	case json.Delim:
-		if v != '{' || depth >= 2 {
+		if v != '{' || depth >= 3 {
 			return nil, errConfig
 		}
 		n := &node{kind: 'o', members: map[string]*node{}}
+		last := ""
 		for d.More() {
 			k, err := d.Token()
-			if err != nil {
-				return nil, errConfig
-			}
 			name, ok := k.(string)
-			if !ok {
+			if err != nil || !ok || name <= last {
 				return nil, errConfig
 			}
-			if _, dup := n.members[name]; dup {
-				return nil, errConfig
-			}
+			last = name
 			child, err := parseNode(d, depth+1)
 			if err != nil {
 				return nil, err
 			}
 			n.members[name] = child
 		}
-		if _, err := d.Token(); err != nil {
+		if end, err := d.Token(); err != nil || end != json.Delim('}') {
 			return nil, errConfig
 		}
 		return n, nil
@@ -125,7 +125,6 @@ func (n *node) exactly(keys ...string) bool {
 	}
 	return true
 }
-
 func (n *node) str(key string) (string, bool) {
 	c := n.members[key]
 	if c == nil || c.kind != 's' {
@@ -133,123 +132,63 @@ func (n *node) str(key string) (string, bool) {
 	}
 	return c.text, true
 }
-
-// num accepts only the shortest unsigned decimal spelling within [lo, hi].
 func (n *node) num(key string, lo, hi uint64) (uint64, bool) {
 	c := n.members[key]
 	if c == nil || c.kind != 'n' {
 		return 0, false
 	}
 	v, err := strconv.ParseUint(c.number, 10, 64)
-	if err != nil || strconv.FormatUint(v, 10) != c.number || v < lo || v > hi {
-		return 0, false
-	}
-	return v, true
+	return v, err == nil && v >= lo && v <= hi
 }
-
 func printable(s string) bool {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] < 0x20 || s[i] > 0x7e || s[i] == '"' || s[i] == '\\' {
 			return false
 		}
 	}
 	return true
 }
-
 func validAbsolute(s string) bool {
 	return len(s) >= 2 && len(s) <= maxPathBytes && s[0] == '/' && path.Clean(s) == s && printable(s)
 }
 
-func validName(s string) bool {
-	if len(s) < 1 || len(s) > maxNameBytes || s == "." || s == ".." || !printable(s) {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if s[i] == '/' {
-			return false
-		}
-	}
-	return true
-}
-
-const maxSerial = 9007199254740991
-
-// ParseConfig accepts exactly the closed configuration object. Every member is
-// required and unknown members refuse at every depth. The request values are
-// then validated by the daemon's own closed-form decoder, so a configuration
-// this function accepts can only yield requests of the daemon's grammar.
+// ParseConfig uses an independent closed form: transport's parser is private
+// and excludes managed callers. Member names and all other transport limits
+// are preserved; M0 additionally checks the plan's managed association UID.
 func ParseConfig(b []byte) (*Config, error) {
 	if len(b) == 0 || len(b) > MaxConfigBytes {
 		return nil, errConfig
 	}
-	root, err := parseTree(b)
+	r, err := parseTree(b)
 	if err != nil {
 		return nil, err
 	}
-	if !root.exactly("association", "connect_gid", "endpoint", "endpoint_dir", "key_file", "kind", "plan", "policy", "receiver", "service_uid", "session_timeout_ms", "stage_timeout_ms", "state_dir", "v", "worker") {
+	if !r.exactly("caller", "cancel_plan", "connect_gid", "dispatch_plan", "endpoint_dev", "endpoint_ino", "key_file", "service_gid", "service_uid", "session_timeout_ms", "stage_timeout_ms", "state_dir", "v") {
 		return nil, errConfig
 	}
-	if v, ok := root.num("v", 1, 1); !ok || v != 1 {
+	p := r.members["caller"]
+	if !p.exactly("dev", "dir", "ino", "uid") {
 		return nil, errConfig
 	}
-	if k, ok := root.str("kind"); !ok || k != ConfigKind {
-		return nil, errConfig
-	}
-	c := &Config{}
 	ok := true
-	take := func(n *node, key string) string {
-		s, good := n.str(key)
-		ok = ok && good
-		return s
+	num := func(n *node, k string, lo, hi uint64) uint64 { v, good := n.num(k, lo, hi); ok = ok && good; return v }
+	text := func(n *node, k string) string { v, good := n.str(k); ok = ok && good; return v }
+	num(r, "v", 1, 1)
+	c := &Config{
+		Caller:      Principal{UID: uint32(num(p, "uid", 1, 4294967294)), Dir: text(p, "dir"), Dev: num(p, "dev", 1, maxSerial), Ino: num(p, "ino", 1, maxSerial)},
+		EndpointDev: num(r, "endpoint_dev", 1, maxSerial), EndpointIno: num(r, "endpoint_ino", 1, maxSerial),
+		ServiceUID: uint32(num(r, "service_uid", 1, 4294967294)), ServiceGID: uint32(num(r, "service_gid", 1, 4294967294)), ConnectGID: uint32(num(r, "connect_gid", 1, 4294967294)),
+		StageTimeout:   time.Duration(num(r, "stage_timeout_ms", 1, MaxStageTimeoutMs)) * time.Millisecond,
+		SessionTimeout: time.Duration(num(r, "session_timeout_ms", 1, MaxSessionTimeoutMs)) * time.Millisecond,
+		KeyFile:        text(r, "key_file"), StateDir: text(r, "state_dir"), DispatchPlan: text(r, "dispatch_plan"), CancelPlan: text(r, "cancel_plan"),
 	}
-	count := func(n *node, key string, lo, hi uint64) uint64 {
-		v, good := n.num(key, lo, hi)
-		ok = ok && good
-		return v
-	}
-	c.Receiver = take(root, "receiver")
-	policy, association, worker, plan := root.members["policy"], root.members["association"], root.members["worker"], root.members["plan"]
-	if !policy.exactly("id", "revision") || !association.exactly("generation", "id", "key", "master_epoch", "registration_number", "revision", "uid") || !worker.exactly("generation", "uid") || !plan.exactly("exec_profile", "harness", "profile", "worker_plan") {
+	if !ok || c.ServiceUID >= 30000 && c.ServiceUID <= 59999 || c.ServiceUID == c.Caller.UID || c.ServiceGID == c.ConnectGID || len(c.Caller.Dir) > 512 {
 		return nil, errConfig
 	}
-	c.Policy = m0.PolicyPin{ID: take(policy, "id"), Revision: count(policy, "revision", 1, maxSerial)}
-	c.Association = m0.Association{
-		ID:                 take(association, "id"),
-		Revision:           count(association, "revision", 1, maxSerial),
-		UID:                uint32(count(association, "uid", 1, 4294967294)),
-		Generation:         take(association, "generation"),
-		Key:                take(association, "key"),
-		RegistrationNumber: count(association, "registration_number", 1, maxSerial),
-		MasterEpoch:        count(association, "master_epoch", 1, maxSerial),
-	}
-	c.Worker = m0.Worker{UID: uint32(count(worker, "uid", 1, 4294967294)), Generation: take(worker, "generation")}
-	c.Plan = m0.Plan{WorkerPlan: take(plan, "worker_plan"), Profile: take(plan, "profile"), Harness: take(plan, "harness"), ExecProfile: take(plan, "exec_profile")}
-	c.EndpointDir = take(root, "endpoint_dir")
-	c.Endpoint = take(root, "endpoint")
-	c.ServiceUID = uint32(count(root, "service_uid", 1, 4294967294))
-	c.ConnectGID = uint32(count(root, "connect_gid", 1, 4294967294))
-	c.StageTimeout = time.Duration(count(root, "stage_timeout_ms", 1, MaxStageTimeoutMs)) * time.Millisecond
-	c.SessionTimeout = time.Duration(count(root, "session_timeout_ms", 1, MaxSessionTimeoutMs)) * time.Millisecond
-	c.KeyFile = take(root, "key_file")
-	c.StateDir = take(root, "state_dir")
-	if !ok {
-		return nil, errConfig
-	}
-	// The transport contract admits only a nonroot service UID outside the
-	// managed range.
-	if c.ServiceUID >= 30000 && c.ServiceUID <= 59999 {
-		return nil, errConfig
-	}
-	if !validAbsolute(c.EndpointDir) || !validName(c.Endpoint) || !validAbsolute(c.KeyFile) || !validAbsolute(c.StateDir) {
-		return nil, errConfig
-	}
-	// The daemon's decoder is the judge of every request spelling and range.
-	doc, err := unsignedDocument(c, m0.OpDispatch, probeID, "")
-	if err != nil {
-		return nil, errConfig
-	}
-	if _, err := m0.DecodeUnsigned(doc); err != nil {
-		return nil, errConfig
+	for _, s := range []string{c.Caller.Dir, c.KeyFile, c.StateDir, c.DispatchPlan, c.CancelPlan} {
+		if !validAbsolute(s) {
+			return nil, errConfig
+		}
 	}
 	return c, nil
 }

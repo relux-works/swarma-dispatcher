@@ -5,7 +5,7 @@ package m0client
 import (
 	"crypto/ed25519"
 	"errors"
-	"os"
+	"path"
 	"syscall"
 
 	"github.com/relux-works/swarma-dispatcher/internal/m0"
@@ -13,6 +13,8 @@ import (
 
 const (
 	reasonConfig           = "config_invalid"
+	reasonPlan             = "signing_plan_invalid"
+	reasonCaller           = "caller_uid_mismatch"
 	reasonKeyFileUnsafe    = "key_file_unsafe"
 	reasonKeyNotAssociated = "key_not_associated"
 	reasonState            = "state_dir_unsafe"
@@ -52,38 +54,102 @@ func readUpTo(fd int, p []byte) (int, error) {
 	return n, nil
 }
 
-// loadConfig reads the protected configuration: an absolute path naming a
-// regular file that is not a symlink, is owned by root or the effective UID
-// and is not writable by group or others. Nothing else happens before this.
-func loadConfig(name string) (*Config, error) {
+// snapshot pins all ancestors and the final file without following symlinks.
+// Config snapshots require root ownership, group root, 0444 and one link.
+// Plans require root/effective-UID ownership and no group/other write bits.
+func (h host) snapshot(name string, limit int, config bool) ([]byte, error) {
 	if !validAbsolute(name) {
-		return nil, errors.New("configuration path must be absolute and clean")
+		return nil, errShape
 	}
-	fd, err := syscall.Open(name, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
+	owner := h.effectiveUID()
+	if config {
+		owner = 0
+	}
+	dir, err := h.pinDirectory(path.Dir(name), owner)
+	if err != nil {
+		return nil, err
+	}
+	defer dir.close()
+	fd, err := syscall.Openat(dir.last(), path.Base(name), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer syscall.Close(fd)
-	st, err := fstat(fd)
+	st, err := h.fstat(fd)
 	if err != nil {
 		return nil, err
 	}
-	if st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Mode&0022 != 0 || (st.Uid != 0 && st.Uid != uint32(os.Geteuid())) {
+	if st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Mode&0022 != 0 || (st.Uid != 0 && st.Uid != owner) {
 		return nil, errShape
 	}
-	buf := make([]byte, MaxConfigBytes+1)
+	if config && (st.Uid != 0 || st.Gid != 0 || st.Nlink != 1 || st.Mode&permMask != 0444) {
+		return nil, errShape
+	}
+	buf := make([]byte, limit+1)
 	n, err := readUpTo(fd, buf)
 	if err != nil {
 		return nil, err
 	}
-	after, err := fstat(fd)
+	after, err := h.fstat(fd)
 	if err != nil {
 		return nil, err
 	}
-	if after.Ino != st.Ino || after.Dev != st.Dev || after.Size != int64(n) || after.Mtim != st.Mtim {
+	named, err := dir.stat(path.Base(name))
+	if err != nil {
+		return nil, err
+	}
+	if n > limit || st.Size != int64(n) || after.Size != st.Size || after.Mtim != st.Mtim || after.Ctim != st.Ctim || identity(st) != identity(after) || named != identity(after) {
 		return nil, errShape
 	}
-	return ParseConfig(buf[:n])
+	if err := dir.recheck(path.Dir(name), owner); err != nil {
+		return nil, err
+	}
+	return buf[:n], nil
+}
+
+func loadConfig(name string) (*Config, error) { return (host{}).loadConfig(name) }
+
+func (h host) loadConfig(name string) (*Config, error) {
+	buf, err := h.snapshot(name, MaxConfigBytes, true)
+	if err != nil {
+		return nil, err
+	}
+	c, err := ParseConfig(buf)
+	if err != nil {
+		return nil, err
+	}
+	c.host = h
+	if h.realUID() != c.Caller.UID || h.effectiveUID() != c.Caller.UID {
+		return nil, errIdentity
+	}
+	if !groupMember(c.ConnectGID) || groupMember(c.ServiceGID) {
+		return nil, errIdentity
+	}
+	pin, err := c.callerPin()
+	if err != nil {
+		return nil, err
+	}
+	pin.close()
+	return c, nil
+}
+
+func (c *Config) loadPlan(op m0.Op) (*m0.SigningPlan, error) {
+	name := c.DispatchPlan
+	if op == m0.OpCancel {
+		name = c.CancelPlan
+	}
+	buf, err := c.host.snapshot(name, m0.MaxRequestWire, false)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := m0.DecodeSigningPlan(buf)
+	if err != nil {
+		return nil, err
+	}
+	if plan.Request.Op != op {
+		return nil, errors.New("signing plan has the wrong operation")
+	}
+	return plan, nil
 }
 
 // signPreimage reads the 32-byte seed and signs the preimage. The file must
@@ -91,17 +157,17 @@ func loadConfig(name string) (*Config, error) {
 // 0600 and size exactly 32, opened without following a symlink. The derived
 // public key must be the association key. The seed and the expanded key are
 // zeroed before return; neither is ever printed, logged or copied elsewhere.
-func signPreimage(c *Config, preimage []byte) (sig string, reason string, err error) {
+func signPreimage(c *Config, r *m0.Request) (sig string, reason string, err error) {
 	fd, err := syscall.Open(c.KeyFile, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", reasonKeyFileUnsafe, err
 	}
 	defer syscall.Close(fd)
-	st, err := fstat(fd)
+	st, err := c.host.fstat(fd)
 	if err != nil {
 		return "", reasonKeyFileUnsafe, err
 	}
-	if st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Nlink != 1 || st.Uid != uint32(os.Geteuid()) || st.Mode&permMask != 0600 || st.Size != seedBytes {
+	if st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Nlink != 1 || st.Uid != c.host.effectiveUID() || st.Mode&permMask != 0600 || st.Size != seedBytes {
 		return "", reasonKeyFileUnsafe, errShape
 	}
 	var buf [seedBytes + 1]byte
@@ -116,10 +182,10 @@ func signPreimage(c *Config, preimage []byte) (sig string, reason string, err er
 	private := ed25519.NewKeyFromSeed(buf[:seedBytes])
 	defer clear(private)
 	spelling, err := m0.KeySpelling(private[seedBytes:])
-	if err != nil || spelling != c.Association.Key {
+	if err != nil || spelling != r.Association.Key {
 		return "", reasonKeyNotAssociated, nil
 	}
-	raw := ed25519.Sign(private, preimage)
+	raw := ed25519.Sign(private, r.Preimage)
 	sig, err = m0.SignatureSpelling(raw)
 	if err != nil {
 		return "", reasonKeyFileUnsafe, err
@@ -129,13 +195,15 @@ func signPreimage(c *Config, preimage []byte) (sig string, reason string, err er
 
 // openStateDir pins the state directory: a directory, not a symlink, owned by
 // the effective UID, mode exactly 0700. It is never created or repaired.
-func openStateDir(name string) (int, error) {
+func openStateDir(name string) (int, error) { return (host{}).openStateDir(name) }
+
+func (h host) openStateDir(name string) (int, error) {
 	fd, err := syscall.Open(name, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return -1, err
 	}
-	st, err := fstat(fd)
-	if err == nil && (st.Mode&syscall.S_IFMT != syscall.S_IFDIR || st.Uid != uint32(os.Geteuid()) || st.Mode&permMask != 0700) {
+	st, err := h.fstat(fd)
+	if err == nil && (st.Mode&syscall.S_IFMT != syscall.S_IFDIR || st.Uid != h.effectiveUID() || st.Mode&permMask != 0700) {
 		err = errShape
 	}
 	if err != nil {
@@ -184,17 +252,17 @@ func storeRequest(dir int, id string, wire []byte) error {
 
 // loadRequest reads <id>.req unchanged: a regular single-link file owned by
 // the effective UID, mode exactly 0600, within the request wire bound.
-func loadRequest(dir int, id string) ([]byte, error) {
+func (h host) loadRequest(dir int, id string) ([]byte, error) {
 	fd, err := syscall.Openat(dir, requestFile(id), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer syscall.Close(fd)
-	st, err := fstat(fd)
+	st, err := h.fstat(fd)
 	if err != nil {
 		return nil, err
 	}
-	if st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Nlink != 1 || st.Uid != uint32(os.Geteuid()) || st.Mode&permMask != 0600 || st.Size < 1 || st.Size > m0.MaxRequestWire {
+	if st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Nlink != 1 || st.Uid != h.effectiveUID() || st.Mode&permMask != 0600 || st.Size < 1 || st.Size > m0.MaxRequestWire {
 		return nil, errShape
 	}
 	buf := make([]byte, m0.MaxRequestWire+1)

@@ -55,7 +55,7 @@ func ancestorsSafe(dir string) bool {
 // is repaired; with neither usable the test skips with the reason.
 func fixtureBase(t *testing.T) string {
 	t.Helper()
-	if tmp, err := filepath.Abs(os.TempDir()); err == nil && ancestorsSafe(tmp) {
+	if tmp, err := filepath.EvalSymlinks(os.TempDir()); err == nil && ancestorsSafe(tmp) {
 		return tmp
 	}
 	local, err := filepath.Abs(filepath.Join("..", "..", ".temp"))
@@ -83,19 +83,23 @@ func randomID(t *testing.T) string {
 // directory. Every captured output and the state directory are scanned for
 // the seed when the test ends.
 type env struct {
-	t        *testing.T
-	root     string
-	seed     []byte
-	key      string
-	policy   *m0.Policy
-	input    m0.Input
-	doc      map[string]any
-	cfgPath  string
-	keyPath  string
-	stateDir string
-	epDir    string
-	mu       sync.Mutex
-	outputs  [][]byte
+	t                        *testing.T
+	root                     string
+	seed                     []byte
+	key                      string
+	policy                   *m0.Policy
+	input                    m0.Input
+	doc                      map[string]any
+	cfgPath                  string
+	keyPath                  string
+	stateDir                 string
+	epDir                    string
+	callerDir                string
+	dispatchPath, cancelPath string
+	host                     host
+	dispatchID, cancelID     string
+	mu                       sync.Mutex
+	outputs                  [][]byte
 }
 
 func readFixture(t *testing.T, dir, name string) map[string]any {
@@ -153,16 +157,48 @@ func newEnv(t *testing.T) *env {
 	must(t, os.Mkdir(keys, 0700))
 	must(t, os.WriteFile(e.keyPath, e.seed, 0600))
 	must(t, os.Chmod(e.keyPath, 0600))
-	e.doc = e.requestMembers()
-	for k, v := range map[string]any{
-		"v": 1, "kind": ConfigKind,
-		"endpoint_dir": e.epDir, "endpoint": "d.sock",
-		"service_uid": os.Geteuid(), "connect_gid": os.Getegid(),
-		"stage_timeout_ms": 2000, "session_timeout_ms": 5000,
-		"key_file": e.keyPath, "state_dir": e.stateDir,
-	} {
-		e.doc[k] = v
+	e.callerDir = filepath.Join(root, "caller")
+	must(t, os.Mkdir(e.callerDir, 0700))
+	e.dispatchPath, e.cancelPath = filepath.Join(root, "dispatch.json"), filepath.Join(root, "cancel.json")
+	var ep, caller syscall.Stat_t
+	must(t, syscall.Stat(e.epDir, &ep))
+	must(t, syscall.Stat(e.callerDir, &caller))
+	serviceGID := uint32(4294967294)
+	for groupMember(serviceGID) {
+		serviceGID--
 	}
+	e.doc = map[string]any{
+		"v": 1, "caller": map[string]any{"uid": e.policy.Association.UID, "dir": e.callerDir, "dev": uint64(caller.Dev), "ino": caller.Ino},
+		"endpoint_dev": uint64(ep.Dev), "endpoint_ino": ep.Ino,
+		"service_uid": os.Geteuid(), "service_gid": serviceGID, "connect_gid": os.Getegid(),
+		"stage_timeout_ms": 2000, "session_timeout_ms": 5000,
+		"key_file": e.keyPath, "state_dir": e.stateDir, "dispatch_plan": e.dispatchPath, "cancel_plan": e.cancelPath,
+	}
+	// Model only ownership/credentials an unprivileged fixture cannot provision.
+	// Opens, inode numbers, permissions, sockets and service peers remain real.
+	// Production uses the zero host, with no overrides.
+	e.host = host{endpoint: e.epDir, uid: func() int { return int(e.policy.Association.UID) }, euid: func() int { return int(e.policy.Association.UID) }}
+	e.host.stat = func(fd int) (syscall.Stat_t, error) {
+		st, err := fstat(fd)
+		if err != nil {
+			return st, err
+		}
+		name, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
+		if err != nil {
+			return st, err
+		}
+		switch {
+		case name == e.keyPath || name == e.stateDir || strings.HasPrefix(name, e.stateDir+"/") || name == e.callerDir:
+			st.Uid = e.policy.Association.UID
+		case name == e.epDir:
+			st.Gid = serviceGID
+		case strings.HasPrefix(name, e.epDir+"/"):
+		default:
+			st.Uid, st.Gid = 0, 0
+		}
+		return st, nil
+	}
+	e.installPlans(randomID(t), randomID(t))
 	e.writeConfig()
 	return e
 }
@@ -189,13 +225,13 @@ func (e *env) writeConfig() {
 	b, err := json.Marshal(e.doc)
 	must(e.t, err)
 	_ = os.Remove(e.cfgPath)
-	must(e.t, os.WriteFile(e.cfgPath, b, 0600))
-	must(e.t, os.Chmod(e.cfgPath, 0600))
+	must(e.t, os.WriteFile(e.cfgPath, b, 0444))
+	must(e.t, os.Chmod(e.cfgPath, 0444))
 }
 
 func (e *env) config() *Config {
 	e.t.Helper()
-	c, err := loadConfig(e.cfgPath)
+	c, err := e.host.loadConfig(e.cfgPath)
 	must(e.t, err)
 	return c
 }
@@ -208,32 +244,41 @@ func (e *env) keep(b ...[]byte) {
 	}
 }
 
-// run is one tool invocation whose random source yields exactly entropy.
-func (e *env) run(entropy []byte, args ...string) (int, string, string) {
+// run exercises real command orchestration with a modeled installation.
+func (e *env) run(args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
-	code := runWith(args, &stdout, &stderr, bytes.NewReader(entropy))
+	code := runWith(args, &stdout, &stderr, e.host.loadConfig)
 	e.keep(stdout.Bytes(), stderr.Bytes())
 	return code, stdout.String(), stderr.String()
 }
 
-// mustRaw returns the 16 source bytes that make the tool draw this ID.
-func mustRaw(t *testing.T, id string) []byte {
-	t.Helper()
-	raw, err := hex.DecodeString(id)
-	must(t, err)
-	return raw
+func (e *env) installPlans(dispatchID, cancelID string) {
+	e.dispatchID, e.cancelID = dispatchID, cancelID
+	for name, plan := range map[string]*m0.SigningPlan{e.dispatchPath: e.plan(m0.OpDispatch, dispatchID, ""), e.cancelPath: e.plan(m0.OpCancel, cancelID, dispatchID)} {
+		_ = os.Remove(name)
+		must(e.t, os.WriteFile(name, plan.Canonical, 0600))
+	}
 }
 
 func (e *env) dispatch(id string) (int, string, string) {
-	return e.run(mustRaw(e.t, id), "dispatch", "--config", e.cfgPath)
+	// IDs select operator-installed test plans, never a caller random source.
+	if id != e.dispatchID {
+		e.installPlans(id, e.cancelID)
+	}
+	return e.run("dispatch", "--config", e.cfgPath)
 }
-
 func (e *env) cancel(id, target string) (int, string, string) {
-	return e.run(mustRaw(e.t, id), "cancel", "--config", e.cfgPath, "--dispatch-request-id", target)
+	if id != e.cancelID || target != e.dispatchID {
+		e.installPlans(target, id)
+	}
+	return e.run("cancel", "--config", e.cfgPath)
+}
+func (e *env) resend(id string) (int, string, string) {
+	return e.run("resend", "--config", e.cfgPath, "--request-id", id)
 }
 
-func (e *env) resend(id string) (int, string, string) {
-	return e.run(nil, "resend", "--config", e.cfgPath, "--request-id", id)
+func (e *env) sign(c *Config, op m0.Op, id, target string) ([]byte, string, error) {
+	return SignRequest(c, e.plan(op, id, target))
 }
 
 func (e *env) storedPath(id string) string { return filepath.Join(e.stateDir, id+".req") }
@@ -284,8 +329,10 @@ func (e *env) scan() {
 	e.mu.Lock()
 	blobs := append([][]byte(nil), e.outputs...)
 	e.mu.Unlock()
-	if b, err := os.ReadFile(e.cfgPath); err == nil {
-		blobs = append(blobs, b)
+	for _, name := range []string{e.cfgPath, e.dispatchPath, e.cancelPath} {
+		if b, err := os.ReadFile(name); err == nil {
+			blobs = append(blobs, b)
+		}
 	}
 	_ = os.Chmod(e.stateDir, 0700)
 	entries, _ := os.ReadDir(e.stateDir)
@@ -349,10 +396,10 @@ func (e *env) listenWith(mode string, serve func(id string, body []byte) (string
 	defer dir.Close()
 	// Bind through the directory descriptor: fixture paths can exceed the
 	// socket address length.
-	ln, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: fmt.Sprintf("/proc/self/fd/%d/d.sock", dir.Fd())})
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: fmt.Sprintf("/proc/self/fd/%d/dispatcher.sock", dir.Fd())})
 	must(e.t, err)
 	ln.SetUnlinkOnClose(false)
-	l := &listener{t: e.t, e: e, ln: ln, path: filepath.Join(e.epDir, "d.sock"), mode: mode, serve: serve, done: make(chan struct{})}
+	l := &listener{t: e.t, e: e, ln: ln, path: filepath.Join(e.epDir, "dispatcher.sock"), mode: mode, serve: serve, done: make(chan struct{})}
 	must(e.t, os.Chmod(l.path, 0660))
 	go func() {
 		defer close(l.done)
@@ -695,10 +742,9 @@ func (e *env) newBackend(dispatchID, cancelID string) *backend {
 	return b
 }
 
-// serveBackend starts a listener that hands each request frame to the real
-// extension. The kernel peer of a fixture connection is this process, whose
-// UID cannot be the managed association UID, so the listener presents the
-// association UID as the peer; the wrong-UID test covers the other value.
+// serveBackend hands frames to the real extension using the modeled managed
+// caller UID. This is not the transport package's serve loop; only the client
+// service-peer check uses real SO_PEERCRED in this single-UID fixture.
 func (e *env) serveBackend(b *backend) *listener {
 	return e.listenWith(modeServe, func(id string, body []byte) (string, error) {
 		return b.ext.Serve(e.policy.Association.UID, id, body)

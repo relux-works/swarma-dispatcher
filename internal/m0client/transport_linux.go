@@ -49,6 +49,10 @@ type endpointSpec struct {
 	gid            uint32
 	stage, session time.Duration
 	connected      func()
+	dev, ino       uint64
+	serviceGID     uint32
+	caller         Principal
+	host           host
 }
 
 type ident struct {
@@ -57,18 +61,20 @@ type ident struct {
 	links          uint64
 }
 
-func identOf(fd int) (ident, error) {
-	var st syscall.Stat_t
-	if err := syscall.Fstat(fd, &st); err != nil {
-		return ident{}, err
-	}
-	return ident{uint64(st.Dev), st.Ino, st.Uid, st.Gid, st.Mode, uint64(st.Nlink)}, nil
+func identity(st syscall.Stat_t) ident {
+	return ident{uint64(st.Dev), st.Ino, st.Uid, st.Gid, st.Mode, uint64(st.Nlink)}
+}
+
+func (h host) identOf(fd int) (ident, error) {
+	st, err := h.fstat(fd)
+	return identity(st), err
 }
 
 // pinned is the endpoint directory held open through every ancestor.
 type pinned struct {
-	fds []int
-	ids []ident
+	fds  []int
+	ids  []ident
+	host host
 }
 
 func (p *pinned) close() {
@@ -80,12 +86,14 @@ func (p *pinned) close() {
 
 func (p *pinned) last() int { return p.fds[len(p.fds)-1] }
 
-// pinDirectory opens the endpoint directory component by component without
-// following any symlink. Every ancestor must be a directory owned by root or
-// the service UID and not writable by group or others; the directory itself
-// must be owned by the service UID with mode exactly 0711.
-func pinDirectory(name string, owner uint32) (_ *pinned, err error) {
-	p := &pinned{}
+// pinDirectory opens every component without symlinks and pins its identity.
+// Ancestors are root/pin-owned and not group/other-writable. Callers check
+// each leaf's exact role-specific owner, group, mode and configured identity.
+func (h host) pinDirectory(name string, owner uint32) (_ *pinned, err error) {
+	if name != "/" && !validAbsolute(name) {
+		return nil, errIdentity
+	}
+	p := &pinned{host: h}
 	defer func() {
 		if err != nil {
 			p.close()
@@ -96,9 +104,12 @@ func pinDirectory(name string, owner uint32) (_ *pinned, err error) {
 		return nil, err
 	}
 	p.fds = append(p.fds, fd)
-	parts := strings.Split(strings.TrimPrefix(name, "/"), "/")
+	var parts []string
+	if name != "/" {
+		parts = strings.Split(strings.TrimPrefix(name, "/"), "/")
+	}
 	for i := 0; ; i++ {
-		id, err := identOf(p.last())
+		id, err := h.identOf(p.last())
 		if err != nil {
 			return nil, err
 		}
@@ -115,15 +126,12 @@ func pinDirectory(name string, owner uint32) (_ *pinned, err error) {
 		}
 		p.fds = append(p.fds, fd)
 	}
-	if leaf := p.ids[len(p.ids)-1]; leaf.uid != owner || leaf.mode&permMask != 0711 {
-		return nil, errIdentity
-	}
 	return p, nil
 }
 
 // recheck requires that the path still names the same pinned identities.
 func (p *pinned) recheck(name string, owner uint32) error {
-	now, err := pinDirectory(name, owner)
+	now, err := p.host.pinDirectory(name, owner)
 	if err != nil {
 		return err
 	}
@@ -145,7 +153,24 @@ func (p *pinned) stat(name string) (ident, error) {
 		return ident{}, err
 	}
 	defer syscall.Close(fd)
-	return identOf(fd)
+	return p.host.identOf(fd)
+}
+
+func (c *Config) callerPin() (*pinned, error) {
+	return pinCaller(c.host, c.Caller)
+}
+
+func pinCaller(h host, caller Principal) (*pinned, error) {
+	p, err := h.pinDirectory(caller.Dir, caller.UID)
+	if err != nil {
+		return nil, err
+	}
+	leaf := p.ids[len(p.ids)-1]
+	if leaf.dev != caller.Dev || leaf.ino != caller.Ino || leaf.uid != caller.UID || leaf.mode&permMask != 0700 {
+		p.close()
+		return nil, errIdentity
+	}
+	return p, nil
 }
 
 func groupMember(gid uint32) bool {
@@ -427,14 +452,23 @@ func peerUID(f *os.File) (uint32, error) {
 // frame whose correlation ID is id, one reply, close. There is no retry. sent
 // counts the bytes written to the socket; stage names the step that failed.
 func exchange(spec endpointSpec, id string, request []byte) (reply []byte, sent int, stage string, err error) {
-	if !groupMember(spec.gid) {
-		return nil, 0, stagePins, errors.New("connect_gid is not a group of this process")
+	if !groupMember(spec.gid) || groupMember(spec.serviceGID) || spec.host.realUID() != spec.caller.UID || spec.host.effectiveUID() != spec.caller.UID {
+		return nil, 0, stagePins, errIdentity
 	}
-	dir, err := pinDirectory(spec.dir, spec.owner)
+	caller, err := pinCaller(spec.host, spec.caller)
+	if err != nil {
+		return nil, 0, stagePins, err
+	}
+	defer caller.close()
+	dir, err := spec.host.pinDirectory(spec.dir, spec.owner)
 	if err != nil {
 		return nil, 0, stagePins, err
 	}
 	defer dir.close()
+	leaf := dir.ids[len(dir.ids)-1]
+	if leaf.dev != spec.dev || leaf.ino != spec.ino || leaf.uid != spec.owner || leaf.gid != spec.serviceGID || leaf.mode&permMask != 0711 {
+		return nil, 0, stagePins, errIdentity
+	}
 	before, err := dir.stat(spec.name)
 	if err != nil {
 		return nil, 0, stagePins, err
@@ -450,6 +484,9 @@ func exchange(spec endpointSpec, id string, request []byte) (reply []byte, sent 
 	defer wakeClose(f)
 	if spec.connected != nil {
 		spec.connected()
+	}
+	if err = caller.recheck(spec.caller.Dir, spec.caller.UID); err != nil {
+		return nil, 0, stagePins, err
 	}
 	if err = dir.recheck(spec.dir, spec.owner); err != nil {
 		return nil, 0, stagePins, err

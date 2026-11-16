@@ -4,7 +4,6 @@ package m0client
 
 import (
 	"errors"
-	"io"
 
 	"github.com/relux-works/swarma-dispatcher/internal/m0"
 )
@@ -12,5 +11,8 @@ import (
 // ErrUnsupported is the refusal of every operation outside Linux.
 var ErrUnsupported = errors.New("m0client: Linux is required")
 
-func submit(string, m0.Op, string, io.Reader) Outcome { return local("unsupported", ErrUnsupported) }
-func resend(string, string) Outcome                   { return local("unsupported", ErrUnsupported) }
+type host struct{}
+
+func loadConfig(string) (*Config, error) { return nil, ErrUnsupported }
+func submit(*Config, m0.Op) Outcome      { return local("unsupported", ErrUnsupported) }
+func resend(*Config, string) Outcome     { return local("unsupported", ErrUnsupported) }

@@ -20,21 +20,16 @@ import (
 
 const maxSerialValue = 9007199254740991
 
-// Claim: for dispatch and for cancel the daemon's own decoder accepts the
-// tool's wire bytes, Verify passes, every decoded member equals the
-// configuration, the wire bytes are the canonical form and the preimage is
-// within the closed maximum (and reaches exactly 964 / 1019 bytes with
-// 16-digit serials). Control beside it: the same wire with one signature
-// character changed still decodes but does not verify.
+// Claim: Both installed operation plans round-trip with identical canonical R, valid signatures and exact preimage bounds; altered signatures fail.
 func TestRoundTripThroughDaemonDecoder(t *testing.T) {
 	for _, serials := range []string{"fixture", "maximal"} {
 		t.Run(serials, func(t *testing.T) {
 			e := newEnv(t)
 			if serials == "maximal" {
-				e.doc["policy"].(map[string]any)["revision"] = maxSerialValue
-				a := e.doc["association"].(map[string]any)
-				a["revision"], a["registration_number"], a["master_epoch"] = maxSerialValue, maxSerialValue, maxSerialValue
-				e.writeConfig()
+				e.policy.Revision = maxSerialValue
+				e.policy.Association.Revision = maxSerialValue
+				e.policy.Association.RegistrationNumber = maxSerialValue
+				e.policy.Association.MasterEpoch = maxSerialValue
 			}
 			c := e.config()
 			target := randomID(t)
@@ -43,7 +38,8 @@ func TestRoundTripThroughDaemonDecoder(t *testing.T) {
 				if op == m0.OpCancel {
 					bound, want = m0.MaxCancelPreimage, target
 				}
-				wire, reason, err := SignRequest(c, op, id, want)
+				plan := e.plan(op, id, want)
+				wire, reason, err := SignRequest(c, plan)
 				if reason != "" || err != nil {
 					t.Fatalf("%s: sign refused: %s %v", op, reason, err)
 				}
@@ -53,8 +49,8 @@ func TestRoundTripThroughDaemonDecoder(t *testing.T) {
 				if err := r.Verify(); err != nil {
 					t.Fatalf("%s: daemon verification: %v", op, err)
 				}
-				if r.Op != op || r.RequestID != id || r.DispatchRequestID != want || r.Receiver != c.Receiver || r.Policy != c.Policy || r.Association != c.Association || r.Worker != c.Worker || r.Plan != c.Plan || r.Auth.Key != c.Association.Key {
-					t.Fatalf("%s: decoded members differ from the configuration: %+v", op, r)
+				if r.Op != op || r.RequestID != id || r.DispatchRequestID != want || !bytes.Equal(r.Canonical, plan.Request.Canonical) || r.Auth.Key != plan.Request.Association.Key {
+					t.Fatalf("%s: decoded members differ from the installed plan: %+v", op, r)
 				}
 				if len(r.Preimage) > bound || !bytes.HasPrefix(r.Preimage, []byte(m0.SigningDomain+"\n")) {
 					t.Fatalf("%s: preimage %d bytes, bound %d", op, len(r.Preimage), bound)
@@ -82,16 +78,14 @@ func TestRoundTripThroughDaemonDecoder(t *testing.T) {
 	}
 }
 
-// Claim: against the landed runtime behind a real Unix socket the tool's
-// dispatch is accepted (ok:true, state started, exit 0) with exactly one
-// launch, the stored file holds the bytes the listener received, and the
-// owned cancel of that dispatch is accepted too (exit 0, one stop).
-func TestEndToEndDispatchAndCancel(t *testing.T) {
+// Claim: The installed dispatch R launches once through the real runtime/extension, stores the exact wire bytes, and its installed cancel stops it.
+func TestRuntimeDispatchAndCancel(t *testing.T) {
 	e := newEnv(t)
 	dispatchID, cancelID := randomID(t), randomID(t)
+	e.installPlans(dispatchID, cancelID)
 	b := e.newBackend(dispatchID, cancelID)
 	l := e.serveBackend(b)
-	code, stdout, stderr := e.dispatch(dispatchID)
+	code, stdout, stderr := e.run("dispatch", "--config", e.cfgPath)
 	if code != ExitAccepted || !strings.HasPrefix(stdout, `{"ok":true,"request_id":"`+dispatchID+`"`) || !strings.Contains(stdout, `"state":"started"`) || stderr != "" {
 		t.Fatalf("dispatch: exit %d stdout %q stderr %q", code, stdout, stderr)
 	}
@@ -101,6 +95,11 @@ func TestEndToEndDispatchAndCancel(t *testing.T) {
 	streams := l.drain()
 	stored, err := os.ReadFile(e.storedPath(dispatchID))
 	must(t, err)
+	decoded, err := m0.DecodeRequest(stored)
+	must(t, err)
+	if !bytes.Equal(decoded.Canonical, b.source.inst.Catalog.Dispatch.Request.Canonical) {
+		t.Fatal("dispatch R differs from installed signing plan")
+	}
 	if len(streams) != 1 || !bytes.Equal(requestFrame(t, streams[0]), stored) {
 		t.Fatalf("dispatch: listener saw %d connections or bytes that differ from the stored request", len(streams))
 	}
@@ -118,9 +117,7 @@ func TestEndToEndDispatchAndCancel(t *testing.T) {
 	}
 }
 
-// Claim: a seed whose public key is not association.key refuses
-// key_not_associated with exit 64, no connection and no stored request.
-// Control beside it: the associated seed in the same installation is accepted.
+// Claim: A foreign seed refuses locally without storing or connecting; the associated seed sends successfully.
 func TestSeedNotAssociated(t *testing.T) {
 	e := newEnv(t)
 	l := e.listen(modeAccept)
@@ -149,21 +146,17 @@ func TestSeedNotAssociated(t *testing.T) {
 
 // signedBy returns wire bytes for the configured R that carry the associated
 // key but a signature made with another seed.
-func signedBy(t *testing.T, c *Config, id string, seed []byte) []byte {
+func signedBy(t *testing.T, plan *m0.SigningPlan, seed []byte) []byte {
 	t.Helper()
-	r, err := BuildUnsigned(c, m0.OpDispatch, id, "")
-	must(t, err)
+	r := plan.Request
 	sig, err := m0.SignatureSpelling(ed25519.Sign(ed25519.NewKeyFromSeed(seed), r.Preimage))
 	must(t, err)
-	wire, err := m0.SignedWire(r.Canonical, c.Association.Key, sig)
+	wire, err := m0.SignedWire(r.Canonical, r.Association.Key, sig)
 	must(t, err)
 	return wire
 }
 
-// Claim: wire bytes that carry the associated key but were signed by another
-// key are answered signature_invalid by the daemon (exit 16) and launch
-// nothing. Control beside it: the same R signed by the associated seed is
-// accepted by the same daemon (exit 0).
+// Claim: A foreign signature refuses signature_invalid without launch; the same R signed by the associated seed launches.
 func TestForeignSignatureRefusedByDaemon(t *testing.T) {
 	e := newEnv(t)
 	id := randomID(t)
@@ -173,7 +166,7 @@ func TestForeignSignatureRefusedByDaemon(t *testing.T) {
 	other := make([]byte, ed25519.SeedSize)
 	_, err := rand.Read(other)
 	must(t, err)
-	o := Send(c, id, signedBy(t, c, id, other), false)
+	o := Send(c, id, signedBy(t, e.plan(m0.OpDispatch, id, ""), other), false)
 	e.keep(o.Reply)
 	if o.Exit != ExitRefused || !strings.Contains(string(o.Reply), `"code":"signature_invalid"`) {
 		t.Fatalf("foreign signature: exit %d reply %q %v", o.Exit, o.Reply, o.Detail)
@@ -181,24 +174,20 @@ func TestForeignSignatureRefusedByDaemon(t *testing.T) {
 	if starts, _ := b.launcher.count(); starts != 0 {
 		t.Fatalf("foreign signature launched: starts=%d", starts)
 	}
-	o = Send(c, id, signedBy(t, c, id, e.seed), false)
+	o = Send(c, id, signedBy(t, e.plan(m0.OpDispatch, id, ""), e.seed), false)
 	if o.Exit != ExitAccepted {
 		t.Fatalf("control: exit %d reply %q %v", o.Exit, o.Reply, o.Detail)
 	}
 }
 
-// Claim: one member of R changed after signing is refused by the daemon
-// (exit 16) and launches nothing: a changed receiver, and a changed
-// request_id sent under its own correlation ID (signature_invalid). The
-// tool's resend refuses an altered stored file locally (exit 64, nothing
-// sent). Control beside each: the unaltered bytes are accepted (exit 0).
+// Claim: Altered R refuses at the runtime or local resend gate; the unchanged signed request launches once.
 func TestAlteredRequestRefused(t *testing.T) {
 	e := newEnv(t)
 	id := randomID(t)
 	b := e.newBackend(id, randomID(t))
 	l := e.serveBackend(b)
 	c := e.config()
-	wire, reason, err := SignRequest(c, m0.OpDispatch, id, "")
+	wire, reason, err := e.sign(c, m0.OpDispatch, id, "")
 	if reason != "" || err != nil {
 		t.Fatal(reason, err)
 	}
@@ -208,7 +197,7 @@ func TestAlteredRequestRefused(t *testing.T) {
 		}
 		return "0" + s[1:]
 	}
-	receiver := bytes.Replace(wire, []byte(`"receiver":"`+c.Receiver), []byte(`"receiver":"`+flip(c.Receiver)), 1)
+	receiver := bytes.Replace(wire, []byte(`"receiver":"`+e.policy.Receiver), []byte(`"receiver":"`+flip(e.policy.Receiver)), 1)
 	o := Send(c, id, receiver, false)
 	if o.Exit != ExitRefused || bytes.Equal(receiver, wire) {
 		t.Fatalf("altered receiver: exit %d reply %q %v", o.Exit, o.Reply, o.Detail)
@@ -229,6 +218,7 @@ func TestAlteredRequestRefused(t *testing.T) {
 	dir, err := openStateDir(e.stateDir)
 	must(t, err)
 	must(t, storeRequest(dir, id, receiver))
+	e.installPlans(id, e.cancelID)
 	must(t, syscall.Close(dir))
 	before := len(l.drain())
 	code, stdout, stderr := e.resend(id)
@@ -244,15 +234,12 @@ func TestAlteredRequestRefused(t *testing.T) {
 	}
 }
 
-// Claim: the tool's exact wire bytes handed to the runtime with a kernel peer
-// that is not association.uid are refused caller_not_permitted and launch
-// nothing. Control beside it: the same bytes with the association UID as the
-// peer are accepted. (The kernel UID cannot be varied in a single-UID run.)
+// Claim: A runtime peer other than association.uid refuses without launch; the associated peer starts the same signed request.
 func TestPeerOtherThanAssociationUID(t *testing.T) {
 	e := newEnv(t)
 	id := randomID(t)
 	b := e.newBackend(id, randomID(t))
-	wire, reason, err := SignRequest(e.config(), m0.OpDispatch, id, "")
+	wire, reason, err := e.sign(e.config(), m0.OpDispatch, id, "")
 	if reason != "" || err != nil {
 		t.Fatal(reason, err)
 	}
@@ -269,12 +256,7 @@ func TestPeerOtherThanAssociationUID(t *testing.T) {
 	}
 }
 
-// Claim: resend of an accepted dispatch returns the original result without
-// the key file and starts nothing new (one launch at the launcher seam), and
-// a new dispatch for the same worker is refused by the daemon: as issued
-// because its ID is not the protected plan's, and with the plan re-pinned to
-// it by the single-launch budget (m0_launch_budget_consumed); still one launch.
-// Control: the first dispatch is accepted.
+// Claim: Exact resend works without the seed and never relaunches; a different installed plan cannot replenish the runtime launch budget.
 func TestResendAndSingleLaunchBudget(t *testing.T) {
 	e := newEnv(t)
 	first, cancelID := randomID(t), randomID(t)
@@ -308,10 +290,7 @@ func TestResendAndSingleLaunchBudget(t *testing.T) {
 	}
 }
 
-// Claim: a key file with mode 0640, a symlink to a good key file, a second
-// hard link, 31 bytes, 33 bytes or mode 0400 refuses key_file_unsafe with
-// exit 64, no connection and no stored request. Control beside them: the
-// untouched 0600 single-link 32-byte file is accepted (exit 0).
+// Claim: Unsafe key modes, symlinks, links, lengths and absence refuse without store/connect; a safe key signs and sends.
 func TestKeyFileShape(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -353,36 +332,26 @@ func TestKeyFileShape(t *testing.T) {
 	}
 }
 
-// Claim: a 0600 single-link 32-byte key file owned by another UID refuses
-// key_file_unsafe before any signature. Control beside it: the same file owned
-// by the effective UID signs.
+// Claim: foreign key ownership refuses before signing; the same modeled installation signs with the enrolled owner.
 func TestKeyFileForeignOwner(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("UNRUN: a key file owned by another UID needs chown, which needs root; this run has one unprivileged UID")
+	e := newEnv(t)
+	c := e.config()
+	plan := e.plan(m0.OpDispatch, randomID(t), "")
+	if _, reason, err := SignRequest(c, plan); reason != "" || err != nil {
+		t.Fatal("control", reason, err)
 	}
-	dir := t.TempDir()
-	seed := make([]byte, ed25519.SeedSize)
-	_, err := rand.Read(seed)
-	must(t, err)
-	name := filepath.Join(dir, "seed")
-	must(t, os.WriteFile(name, seed, 0600))
-	key, err := m0.KeySpelling(ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey))
-	must(t, err)
-	c := &Config{KeyFile: name, Association: m0.Association{Key: key}}
-	if _, reason, err := signPreimage(c, []byte("preimage")); reason != "" || err != nil {
-		t.Fatalf("control: %s %v", reason, err)
+	native := c.host.stat
+	c.host.stat = func(fd int) (syscall.Stat_t, error) {
+		st, err := native(fd)
+		st.Uid++
+		return st, err
 	}
-	must(t, os.Chown(name, 65534, -1))
-	if _, reason, _ := signPreimage(c, []byte("preimage")); reason != reasonKeyFileUnsafe {
-		t.Fatalf("foreign owner: reason %q", reason)
+	if _, reason, _ := SignRequest(c, plan); reason != reasonKeyFileUnsafe {
+		t.Fatal("foreign owner accepted", reason)
 	}
 }
 
-// Claim: with the configured service_uid set to another value the tool
-// refuses with exit 64 and the listener receives nothing; and when only the
-// kernel peer check can refuse (endpoint pins satisfied, peer UID different)
-// the client connects, sends zero bytes and closes before hello. Control
-// beside them: the listener owned by the expected UID is served (exit 0).
+// Claim: A foreign service UID or kernel peer refuses with zero sent bytes; the expected service completes an exchange.
 func TestServiceUIDRequiredBeforeHello(t *testing.T) {
 	e := newEnv(t)
 	l := e.listen(modeAccept)
@@ -422,13 +391,7 @@ func TestServiceUIDRequiredBeforeHello(t *testing.T) {
 	}
 }
 
-// Claim: a listener that reads the request and closes without a reply gives
-// exit 17 with the request_id on stderr and nothing on stdout; the .req file
-// exists; resend then sends byte-identical data on the wire. The same exit 17
-// follows a truncated reply, a reply with another correlation ID, a reply
-// that never arrives within the stage timeout and a reply carrying a passed
-// descriptor. Control beside them: the same listener answering a plain valid
-// reply gives exit 0.
+// Claim: Missing, truncated, late, ancillary or wrong-ID replies are unknown with exact durable resend; a plain matching reply succeeds.
 func TestUnknownOutcome(t *testing.T) {
 	for _, mode := range []string{modeAccept, modeClose, modeTruncate, modeWrongID, modeSilent, modeRights} {
 		t.Run(mode, func(t *testing.T) {
@@ -468,11 +431,7 @@ func TestUnknownOutcome(t *testing.T) {
 	}
 }
 
-// Claim: resend refuses with exit 64 and sends nothing when the stored file
-// is missing, is a symlink, has a second link, has mode 0640, is truncated,
-// has one signature character changed, has a byte appended or carries
-// another request's bytes under this name. Control beside them: the untouched
-// stored file is sent (exit 0).
+// Claim: Unsafe or altered stored requests refuse without connecting; the untouched canonical signed request resends.
 func TestResendStoredFileShape(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -489,7 +448,7 @@ func TestResendStoredFileShape(t *testing.T) {
 		{"two links", func(t *testing.T, e *env, path string) { must(t, os.Link(path, filepath.Join(e.root, "alias.req"))) }, true},
 		{"mode 0640", func(t *testing.T, _ *env, path string) { must(t, os.Chmod(path, 0640)) }, true},
 		{"other request", func(t *testing.T, e *env, path string) {
-			wire, reason, err := SignRequest(e.config(), m0.OpDispatch, randomID(t), "")
+			wire, reason, err := e.sign(e.config(), m0.OpDispatch, randomID(t), "")
 			if reason != "" || err != nil {
 				t.Fatal(reason, err)
 			}
@@ -537,20 +496,15 @@ func TestResendStoredFileShape(t *testing.T) {
 	}
 }
 
-// Claim: the configuration object is closed: an unknown member at the root or
-// in a nested object, a missing member, a duplicate member, an array, a
-// timeout outside the transport bounds, a managed or zero service UID, a
-// relative path, an endpoint name with a separator and any request spelling
-// the daemon's decoder refuses are all refused. Control beside them: the
-// untouched document parses.
+// Claim: only canonical, complete transport-pin/tool-path configurations parse; each malformed form refuses beside the valid control.
 func TestConfigClosedForm(t *testing.T) {
 	e := newEnv(t)
 	valid, err := json.Marshal(e.doc)
 	must(t, err)
 	if _, err := ParseConfig(valid); err != nil {
-		t.Fatalf("control: %v", err)
+		t.Fatal("control", err)
 	}
-	edit := func(fn func(doc map[string]any)) []byte {
+	edit := func(fn func(map[string]any)) []byte {
 		var doc map[string]any
 		d := json.NewDecoder(bytes.NewReader(valid))
 		d.UseNumber()
@@ -560,54 +514,53 @@ func TestConfigClosedForm(t *testing.T) {
 		must(t, err)
 		return b
 	}
-	nested := func(object, member string, value any) func(map[string]any) {
-		return func(doc map[string]any) { doc[object].(map[string]any)[member] = value }
+	nested := func(k string, v any) func(map[string]any) {
+		return func(d map[string]any) { d["caller"].(map[string]any)[k] = v }
 	}
 	cases := map[string][]byte{
-		"unknown root member":     edit(func(doc map[string]any) { doc["extra"] = 1 }),
-		"unknown nested member":   edit(nested("association", "extra", 1)),
-		"unknown plan member":     edit(nested("plan", "command", "x")),
-		"missing member":          edit(func(doc map[string]any) { delete(doc, "state_dir") }),
-		"missing nested member":   edit(func(doc map[string]any) { delete(doc["worker"].(map[string]any), "generation") }),
-		"duplicate member":        bytes.Replace(valid, []byte(`{`), []byte(`{"v":1,`), 1),
-		"array":                   edit(func(doc map[string]any) { doc["endpoint"] = []string{"d.sock"} }),
-		"null":                    edit(func(doc map[string]any) { doc["key_file"] = nil }),
-		"trailing bytes":          append(append([]byte(nil), valid...), []byte(`{}`)...),
-		"wrong kind":              edit(func(doc map[string]any) { doc["kind"] = "swarma-dispatcher m0-config/1" }),
-		"version 2":               edit(func(doc map[string]any) { doc["v"] = 2 }),
-		"stage timeout 0":         edit(func(doc map[string]any) { doc["stage_timeout_ms"] = 0 }),
-		"stage timeout 2001":      edit(func(doc map[string]any) { doc["stage_timeout_ms"] = 2001 }),
-		"session timeout 5001":    edit(func(doc map[string]any) { doc["session_timeout_ms"] = 5001 }),
-		"fractional timeout":      bytes.Replace(valid, []byte(`"stage_timeout_ms":2000`), []byte(`"stage_timeout_ms":2e3`), 1),
-		"service uid 0":           edit(func(doc map[string]any) { doc["service_uid"] = 0 }),
-		"managed service uid":     edit(func(doc map[string]any) { doc["service_uid"] = 30000 }),
-		"relative state dir":      edit(func(doc map[string]any) { doc["state_dir"] = "state" }),
-		"unclean endpoint dir":    edit(func(doc map[string]any) { doc["endpoint_dir"] = e.epDir + "/../ep" }),
-		"endpoint with separator": edit(func(doc map[string]any) { doc["endpoint"] = "a/d.sock" }),
-		"endpoint dot dot":        edit(func(doc map[string]any) { doc["endpoint"] = ".." }),
-		"association uid 29999":   edit(nested("association", "uid", 29999)),
-		"uppercase receiver":      edit(func(doc map[string]any) { doc["receiver"] = strings.Repeat("E", 32) }),
-		"padded key":              edit(nested("association", "key", e.key+"=")),
-		"digest without prefix":   edit(nested("plan", "profile", strings.Repeat("2", 64))),
-		"revision 0":              edit(nested("policy", "revision", 0)),
-		"empty":                   nil,
-		"oversize":                append(append([]byte(nil), valid...), bytes.Repeat([]byte(" "), MaxConfigBytes)...),
-	}
-	if !bytes.Contains(valid, []byte(`"stage_timeout_ms":2000`)) {
-		t.Fatal("fixture spelling changed")
+		"unknown":             edit(func(d map[string]any) { d["extra"] = 1 }),
+		"old receiver":        edit(func(d map[string]any) { d["receiver"] = e.policy.Receiver }),
+		"endpoint override":   edit(func(d map[string]any) { d["endpoint_dir"] = e.epDir }),
+		"unknown caller":      edit(nested("extra", 1)),
+		"missing":             edit(func(d map[string]any) { delete(d, "dispatch_plan") }),
+		"missing caller":      edit(func(d map[string]any) { delete(d["caller"].(map[string]any), "ino") }),
+		"duplicate":           bytes.Replace(valid, []byte(`{`), []byte(`{"caller":{},`), 1),
+		"unsorted":            bytes.Replace(valid, []byte(`{`), []byte(`{"z":1,`), 1),
+		"array":               edit(func(d map[string]any) { d["caller"] = []int{1} }),
+		"null":                edit(func(d map[string]any) { d["key_file"] = nil }),
+		"trailing":            append(append([]byte(nil), valid...), ' '),
+		"whitespace":          append([]byte("\n"), valid...),
+		"escaped":             bytes.Replace(valid, []byte(`"caller"`), []byte(`"call\u0065r"`), 1),
+		"unicode":             edit(func(d map[string]any) { d["key_file"] = "/é" }),
+		"version":             edit(func(d map[string]any) { d["v"] = 2 }),
+		"timeout zero":        edit(func(d map[string]any) { d["stage_timeout_ms"] = 0 }),
+		"timeout large":       edit(func(d map[string]any) { d["stage_timeout_ms"] = 2001 }),
+		"session large":       edit(func(d map[string]any) { d["session_timeout_ms"] = 5001 }),
+		"exponent":            bytes.Replace(valid, []byte(`"stage_timeout_ms":2000`), []byte(`"stage_timeout_ms":2e3`), 1),
+		"service zero":        edit(func(d map[string]any) { d["service_uid"] = 0 }),
+		"managed service":     edit(func(d map[string]any) { d["service_uid"] = 30000 }),
+		"same uid":            edit(func(d map[string]any) { d["service_uid"] = e.policy.Association.UID }),
+		"same gid":            edit(func(d map[string]any) { d["service_gid"] = d["connect_gid"] }),
+		"caller zero":         edit(nested("uid", 0)),
+		"caller overflow":     edit(nested("uid", 4294967295)),
+		"caller dev zero":     edit(nested("dev", 0)),
+		"caller ino overflow": edit(nested("ino", uint64(maxSerial)+1)),
+		"caller path long":    edit(nested("dir", "/"+strings.Repeat("a", 512))),
+		"caller path root":    edit(nested("dir", "/")),
+		"relative":            edit(func(d map[string]any) { d["state_dir"] = "state" }),
+		"unclean plan":        edit(func(d map[string]any) { d["cancel_plan"] = "/a/../b" }),
+		"endpoint zero":       edit(func(d map[string]any) { d["endpoint_dev"] = 0 }),
+		"endpoint overflow":   edit(func(d map[string]any) { d["endpoint_ino"] = uint64(maxSerial) + 1 }),
+		"empty":               nil, "oversize": bytes.Repeat([]byte("x"), MaxConfigBytes+1),
 	}
 	for name, doc := range cases {
 		if _, err := ParseConfig(doc); err == nil {
-			t.Errorf("%s: accepted", name)
+			t.Errorf("%s accepted", name)
 		}
 	}
 }
 
-// Claim: a configuration file that is a symlink, is group-writable, is
-// other-writable, is not a regular file or is named by a relative path
-// refuses with exit 64 before the key file is read or anything is sent or
-// stored. Control beside them: the same content in a regular 0600 file is
-// used (exit 0).
+// Claim: Unsafe configuration shape/path refuses before key access/store/connect; the protected snapshot succeeds.
 func TestConfigFileShape(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -615,7 +568,7 @@ func TestConfigFileShape(t *testing.T) {
 		refused bool
 	}{
 		{"control", func(_ *testing.T, e *env) string { return e.cfgPath }, false},
-		{"read-only control", func(t *testing.T, e *env) string { must(t, os.Chmod(e.cfgPath, 0444)); return e.cfgPath }, false},
+		{"wrong mode", func(t *testing.T, e *env) string { must(t, os.Chmod(e.cfgPath, 0600)); return e.cfgPath }, true},
 		{"symlink", func(t *testing.T, e *env) string {
 			link := filepath.Join(e.root, "link.json")
 			must(t, os.Symlink(e.cfgPath, link))
@@ -637,8 +590,15 @@ func TestConfigFileShape(t *testing.T) {
 			if tc.refused {
 				must(t, os.Chmod(e.keyPath, 0644))
 			}
-			code, stdout, stderr := e.run(mustRaw(t, randomID(t)), "dispatch", "--config", path)
-			connections := len(l.drain())
+			code, stdout, stderr := e.run("dispatch", "--config", path)
+			connections := 0
+			if tc.name == "regular file" || tc.name == "missing socket" {
+				l.mu.Lock()
+				connections = l.accepted
+				l.mu.Unlock()
+			} else {
+				connections = len(l.drain())
+			}
 			if !tc.refused {
 				if code != ExitAccepted || connections != 1 {
 					t.Fatalf("exit %d stderr %q", code, stderr)
@@ -652,10 +612,7 @@ func TestConfigFileShape(t *testing.T) {
 	}
 }
 
-// Claim: a state directory with mode 0755 or 0750, one that is a symlink and
-// one that does not exist refuse with exit 64 before the key file is read;
-// nothing is sent, created or repaired. Control beside them: mode 0700 is
-// used and receives exactly one 0600 file named by the request ID.
+// Claim: Unsafe state directories refuse without repair/connect; an owned 0700 directory stores one 0600 request.
 func TestStateDirectoryShape(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -698,12 +655,7 @@ func TestStateDirectoryShape(t *testing.T) {
 	}
 }
 
-// Claim: before connecting the client requires the pinned endpoint: a socket
-// with mode 0666 or 0600, a regular file in its place, an endpoint directory
-// with mode 0755 or 0700, a missing socket and a connect_gid that is not a
-// group of the process all refuse with exit 64 and the listener receives
-// nothing; the request stays stored and the refusal says so. Control beside
-// them: directory 0711 and socket 0660 are used (exit 0).
+// Claim: Unsafe endpoint type, path or modes refuse before connect with stored-not-sent evidence; valid pins exchange successfully.
 func TestEndpointPins(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -716,24 +668,15 @@ func TestEndpointPins(t *testing.T) {
 		{"directory 0755", func(t *testing.T, e *env, _ *listener) { must(t, os.Chmod(e.epDir, 0755)) }, true},
 		{"directory 0700", func(t *testing.T, e *env, _ *listener) { must(t, os.Chmod(e.epDir, 0700)) }, true},
 		{"regular file", func(t *testing.T, e *env, _ *listener) {
-			e.doc["endpoint"] = "plain"
-			e.writeConfig()
-			must(t, os.WriteFile(filepath.Join(e.epDir, "plain"), nil, 0660))
-			must(t, os.Chmod(filepath.Join(e.epDir, "plain"), 0660))
+			must(t, os.Remove(filepath.Join(e.epDir, endpointName)))
+			must(t, os.WriteFile(filepath.Join(e.epDir, endpointName), nil, 0660))
+			must(t, os.Chmod(filepath.Join(e.epDir, endpointName), 0660))
 		}, true},
-		{"missing socket", func(_ *testing.T, e *env, _ *listener) {
-			e.doc["endpoint"] = "absent.sock"
-			e.writeConfig()
-		}, true},
+		{"missing socket", func(t *testing.T, e *env, _ *listener) { must(t, os.Remove(filepath.Join(e.epDir, endpointName))) }, true},
 		{"symlinked directory", func(t *testing.T, e *env, _ *listener) {
 			link := filepath.Join(e.root, "eplink")
 			must(t, os.Symlink(e.epDir, link))
-			e.doc["endpoint_dir"] = link
-			e.writeConfig()
-		}, true},
-		{"foreign connect gid", func(_ *testing.T, e *env, _ *listener) {
-			e.doc["connect_gid"] = 4294967294
-			e.writeConfig()
+			e.host.endpoint = link
 		}, true},
 	}
 	for _, tc := range cases {
@@ -744,7 +687,14 @@ func TestEndpointPins(t *testing.T) {
 			id := randomID(t)
 			code, stdout, stderr := e.dispatch(id)
 			_ = os.Chmod(e.epDir, 0711)
-			connections := len(l.drain())
+			connections := 0
+			if tc.name == "regular file" || tc.name == "missing socket" {
+				l.mu.Lock()
+				connections = l.accepted
+				l.mu.Unlock()
+			} else {
+				connections = len(l.drain())
+			}
 			if !tc.refused {
 				if code != ExitAccepted || connections != 1 {
 					t.Fatalf("exit %d stderr %q", code, stderr)
@@ -758,10 +708,7 @@ func TestEndpointPins(t *testing.T) {
 	}
 }
 
-// Claim: the secrecy scanner finds a planted seed in every form it knows:
-// raw, lowercase and uppercase hex, the four base64 alphabets and either half
-// raw or in hex. Control beside it: the public key spelling, a request signed
-// with the seed and unrelated bytes are clean.
+// Claim: All eleven planted seed forms are detected; public keys, signatures and unrelated bytes remain clean.
 func TestSeedScannerFindsPlantedSeed(t *testing.T) {
 	e := newEnv(t)
 	for name, form := range seedForms(e.seed) {
@@ -770,7 +717,7 @@ func TestSeedScannerFindsPlantedSeed(t *testing.T) {
 			t.Errorf("%s: planted seed not found", name)
 		}
 	}
-	wire, reason, err := SignRequest(e.config(), m0.OpDispatch, randomID(t), "")
+	wire, reason, err := e.sign(e.config(), m0.OpDispatch, randomID(t), "")
 	if reason != "" || err != nil {
 		t.Fatal(reason, err)
 	}
@@ -779,11 +726,9 @@ func TestSeedScannerFindsPlantedSeed(t *testing.T) {
 	}
 }
 
-// Claim: a receive that carries a passed descriptor refuses with the
-// ancillary error and closes the delivered descriptor (the process's open
-// descriptor count is unchanged afterwards). Control beside it: plain data on
-// the same kind of socket is received.
+// Claim: Ancillary rights refuse and delivered descriptors close; ordinary socket data is received without leaks.
 func TestReceiveRefusesAndClosesPassedDescriptor(t *testing.T) {
+	_ = newEnv(t)
 	openDescriptors := func() int {
 		entries, err := os.ReadDir("/proc/self/fd")
 		must(t, err)
@@ -816,11 +761,9 @@ func TestReceiveRefusesAndClosesPassedDescriptor(t *testing.T) {
 	}
 }
 
-// Claim: every stage deadline is the earlier of stage start plus the stage
-// timeout and session start plus the session timeout: a late stage is cut by
-// the session budget. Control beside it: an early stage gets the full stage
-// timeout.
+// Claim: Early stages receive the stage allowance; late stages cannot exceed the original session deadline.
 func TestStageDeadlineNeverPassesSessionBudget(t *testing.T) {
+	_ = newEnv(t)
 	early := &wire{start: time.Now(), spec: endpointSpec{stage: 2 * time.Second, session: 5 * time.Second}}
 	if d := time.Until(early.deadline()); d < 1900*time.Millisecond || d > 2*time.Second {
 		t.Fatalf("control: early stage deadline in %v", d)
@@ -831,10 +774,9 @@ func TestStageDeadlineNeverPassesSessionBudget(t *testing.T) {
 	}
 }
 
-// Claim: connect_gid must be the effective or a supplementary group of the
-// process: a group the process is not in is refused. Control beside it: the
-// effective group is accepted.
+// Claim: The effective group is recognized as membership; a foreign group is not.
 func TestConnectGroupMembership(t *testing.T) {
+	_ = newEnv(t)
 	if !groupMember(uint32(os.Getegid())) {
 		t.Fatal("control: effective group refused")
 	}
@@ -843,13 +785,9 @@ func TestConnectGroupMembership(t *testing.T) {
 	}
 }
 
-// Claim: the endpoint is re-checked after connect and before any write: a
-// socket whose mode changes, or an endpoint directory whose mode changes,
-// between connect and the re-stat refuses with zero bytes sent, and the
-// listener receives nothing on that connection. Control beside them: with
-// nothing changed in that window the exchange completes.
+// Claim: Changed endpoint/caller identities or modes refuse with zero bytes before hello; unchanged pins exchange successfully.
 func TestEndpointRecheckedAfterConnect(t *testing.T) {
-	for _, change := range []string{"none", "socket mode", "directory mode"} {
+	for _, change := range []string{"none", "socket mode", "directory mode", "caller mode", "caller replacement"} {
 		t.Run(change, func(t *testing.T) {
 			e := newEnv(t)
 			l := e.listen(modeAccept)
@@ -861,6 +799,11 @@ func TestEndpointRecheckedAfterConnect(t *testing.T) {
 					must(t, os.Chmod(l.path, 0666))
 				case "directory mode":
 					must(t, os.Chmod(e.epDir, 0755))
+				case "caller mode":
+					must(t, os.Chmod(e.callerDir, 0755))
+				case "caller replacement":
+					must(t, os.Rename(e.callerDir, e.callerDir+".old"))
+					must(t, os.Mkdir(e.callerDir, 0700))
 				}
 			}
 			reply, sent, stage, err := exchange(spec, id, []byte(`{"kind":"fixture"}`))
@@ -879,11 +822,7 @@ func TestEndpointRecheckedAfterConnect(t *testing.T) {
 	}
 }
 
-// Claim: the request is written only after the exact hello result: when the
-// listener answers hello with a well-formed refusal envelope the client
-// sends no request frame and the outcome is unknown (exit 17, hello bytes
-// were sent). Control beside it: after the exact hello result the request
-// frame is sent and answered (exit 0).
+// Claim: A bad hello result sends no request and reports unknown; an exact hello result permits one answered request.
 func TestRequestOnlyAfterExactHelloResult(t *testing.T) {
 	for _, mode := range []string{modeAccept, modeBadHello} {
 		t.Run(mode, func(t *testing.T) {
@@ -909,10 +848,7 @@ func TestRequestOnlyAfterExactHelloResult(t *testing.T) {
 	}
 }
 
-// Claim: the stored request is created exclusively: when a file already has
-// the drawn request ID's name the tool refuses with exit 64, leaves that file
-// unchanged and sends nothing. Control beside it: a fresh ID is stored and
-// sent (exit 0).
+// Claim: An existing installed request name refuses without replacement/connect; a fresh installed plan stores and sends.
 func TestStoreNeverReplacesExistingRequest(t *testing.T) {
 	e := newEnv(t)
 	l := e.listen(modeAccept)

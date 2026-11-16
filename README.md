@@ -261,38 +261,62 @@ activation; the `m0_*` refusal codes are draft spellings pending publication.
 
 | Tool | Source | Purpose | Exit status |
 | --- | --- | --- | --- |
-| `swarma-m0-caller` | `cmd/swarma-m0-caller`, [`internal/m0client`](internal/m0client/) | Build, sign, store and send one M0 `dispatch` or `cancel` request, or `resend` a stored one | `0` accepted, `16` refused by the daemon, `17` unknown, `64` refused locally |
+| `swarma-m0-caller` | `cmd/swarma-m0-caller`, [`internal/m0client`](internal/m0client/) | Sign, store and send an installed M0 `dispatch` or `cancel` signing plan, or `resend` a stored request | `0` accepted, `16` refused by the daemon, `17` unknown, `64` refused locally |
 
 The caller side of the [M0 request form](spec/m0-launch.md#2-closed-proposed-forms-and-signing).
-It reads one closed JSON configuration (`kind` `swarma-dispatcher m0-caller-config/1`:
-`receiver`, `policy`, the complete `association`, `worker`, `plan`, the client's
-`endpoint_dir`, `endpoint`, `service_uid`, `connect_gid`, `stage_timeout_ms` (at most 2000),
-`session_timeout_ms` (at most 5000), `key_file`, `state_dir`, `v`), which must be
-a regular file, not a symlink and not group- or other-writable. The key file is
-the 32-byte Ed25519 seed: regular, one link, owned by the effective UID, mode
-exactly `0600`; its public key must be `association.key`. The tool never creates,
-repairs, prints or copies a key. Canonical bytes and spellings come from the
-daemon's own code in `internal/m0`. The exact wire bytes are written to
-`state_dir/<request_id>.req` (directory `0700`, file `0600`, synced) before the
-single [transport](spec/transport.md) exchange; `resend` sends those bytes
-unchanged without reading the key file. Linux only.
+It reads one closed, canonical ASCII JSON configuration (maximum 4096 bytes),
+using the [transport client](spec/transport.md) member names: `v` (`1`),
+`caller` (exactly `uid`, `dir`, `dev`, `ino`), `endpoint_dev`, `endpoint_ino`,
+`service_uid`, `service_gid`, `connect_gid`; and the tool members `key_file`,
+`state_dir`, `dispatch_plan`, `cancel_plan`, `stage_timeout_ms` (1..2000),
+`session_timeout_ms` (1..5000). Every member is required, keys are sorted, and
+there is no whitespace outside strings, escape or trailing newline. Configuration
+is root-owned, group root, single-link and mode `0444`, opened through pinned,
+root-owned, non-group/other-writable ancestors without symlinks. The endpoint is
+fixed at `/opt/swarma/run/dispatcher/dispatcher.sock`. Caller and endpoint pins
+are checked before connect and rechecked before hello; the service's kernel UID
+is checked before any write. The private service group must not include the caller.
+The client keeps its own closed parser because the transport parser is private
+and currently excludes managed callers; it does not change the transport package.
+
+`dispatch_plan` and `cancel_plan` are absolute protected file paths: regular,
+non-symlink, root- or effective-UID-owned and not group/other-writable, with
+root/effective-UID-owned, non-group/other-writable ancestors. The daemon's `DecodeSigningPlan`
+is the decoder. The request is exactly the installed signing plan's canonical R,
+including its `request_id` and cancel target; the tool generates no request values.
+Before key access or storage, the effective UID must equal both `caller.uid` and
+the plan's `association.uid` (the real UID must also equal `caller.uid`).
+The key file is a 32-byte Ed25519 seed: regular, one link, effective-UID-owned,
+mode exactly `0600`; its public key must equal the plan's `association.key`.
+The tool never creates, repairs, prints or copies a key. Canonical request bytes
+and spellings come from `internal/m0`, not a second canonicalizer.
+
+The exact signed wire bytes are stored in `state_dir/<request_id>.req`
+(directory `0700`, file `0600`, both synced) before the single exchange. A second
+submission of that plan refuses locally and says to use `resend`; it never
+replaces an existing file. `resend` verifies the stored signature and exact R
+against the current operation plan, then sends the stored bytes unchanged
+without reading the key file. Linux only.
 
 ```sh
 go build -o .temp/swarma-m0-caller ./cmd/swarma-m0-caller
 .temp/swarma-m0-caller dispatch --config /absolute/caller.json
-.temp/swarma-m0-caller cancel --config /absolute/caller.json --dispatch-request-id ID
+.temp/swarma-m0-caller cancel --config /absolute/caller.json
 .temp/swarma-m0-caller resend --config /absolute/caller.json --request-id ID
 go test -race -count=1 ./internal/m0client/... ./cmd/swarma-m0-caller/...
 ```
 
 Stdout carries exactly the reply envelope bytes; diagnostics go to stderr. On
 `17` the `request_id` is printed on stderr for `resend`; there is no retry
-inside one invocation. This tool activates nothing and qualifies nothing: the
-daemon stays closed without an installed policy, it accepts only the request
-its protected signing plan pins (including the `request_id`), and the reference
-transport admits only unmanaged caller UIDs while the M0 association UID is a
-managed one. Tests drive the landed runtime behind a test listener on a real
-Unix socket, not a deployed daemon.
+inside one invocation. A local transport refusal leaves the durable request and
+reports `request_id=... stored, not sent`. A bad hello result after hello was
+sent remains exit `17`. This tool activates nothing and qualifies nothing: the
+request is the installed signing plan, and the caller must be on the daemon's
+managed M0 caller list. Managed-caller transport admission is separate work.
+Tests drive the real M0 runtime/extension behind a test Unix-socket listener,
+with modeled protected ownership and managed caller credentials. An end-to-end
+test through the real daemon serve loop belongs to the transport unit, not this
+tool; these tests do not qualify that loop or a deployed daemon.
 
 ## Demo tools (not production)
 

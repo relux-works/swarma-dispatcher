@@ -1,7 +1,7 @@
 // Package m0client is the caller side of the DRAFT M0 request form in
-// spec/m0-launch.md section 2: it builds one closed dispatch or cancel request
-// R from a protected configuration, signs the exact preimage with a local
-// Ed25519 seed file, stores the wire bytes before sending and performs one
+// spec/m0-launch.md section 2: it reads a protected installed dispatch or cancel
+// signing plan, signs exactly its request R with the associated local Ed25519
+// seed after checking caller identity, stores the wire bytes and performs one
 // client exchange of spec/transport.md.
 //
 // The canonical bytes, the closed-form validation and the key and signature

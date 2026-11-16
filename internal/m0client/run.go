@@ -1,7 +1,6 @@
 package m0client
 
 import (
-	"crypto/rand"
 	"fmt"
 	"io"
 
@@ -22,7 +21,7 @@ const (
 )
 
 const usage = `usage: swarma-m0-caller dispatch --config /absolute/caller.json
-       swarma-m0-caller cancel --config /absolute/caller.json --dispatch-request-id ID
+       swarma-m0-caller cancel --config /absolute/caller.json
        swarma-m0-caller resend --config /absolute/caller.json --request-id ID`
 
 const (
@@ -41,8 +40,8 @@ func parseArgs(args []string) (command, bool) {
 	switch {
 	case len(args) == 3 && args[0] == verbDispatch && args[1] == "--config":
 		return command{verb: verbDispatch, config: args[2]}, true
-	case len(args) == 5 && args[0] == verbCancel && args[1] == "--config" && args[3] == "--dispatch-request-id":
-		return command{verb: verbCancel, config: args[2], id: args[4]}, true
+	case len(args) == 3 && args[0] == verbCancel && args[1] == "--config":
+		return command{verb: verbCancel, config: args[2]}, true
 	case len(args) == 5 && args[0] == verbResend && args[1] == "--config" && args[3] == "--request-id":
 		return command{verb: verbResend, config: args[2], id: args[4]}, true
 	}
@@ -92,27 +91,31 @@ func classify(id string, stored bool, sent int, reply []byte, stage string, err 
 	return o
 }
 
-// Run executes one invocation with the kernel CSPRNG and returns the exit
+// Run executes one invocation using the installed plan and returns the exit
 // status. Stdout receives exactly the reply envelope bytes and nothing else;
 // diagnostics go to stderr.
 func Run(args []string, stdout, stderr io.Writer) int {
-	return runWith(args, stdout, stderr, rand.Reader)
+	return runWith(args, stdout, stderr, loadConfig)
 }
 
-func runWith(args []string, stdout, stderr io.Writer, random io.Reader) int {
+func runWith(args []string, stdout, stderr io.Writer, load func(string) (*Config, error)) int {
 	cmd, ok := parseArgs(args)
 	if !ok {
 		fmt.Fprintln(stderr, usage)
 		return ExitLocal
 	}
+	c, err := load(cmd.config)
+	if err != nil {
+		return report(local("config_invalid", err), stdout, stderr)
+	}
 	var o Outcome
 	switch cmd.verb {
 	case verbDispatch:
-		o = submit(cmd.config, m0.OpDispatch, "", random)
+		o = submit(c, m0.OpDispatch)
 	case verbCancel:
-		o = submit(cmd.config, m0.OpCancel, cmd.id, random)
+		o = submit(c, m0.OpCancel)
 	default:
-		o = resend(cmd.config, cmd.id)
+		o = resend(c, cmd.id)
 	}
 	return report(o, stdout, stderr)
 }

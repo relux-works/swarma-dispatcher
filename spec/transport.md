@@ -89,6 +89,11 @@ unmanaged server-listed caller retains capacity behavior and may still reach
 the extension with an M0 frame, where M0 refuses a non-association kernel UID.
 The current active generation check remains in M0 (`generationCurrent`), never
 in allowlist membership. There are at most 32 unmanaged plus four managed pins.
+The gated [host-registration/1](host-registration.md) seam of the full
+dispatcher defines one further Host pin when its `--host-config` is attached
+(at most those 36 pins plus that one); that seam is not part of this reference
+subset, which admits no host operation, and with no host configuration
+attached the bound above is unchanged.
 No new client grammar, flags, authority, enrollment, policy or generation
 fallback is introduced; default seams still keep M0 closed and nothing is
 activated by this exception. The reference-subset operation/result grammar and

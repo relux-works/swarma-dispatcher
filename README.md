@@ -226,8 +226,9 @@ policy source and the catalog input body. See the
 
 The daemon gains one optional flag. Without it nothing M0 is loaded and the
 wire behavior is the reference subset exactly; with it the M0 extension attaches
-only when the configuration selects M0 **and** the policy source reports an
-installed policy. With the default seams that is never the case, so the daemon
+only when configuration selects M0, the static gate and stop-identity producer
+are pinned, and the policy source reports an installed policy. With the default
+seams that is never the case, so the daemon
 prints `m0 closed` and stays capacity-only:
 
 ```sh
@@ -236,15 +237,15 @@ prints `m0 closed` and stays capacity-only:
 
 The M0 configuration is a separate protected server-mode file (same ownership
 and mode rules as the server configuration) holding exactly the canonical
-object `{"callers","enabled","entry","kind","recovery_attested","state_dir","supported_local_storage","v"}`
-with `kind` `swarma-dispatcher m0-config/2`, `v=2`, `entry` `initialize` or
+object `{"callers","enabled","entry","kind","p17","recovery_attested","state_dir","supported_local_storage","v"}`
+with `kind` `swarma-dispatcher m0-config/3`, `v=3`, `entry` `initialize` or
 `established`, and an absolute `state_dir` that already contains the journal
 `records` and `inputs` directories. The transport server configuration is
 unchanged. `recovery_attested` is the operator's recovery-prerequisite
 attestation for the journal; without it an established reopen refuses
 `m0_recovery_held`. A journal sync failure makes the daemon exit and must not be
 reopened in the same boot.
-The protected `callers` list contains 1..4 ascending managed UID/directory pins admitted only to M0 frames while the extension is attached, with the same pin rechecks and slot limits; configuration /1 now refuses.
+The protected `callers` list contains 1..4 ascending managed UID/directory pins admitted only to M0 frames while the extension is attached, with the same pin rechecks and slot limits; configurations /1 and /2 now refuse.
 Membership grants no M0 authority, current-generation checks remain in M0, and default seams still keep attachment closed.
 
 On an admitted isolated Linux runner:
@@ -263,6 +264,110 @@ tests and real `t.TempDir()` journals (ext4/XFS, otherwise an explicit skip)
 for the Linux recovery tests. Results go to the test log. Nothing here
 qualifies a receiver, a signer, protected installation, native timing or an
 activation; the `m0_*` refusal codes are draft spellings pending publication.
+
+### P17 daemon composition (closed, no activation)
+
+[`internal/p17/compose`](internal/p17/compose/) builds the shared launcher scope;
+it does not install service authority. Every `/3` configuration requires the
+closed `p17` object, including when `enabled:false`:
+
+| Members | Values |
+| --- | --- |
+| `source_control_dir`, `source_socket_name` | Absolute canonical control directory; socket name exactly `origin.sock` |
+| `source_uid`, `source_generation` | Origin service UID `1..4294967294`; service generation exactly 32 lowercase hex |
+| `keymaker_socket_dir`, `keymaker_socket_name` | Absolute canonical directory; nonempty basename, at most 255 bytes, neither `.` nor `..` |
+| `keymaker_uid`, `keymaker_gid`, `keymaker_mode` | Service UID/GID `1..4294967294`; mode as a decimal integer `1..511` (for example `432` is `0660`) |
+| `state_dir` | Absolute canonical P17 state directory, neither equal to, inside, nor containing M0 `state_dir` |
+| `station`, `bind_timeout_ms` | Canonical positive decimal uint64 station string; integer timeout `1..2000` ms |
+
+Unknown, missing, duplicate or malformed pins refuse `request_invalid` with a
+named detail. There is no worker UID, UID range or mutable progress in `p17`:
+placement is exactly the installed policy's worker UID. The Source adapter has
+its own Unix dialer and pinned wire; Keymaker uses only `keymaker.UnixDialer`
+with the configured socket/peer pins and the pinned wire. Service pins and
+working fakes are not deployment qualification.
+
+The installer precreates the service-owned `0700` P17 directory and its empty
+`records` and `inputs` subdirectories through protected ancestors. Composition
+never creates or repairs directories. A separate private `.composition.lock`
+serializes bootstrap and remains held through close. Two private durable files
+hold the independent facts: `.ledger-install` (`starting` intent or
+`established`) and `.record-install` (`initialize` or `established`), each with
+one LF. Each publication uses a temporary, file fsync, rename and directory
+fsync. The initialize fact precedes the first quarantine start. Explicit
+`starting` intent permits only empty record/input directories, reserved
+non-authoritative temporaries/locks, and an optional client-format ZERO-entry
+ledger; any journal, record, nonzero ledger or unrelated state refuses. No
+marker plus prior state never means fresh. This intent covers interruption
+before or after the client's atomic ledger publication without wedging boot.
+
+Boot takes the shared quarantine/launcher lock first, immediately flips its
+ledger fact after successful `Quarantine.Start`, then initializes/opens one
+record store, calls `launcher.New` once, calls `m0hook.New` once (H6 restart),
+and only then calls `m0.Attach`. The same selected ledger fact goes unchanged
+to every client for this process lifetime. The independent journal fact flips
+only after the first successful record `Create`, before binding can proceed.
+Any flip failure latches process-exit duty. No record is created merely to
+probe or initialize that fact. The existing M0 journal's `entry` protocol stays
+separate; the daemon never edits configuration to track installation progress.
+Shutdown stops/drains extension admission, closes the M0 extension, closes the
+P17 store, then closes quarantine and bootstrap ownership. Closing is not a
+child-absence receipt, release permission or qualification of retained stops.
+
+| Refusing default | Producer that must pin it |
+| --- | --- |
+| `StaticGate.Verify(start/end)` | Published statement verifier; start at selected startup and every dispatch, end before owned cancel |
+| Inner launcher (`Start`, `Stop`, `Observe`) | User manager's qualified launcher/receiver |
+| Stop identity, including pre-admission `VerifyPinned` | User manager's protected, original emergency-stop metadata source; no default identity or synthetic probe request |
+| Child incarnation | Qualified launcher/receiver evidence, never parsed receipt bytes |
+| Child interface evidence | Qualified launcher/receiver descriptor/argv/environment producer |
+| Retained event source | Retained event owner for the original start |
+| P17 and M0 generation readers | Protected current user-manager generation journal |
+| Policy source | Protected operator policy/catalog/qualification installer |
+| Clock | Qualified time/deadline source |
+| Runner | Published broker runner mapping |
+| Entry composer | Protected typed catalog and input-body owner |
+| Work-product export | Qualified export evidence producer; no home archive fallback |
+| Operator release | Explicit protected operator recovery record |
+| Sweep privilege transition and account-wide stop | Qualified privilege-drop/sweep helper (`Killer`); neither authority is supplied here |
+
+The extension observes the composition/hook exit latch after startup and every
+Serve, returns `transport.ErrFatal` joined with its cause and no success
+envelope, and refuses later requests. A nil observer preserves existing M0
+behavior; an ordinary launcher error remains an unknown outcome, not fatal.
+The real statement verifier and every other service above remain unpinned.
+
+a real M0 dispatch through P17 is blocked until the run-origin generation contract accepts the user manager's 32-hex generation (open, cross-module).
+
+The composed control uses a valid signed M0 request and real constructors,
+state stores and restart pass, then checks the retained attempt is exactly
+`run_origin_refused` at `Source input generation`, with zero Source/Keymaker
+dials, P17 records or inner starts. It is not a successful launch: hygiene,
+bind, spawn, input release and stop are later gates. The two independent
+generation-domain controls retain a numeric root-client positive control and
+the unchanged 32-hex M0 domain. No conversion is supplied.
+
+### Configuration digest
+
+```sh
+.temp/swarma-dispatcher config-digest --config /absolute/server.json --m0-config /absolute/m0.json
+```
+
+This protected-read-only command prints one lowercase digest and LF, starts no
+listener and attaches no extension. It validates both configurations, even
+when M0 is disabled. With no M0 path, or disabled M0, it uses the server-only
+form. An enabled M0 file produces the two-file *candidate* digest; attachment
+must also succeed for that form to match an actual daemon. The daemon emits
+one `config-digest HEX` startup line on stderr over its consumed opaque server
+snapshot and attached extension's copied parsed bytes (server-only when M0
+is closed). `LoadServer` captures once; `DaemonFromSnapshot` cannot reread the
+path or consume even a copied token twice.
+
+The standalone value can equal startup only if no protected replacement
+happened between their reads and the same M0 selection is served. The daemon's
+own line is authoritative; a mismatch means **restart or investigate**, never
+that the daemon is wrong. See [transport](spec/transport.md#managed-m0-callers)
+for the exact CCJ-1 hash construction. Neither value activates anything.
 
 ## M0 caller tool (draft)
 
@@ -317,8 +422,8 @@ never enter argv, the environment, logs, a journal, backup or export. The instal
 also enforces distinct caller/worker accounts and group separation, obtains consent
 and disposes of the key after terminal cleanup, as the cut requires. The contract
 requires dispatcher statement/window checks: dispatch must close at the statement's
-`not_after`; owned cancel skips only that window check. That dispatcher integration
-is separate work; this client adds no timestamp or local clock authority. The tool never creates, repairs, prints or copies a key. Canonical
+`not_after`; owned cancel skips only that window check. Real statement verification remains separate work; daemon composition calls a
+refusing `StaticGate` seam. This client adds no timestamp or local clock authority. The tool never creates, repairs, prints or copies a key. Canonical
 request bytes and spellings come from `internal/m0`, not a second canonicalizer.
 
 The exact signed wire bytes are stored in `state_dir/<request_id>.req`
@@ -348,15 +453,15 @@ Exit `17` requires at least one byte of the request frame, including its length
 prefix, to have been written; hello bytes do not count. This tool activates nothing
 and qualifies nothing: the
 request is the installed signing plan, and the caller must be on the daemon's
-managed M0 caller list. Managed-caller transport admission is separate work.
-Tests drive the real M0 runtime/extension behind a test Unix-socket listener,
-modeling root ownership and the managed caller UID through an unexported test
-boundary. Proof with a real kernel caller peer belongs to the transport's
-real-peer control ([PR #31](https://github.com/relux-works/swarma-dispatcher/pull/31));
-an end-to-end test of this tool against it follows once that change has landed,
-so these tests do not qualify the real serve loop or a deployed daemon.
+managed M0 caller list. Managed-caller transport admission is implemented by
+the named exception above. Caller-tool tests drive the real M0 runtime/extension
+behind a test Unix-socket listener, modeling root ownership and the managed
+caller UID through an unexported test boundary. Real kernel caller evidence
+requires the transport's root-only `TestManagedM0RealPeer` control; native
+end-to-end qualification of this tool remains separate. These caller-tool tests
+do not qualify a deployed daemon.
 
-## P17 launcher clients (Linux, standalone, not wired)
+## P17 launcher clients (Linux, composition closed)
 
 `internal/p17/` holds the launcher-side clients of the P17 hook interface, in
 which the dispatcher is launcher L: `codes` (the closed code set and D4 exit
@@ -366,7 +471,8 @@ on `internal/journal`, with the H6 table), `incarnation` (D2 kernel
 incarnations from procfs), `sweep` (the D5a zero-process proof, D5b kill by
 uid and lease quarantine), `hygiene` (the H3 descriptor/argv/env assertion)
 and `launcher` (the composition the M0 launch path calls). `fakes` is test
-support only. No daemon command uses these packages yet.
+support only. The optional daemon composition above uses these packages but
+leaves its service seams closed; no enforcing run is activated.
 
 Explicit `source.Pinned{}` and `keymaker.Pinned{}` adapters use a2a-swarm
 `runorigin` public values and swarma-keymaker `j7lifecycle` public framing and
@@ -480,8 +586,8 @@ Operator release never bypasses the zero-process proof or any non-terminal
 record, including its own ending record; `UIDReleased` remains false until the
 uid can actually return to the pool.
 
-Source generations are nonzero numeric values; root launcher input generations
-must therefore be canonical positive decimal strings. The native Keymaker
+Source's run-origin input generations are nonzero numeric values; root launcher
+input generations must therefore be canonical positive decimal strings. The native Keymaker
 client itself preserves opaque generation strings. The launcher retains the
 original validated origin bytes; the native codec encodes their exact typed
 values into its canonical frame without changing any origin fact.

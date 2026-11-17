@@ -2,6 +2,8 @@ package m0
 
 import (
 	"bytes"
+	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/relux-works/swarma-dispatcher/internal/transport"
@@ -9,7 +11,7 @@ import (
 
 // ConfigKind is the closed M0 daemon configuration discriminator. The file is
 // separate from the transport server configuration, which stays unchanged.
-const ConfigKind = "swarma-dispatcher m0-config/2"
+const ConfigKind = "swarma-dispatcher m0-config/3"
 
 const (
 	EntryInitialize  = "initialize"
@@ -26,6 +28,97 @@ type DaemonConfig struct {
 	RecoveryAttested      bool
 	StateDir              string
 	SupportedLocalStorage bool
+	P17                   P17Config
+}
+
+// P17Config contains immutable service pins, never worker identity or progress.
+type P17Config struct {
+	SourceControlDir, SourceSocketName, SourceGeneration string
+	SourceUID                                            uint32
+	KeymakerSocketDir, KeymakerSocketName                string
+	KeymakerUID, KeymakerGID, KeymakerMode               uint32
+	StateDir, Station                                    string
+	BindTimeoutMS                                        int64
+}
+
+func configMembers(v *value, prefix string, keys ...string) error {
+	if v == nil || v.kind != kindObject {
+		return invalid(prefix + ": object required")
+	}
+	want := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		want[k] = true
+	}
+	for _, m := range v.members {
+		if !want[m.key] {
+			return invalid(prefix + ": unknown member: " + m.key)
+		}
+	}
+	for _, k := range keys {
+		if v.member(k) == nil {
+			return invalid(prefix + ": missing member: " + k)
+		}
+	}
+	return nil
+}
+
+func decodeP17(v *value, m0dir string) (P17Config, error) {
+	var p P17Config
+	if err := configMembers(v, "p17", "bind_timeout_ms", "keymaker_gid", "keymaker_mode", "keymaker_socket_dir", "keymaker_socket_name", "keymaker_uid", "source_control_dir", "source_generation", "source_socket_name", "source_uid", "state_dir", "station"); err != nil {
+		return p, err
+	}
+	for _, f := range []struct {
+		name string
+		dst  *string
+	}{
+		{"source_control_dir", &p.SourceControlDir}, {"source_socket_name", &p.SourceSocketName}, {"source_generation", &p.SourceGeneration},
+		{"keymaker_socket_dir", &p.KeymakerSocketDir}, {"keymaker_socket_name", &p.KeymakerSocketName}, {"state_dir", &p.StateDir}, {"station", &p.Station},
+	} {
+		s, ok := v.member(f.name).text()
+		if !ok || s == "" {
+			return p, invalid("p17: member spelling: " + f.name)
+		}
+		*f.dst = s
+	}
+	for _, f := range []struct {
+		name string
+		dst  *uint32
+		max  int64
+	}{
+		{"source_uid", &p.SourceUID, 4294967294}, {"keymaker_uid", &p.KeymakerUID, 4294967294}, {"keymaker_gid", &p.KeymakerGID, 4294967294}, {"keymaker_mode", &p.KeymakerMode, 0777},
+	} {
+		n, ok := v.member(f.name).number()
+		if !ok || n < 1 || n > f.max {
+			return p, invalid("p17: member range: " + f.name)
+		}
+		*f.dst = uint32(n)
+	}
+	for _, f := range []struct{ name, path string }{{"source_control_dir", p.SourceControlDir}, {"keymaker_socket_dir", p.KeymakerSocketDir}, {"state_dir", p.StateDir}} {
+		if !validStatePath(f.path) {
+			return p, invalid("p17: member path: " + f.name)
+		}
+	}
+	if p.StateDir == m0dir || strings.HasPrefix(p.StateDir, m0dir+"/") || strings.HasPrefix(m0dir, p.StateDir+"/") {
+		return p, invalid("p17: state_dir overlaps M0 state_dir")
+	}
+	if p.SourceSocketName != "origin.sock" {
+		return p, invalid("p17: source_socket_name must be origin.sock")
+	}
+	if len(p.KeymakerSocketName) > 255 || p.KeymakerSocketName == "." || p.KeymakerSocketName == ".." || strings.Contains(p.KeymakerSocketName, "/") {
+		return p, invalid("p17: member spelling: keymaker_socket_name")
+	}
+	if !isLowerHex(p.SourceGeneration, 32) {
+		return p, invalid("p17: member spelling: source_generation")
+	}
+	n, err := strconv.ParseUint(p.Station, 10, 64)
+	if err != nil || n == 0 || strconv.FormatUint(n, 10) != p.Station {
+		return p, invalid("p17: member spelling: station")
+	}
+	var ok bool
+	if p.BindTimeoutMS, ok = v.member("bind_timeout_ms").number(); !ok || p.BindTimeoutMS < 1 || p.BindTimeoutMS > 2000 {
+		return p, invalid("p17: member range: bind_timeout_ms")
+	}
+	return p, nil
 }
 
 func validStatePath(s string) bool {
@@ -44,6 +137,11 @@ func validStatePath(s string) bool {
 func ParseConfig(b []byte) (*DaemonConfig, error) {
 	v, canon, err := canonicalize(b, configLimits)
 	if err != nil {
+		if r, ok := err.(*Refusal); ok && r.Detail == "duplicate member name" {
+			if named := duplicateConfigMember(b); named != nil {
+				return nil, named
+			}
+		}
 		return nil, err
 	}
 	if !bytes.Equal(canon, b) {
@@ -53,12 +151,12 @@ func ParseConfig(b []byte) (*DaemonConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := v.exactly("callers", "enabled", "entry", "kind", "recovery_attested", "state_dir", "supported_local_storage", "v"); err != nil {
+	if err := configMembers(v, "configuration", "callers", "enabled", "entry", "kind", "p17", "recovery_attested", "state_dir", "supported_local_storage", "v"); err != nil {
 		return nil, err
 	}
-	// Version 1 cannot silently acquire managed admission: it now refuses.
-	if n, ok := v.member("v").number(); !ok || n != 2 {
-		return nil, invalid("configuration version must be 2")
+	// Older versions never silently acquire new installation semantics.
+	if n, ok := v.member("v").number(); !ok || n != 3 {
+		return nil, invalid("configuration version must be 3")
 	}
 	if err := constMember(v, "kind", ConfigKind); err != nil {
 		return nil, err
@@ -80,7 +178,57 @@ func ParseConfig(b []byte) (*DaemonConfig, error) {
 	if c.StateDir, ok = v.member("state_dir").text(); !ok || !validStatePath(c.StateDir) {
 		return nil, invalid("member spelling: state_dir")
 	}
+	c.P17, err = decodeP17(v.member("p17"), c.StateDir)
+	if err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// duplicateConfigMember runs only after the bounded parser found a duplicate.
+// It supplies the member name without normalizing any accepted configuration.
+func duplicateConfigMember(b []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	var walk func(string) error
+	walk = func(prefix string) error {
+		t, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if t == json.Delim('{') {
+			seen := map[string]bool{}
+			for dec.More() {
+				key, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				name, ok := key.(string)
+				if !ok {
+					return invalid("configuration member name")
+				}
+				if seen[name] {
+					return invalid("configuration duplicate member: " + prefix + name)
+				}
+				seen[name] = true
+				if err := walk(prefix + name + "."); err != nil {
+					return err
+				}
+			}
+			_, err = dec.Token()
+			return err
+		}
+		if t == json.Delim('[') {
+			for dec.More() {
+				if err := walk(prefix); err != nil {
+					return err
+				}
+			}
+			_, err = dec.Token()
+			return err
+		}
+		return nil
+	}
+	return walk("")
 }
 
 // decodeCallers names the installation member on every shape/range refusal.

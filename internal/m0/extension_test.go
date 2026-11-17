@@ -66,7 +66,7 @@ func TestExtensionServe(t *testing.T) {
 // (naming the policy source) and for a removed installed policy, without
 // touching any ledger.
 func TestConfigAndAttachGate(t *testing.T) {
-	canon := `{"callers":[{"dev":1,"dir":"/example/caller","ino":2,"uid":30001}],"enabled":true,"entry":"initialize","kind":"swarma-dispatcher m0-config/2","recovery_attested":false,"state_dir":"/var/lib/example","supported_local_storage":true,"v":2}`
+	canon := `{"callers":[{"dev":1,"dir":"/example/caller","ino":2,"uid":30001}],"enabled":true,"entry":"initialize","kind":"swarma-dispatcher m0-config/3","p17":` + fixtureP17 + `,"recovery_attested":false,"state_dir":"/var/lib/example","supported_local_storage":true,"v":3}`
 	cfg, err := ParseConfig([]byte(canon))
 	must(t, err)
 	if !cfg.Enabled || cfg.Entry != EntryInitialize || cfg.RecoveryAttested || cfg.StateDir != "/var/lib/example" || !cfg.SupportedLocalStorage {
@@ -74,13 +74,13 @@ func TestConfigAndAttachGate(t *testing.T) {
 	}
 	for name, bad := range map[string]string{
 		"whitespace":     " " + canon,
-		"unsorted":       strings.Replace(strings.Replace(canon, `"enabled":true,`, "", 1), `"v":2`, `"v":2,"enabled":true`, 1),
-		"unknown-member": strings.Replace(canon, `"v":2`, `"v":2,"x":1`, 1),
+		"unsorted":       strings.Replace(strings.Replace(canon, `"enabled":true,`, "", 1), `"v":3`, `"v":3,"enabled":true`, 1),
+		"unknown-member": strings.Replace(canon, `"v":3`, `"v":3,"x":1`, 1),
 		"missing-member": strings.Replace(canon, `"recovery_attested":false,`, "", 1),
 		"entry":          strings.Replace(canon, `"entry":"initialize"`, `"entry":"repair"`, 1),
 		"relative-dir":   strings.Replace(canon, `"/var/lib/example"`, `"var/lib/example"`, 1),
 		"dotdot-dir":     strings.Replace(canon, `"/var/lib/example"`, `"/var/../example"`, 1),
-		"kind":           strings.Replace(canon, `m0-config/2`, `m0-config/3`, 1),
+		"kind":           strings.Replace(canon, `m0-config/3`, `m0-config/4`, 1),
 		"enabled-string": strings.Replace(canon, `"enabled":true`, `"enabled":"true"`, 1),
 	} {
 		if _, err := ParseConfig([]byte(bad)); CodeOf(err) != CodeRequestInvalid {

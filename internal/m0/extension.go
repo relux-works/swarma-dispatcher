@@ -3,6 +3,7 @@ package m0
 import (
 	"context"
 	"errors"
+	"sync"
 	"syscall"
 
 	"github.com/relux-works/swarma-dispatcher/internal/journal"
@@ -19,12 +20,45 @@ const (
 // It answers only frames whose kind is the M0 request discriminator; every
 // other frame keeps the reference subset's close-without-reply behavior.
 type Extension struct {
-	rt      *Runtime
-	callers []transport.Principal
+	rt        *Runtime
+	callers   []transport.Principal
+	config    []byte
+	exit      func() error
+	exitMu    sync.Mutex
+	exitCause error
 }
 
-// NewExtension wraps a runtime.
-func NewExtension(rt *Runtime) *Extension { return &Extension{rt: rt} }
+// NewExtension optionally observes the process owner's permanent exit duty.
+func NewExtension(rt *Runtime, exit ...func() error) *Extension {
+	e := &Extension{rt: rt}
+	if len(exit) > 0 {
+		e.exit = exit[0]
+	}
+	return e
+}
+
+// ConfigBytes returns the exact protected bytes Attach parsed, as a copy.
+func (e *Extension) ConfigBytes() []byte {
+	if e == nil {
+		return nil
+	}
+	return append([]byte(nil), e.config...)
+}
+
+func (e *Extension) fatal() error {
+	if e == nil {
+		return nil
+	}
+	e.exitMu.Lock()
+	defer e.exitMu.Unlock()
+	if e.exitCause == nil && e.exit != nil {
+		e.exitCause = e.exit()
+	}
+	if e.exitCause != nil {
+		return errors.Join(transport.ErrFatal, e.exitCause)
+	}
+	return nil
+}
 
 // ManagedCallers returns a copy of the protected list supplied by Attach.
 // NewExtension alone enrolls nobody; only Attach reads installation data.
@@ -43,7 +77,15 @@ func (e *Extension) Close() error {
 // Serve handles one post-hello frame. The request's request_id must equal
 // the connection correlation ID; a sync failure returns transport.ErrFatal so
 // the daemon exits and recovery is held.
-func (e *Extension) Serve(peer uint32, id string, body []byte) (string, error) {
+func (e *Extension) Serve(peer uint32, id string, body []byte) (response string, resultErr error) {
+	if err := e.fatal(); err != nil {
+		return "", err
+	}
+	defer func() {
+		if err := e.fatal(); err != nil {
+			response, resultErr = "", errors.Join(resultErr, err)
+		}
+	}()
 	v, _, err := canonicalize(body, requestLimits)
 	if err != nil || v.kind != kindObject {
 		return "", transport.ErrInvalid
@@ -99,7 +141,16 @@ func resultEnvelope(id string, res *Result) string {
 // installed, valid, non-removed policy. Every other case refuses: m0_closed
 // means the daemon continues capacity-only; any other code is a startup
 // failure. With DefaultSeams the policy source refuses, so Attach is closed.
-func Attach(configPath string, seams Seams, read func(string) ([]byte, error)) (*Extension, error) {
+func Attach(configPath string, seams Seams, read func(string) ([]byte, error), exit ...func() error) (extension *Extension, resultErr error) {
+	e := NewExtension(nil, exit...)
+	defer func() {
+		if err := e.fatal(); err != nil {
+			if e.rt != nil {
+				err = errors.Join(err, e.Close())
+			}
+			extension, resultErr = nil, errors.Join(resultErr, err)
+		}
+	}()
 	b, err := read(configPath)
 	if err != nil {
 		return nil, &Refusal{Code: CodeRequestInvalid, Detail: "m0 configuration unreadable", Cause: err}
@@ -149,5 +200,8 @@ func Attach(configPath string, seams Seams, read func(string) ([]byte, error)) (
 	if err != nil {
 		return nil, err
 	}
-	return &Extension{rt: rt, callers: append([]transport.Principal(nil), cfg.Callers...)}, nil
+	e.rt = rt
+	e.callers = append([]transport.Principal(nil), cfg.Callers...)
+	e.config = append([]byte(nil), b...)
+	return e, nil
 }

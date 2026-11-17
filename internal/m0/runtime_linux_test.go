@@ -137,7 +137,7 @@ func TestAttachOpensLedger(t *testing.T) {
 	syscall.Umask(previous)
 	t.Cleanup(func() { syscall.Umask(previous) })
 	e := newEnv(t)
-	doc := `{"callers":[{"dev":1,"dir":"/example/caller","ino":2,"uid":30001}],"enabled":true,"entry":"initialize","kind":"swarma-dispatcher m0-config/2","recovery_attested":true,"state_dir":"` + cfg.Directory + `","supported_local_storage":true,"v":2}`
+	doc := `{"callers":[{"dev":1,"dir":"/example/caller","ino":2,"uid":30001}],"enabled":true,"entry":"initialize","kind":"swarma-dispatcher m0-config/3","p17":` + fixtureP17 + `,"recovery_attested":true,"state_dir":"` + cfg.Directory + `","supported_local_storage":true,"v":3}`
 	read := func(string) ([]byte, error) { return []byte(doc), nil }
 	if _, err := Attach("/m0.json", DefaultSeams(), read); CodeOf(err) != CodeClosed {
 		t.Fatalf("ATTACH: default seams %v", err)

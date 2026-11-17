@@ -283,6 +283,88 @@ transport exception. Membership admits a kernel UID to M0 frames only; it never
 modifies authority or replaces current active generation, association, policy or
 any other M0 check.
 
+### Closed daemon composition
+
+The protected canonical M0 file is `swarma-dispatcher m0-config/3`, `v=3`:
+exactly `callers`, `enabled`, `entry`, `kind`, `p17`, `recovery_attested`,
+`state_dir`, `supported_local_storage`, `v`. Configurations /1 and /2 refuse;
+there is no upgrade by omission. The required closed `p17` object is validated
+even with `enabled:false`. Its exact members are `bind_timeout_ms`,
+`keymaker_gid`, `keymaker_mode`, `keymaker_socket_dir`, `keymaker_socket_name`,
+`keymaker_uid`, `source_control_dir`, `source_generation`, `source_socket_name`,
+`source_uid`, `state_dir`, `station`. Missing, unknown, duplicate (including
+escaped-alias) members and bad pins refuse `request_invalid` with a named
+configuration/member detail. The existing 4096-byte, depth-3 and 256-token
+limits still apply independently.
+
+Service UID/GID pins are `1..4294967294`; `keymaker_mode` is a decimal permission
+integer `1..511`. Source's service generation is 32 lowercase hex; its socket
+name is exactly `origin.sock`. Keymaker's socket name is a nonempty basename
+of at most 255 bytes, neither `.` nor `..`. Directories are absolute canonical
+paths; P17 `state_dir` differs from M0 `state_dir` and neither contains the
+other. `station` is the clients' canonical positive decimal uint64 string;
+`bind_timeout_ms` is `1..2000`. No worker UID/range or mutable installation
+progress is a configuration member. Placement is `isolation.Fixed` of the
+installed policy's worker UID. Source has its own pinned adapter and dialer;
+`keymaker.UnixDialer` with the configured socket/peer pins is the only Keymaker
+dialer the composition supplies.
+
+The installer precreates the service-owned `0700` P17 state directory and its
+empty `records` and `inputs` subdirectories through non-symlink, root/service-
+owned ancestors not writable by group/others. The daemon never repairs them.
+A private lifetime `.composition.lock` serializes bootstrap. Independent durable
+markers `.ledger-install` and `.record-install` contain respectively
+`starting\n`/`established\n` and `initialize\n`/`established\n`. Each publication
+is temporary write, file fsync, rename, directory fsync. Explicit first-start
+intent is durable before the first quarantine start; the record initialize fact
+is also durable before that call. Under intent only empty record/input
+directories, the two facts, bootstrap/launcher locks, non-authoritative reserved
+`.install-*`/`.quarantine-*` temporaries and an optional client-format ledger
+with ZERO entries may exist. A missing fact alongside an existing ledger,
+journal or record refuses; a nonzero ledger under intent refuses. A missing
+established ledger holds every UID and fails startup, never reinitializes.
+
+Start the shared quarantine (acquiring `launcher.lock`) before initializing or
+opening the one record store. Flip its ledger marker immediately after the
+first successful `Quarantine.Start`, before any `Begin`; pass the selected
+ledger fact unchanged to both launcher configuration and every quarantine
+start for that process lifetime. Explicit intent permits crash resumption
+whether the client's atomic zero-ledger publication happened or not; absence
+alone cannot select fresh over existing state. The independent journal marker
+flips immediately after the first successful record `Create`, before binding
+continues, not on boot. Failed flips latch must-exit and prevent further
+admission. `runrecord.Initialize` is lazy; there is no probe record. The old
+M0 journal's explicit `entry` selection is independent; daemon progress never
+rewrites the configuration or its digest.
+
+After quarantine and record-store construction, call `launcher.New` once,
+`m0hook.New` once (including its H6 restart pass), then `m0.Attach`. Wrap exactly
+the M0 launcher seam supplied by the caller, default `m0.UnpinnedLauncher`.
+Before boot admits anything, the stop-identity producer must prove its pin with
+`VerifyPinned`, never an invented stop request or identity. All original stop
+provenance, repeated-consumption and out-of-journal emergency-stop duties remain
+with that producer. A new `StaticGate.Verify(class)` refuses by name by default:
+class `start` once per selected startup attempt and before every dispatch,
+class `end` before owned cancel. The future verifier's end class omits only
+the start window. No Keymaker verifier is inferred. Every other unpinned service
+still refuses as listed in the README.
+
+Shutdown stops/drains extension admission, closes the M0 extension and P17
+record store, then closes quarantine and bootstrap ownership. This order does
+not establish child absence or release retained work. The extension observes
+one optional exit-latch callback after startup and each Serve; a nonnil cause
+returns `transport.ErrFatal` joined with that cause and no success envelope.
+Fatal is permanent for the extension and no later request is served. Nil
+observer preserves existing behavior; ordinary launcher errors stay unknown.
+
+a real M0 dispatch through P17 is blocked until the run-origin generation contract accepts the user manager's 32-hex generation (open, cross-module).
+
+The composed control therefore asserts exactly `run_origin_refused` at
+`Source input generation` on a valid M0 request, zero service dials/records/inner
+starts, and unchanged worker generation, beside the two independent generation
+domain controls and the all-defaults capacity-only audit. It is not bind, spawn,
+input-release, native receiver or real dispatch qualification.
+
 Only the protected operator path may install, replace or remove policy,
 association, catalog or qualification pins, after exact-content owner acceptance.
 Agent-writable files, a signed request, an active station, key availability and

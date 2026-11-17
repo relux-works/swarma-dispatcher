@@ -212,10 +212,44 @@ func sourceSnapshot(name string, server bool) ([]byte, error) {
 	return b, nil
 }
 
-// ServerSnapshot reads one protected server-mode configuration file with the
-// same ownership, mode, size and identity checks as the daemon configuration.
-// It performs no parsing; callers own their closed grammar.
-func ServerSnapshot(path string) ([]byte, error) { return sourceSnapshot(path, true) }
+// ReadProtectedConfig reads a protected server-mode file for a separate closed
+// grammar. This replaces the raw-read helper whose name now denotes the opaque
+// ServerSnapshot type; protection and error behavior are unchanged.
+func ReadProtectedConfig(path string) ([]byte, error) { return sourceSnapshot(path, true) }
+
+type serverLoadCalls struct {
+	read    func(string) ([]byte, error)
+	runtime func(commonConfig, uint32, bool) error
+	pin     func(principal) (*directory, error)
+}
+
+// LoadServer performs the original server-file checks, in their original order.
+// It creates no endpoint; the result can start a daemon at most once.
+func LoadServer(path string) (*ServerSnapshot, error) {
+	return loadServer(path, serverLoadCalls{ReadProtectedConfig, runtimeConfig, principalPin})
+}
+
+func loadServer(path string, calls serverLoadCalls) (*ServerSnapshot, error) {
+	b, err := calls.read(path)
+	if err != nil {
+		return nil, err
+	}
+	c, err := parseServer(b)
+	if err != nil {
+		return nil, err
+	}
+	if err = calls.runtime(c.commonConfig, c.ServiceUID, true); err != nil {
+		return nil, err
+	}
+	for _, p := range c.Callers {
+		pin, err := calls.pin(p)
+		if err != nil {
+			return nil, err
+		}
+		pin.close()
+	}
+	return &ServerSnapshot{state: &serverSnapshotState{bytes: append([]byte(nil), b...), config: c}}, nil
+}
 
 func groupMember(g uint32) (bool, error) {
 	if uint32(os.Getegid()) == g {

@@ -364,7 +364,28 @@ func Daemon(configPath string) error { return DaemonWith(configPath, nil) }
 
 // DaemonWith is Daemon with an optional post-hello extension. A nil extension
 // is the reference subset; the caller owns the extension's lifetime.
-func DaemonWith(configPath string, ext Extension) (result error) {
+func DaemonWith(configPath string, ext Extension) error {
+	s, err := LoadServer(configPath)
+	if err != nil {
+		return err
+	}
+	return DaemonFromSnapshot(s, ext)
+}
+
+// DaemonFromSnapshot consumes a protected snapshot without reopening its path.
+func DaemonFromSnapshot(s *ServerSnapshot, ext Extension) error {
+	return daemonFromSnapshot(s, ext, daemonCalls{endpointPin, createEndpointCalls, admissionCalls{peerUID, principalPin}})
+}
+
+type daemonCalls struct {
+	pin       func(commonConfig) (*directory, error)
+	publish   func(*directory, commonConfig, publicationCalls, *shutdown) (*endpoint, error)
+	admission admissionCalls
+}
+
+// The shared lifecycle installs umask and signal handling before any file
+// creation. Both public entry points use exactly the same serve/cleanup path.
+func daemonFromSnapshot(snapshot *ServerSnapshot, ext Extension, calls daemonCalls) (result error) {
 	// Set once before product concurrency/file creation. New socket inode starts 0600.
 	syscall.Umask(0177)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -392,27 +413,10 @@ func DaemonWith(configPath string, ext Extension) (result error) {
 			}
 		}
 	}()
-	b, err := sourceSnapshot(configPath, true)
+	c, err := snapshot.take()
 	if err != nil {
 		stop.request(err)
 		return err
-	}
-	c, err := parseServer(b)
-	if err != nil {
-		stop.request(err)
-		return err
-	}
-	if err = runtimeConfig(c.commonConfig, c.ServiceUID, true); err != nil {
-		stop.request(err)
-		return err
-	}
-	for _, p := range c.Callers {
-		pin, x := principalPin(p)
-		if x != nil {
-			stop.request(x)
-			return x
-		}
-		pin.close()
 	}
 	managedPins, err := managedCallers(c, ext, principalPin)
 	if err != nil {
@@ -422,12 +426,12 @@ func DaemonWith(configPath string, ext Extension) (result error) {
 	if ctx.Err() != nil {
 		return nil
 	}
-	dir, err := endpointPin(c.commonConfig)
+	dir, err := calls.pin(c.commonConfig)
 	if err != nil {
 		stop.request(err)
 		return err
 	}
-	e, err := createEndpointCalls(dir, c.commonConfig, publicationSyscalls(), stop)
+	e, err := calls.publish(dir, c.commonConfig, publicationSyscalls(), stop)
 	if err != nil {
 		stop.request(err)
 		return err
@@ -440,7 +444,7 @@ func DaemonWith(configPath string, ext Extension) (result error) {
 			result = errors.Join(result, ErrShutdown)
 		}
 	}()
-	return serveAdmitted(ctx, e, c, stop, ext, managedPins, admissionCalls{peerUID, principalPin})
+	return serveAdmitted(ctx, e, c, stop, ext, managedPins, calls.admission)
 }
 
 // Capacity performs exactly one authenticated exchange, returning the closed

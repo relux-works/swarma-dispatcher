@@ -66,10 +66,12 @@ JSON UIDs, names, PID claims and group membership never establish the protocol p
 The separate protected file selected by `--m0-config`, not `server.json`, holds
 `callers`: 1..4 closed `dev`, `dir`, `ino`, `uid` principal objects, strictly
 ascending by UID in `30000..59999`, none the service UID. Its canonical closed
-configuration is `callers`, `enabled`, `entry`, `kind`, `recovery_attested`,
+configuration is `callers`, `enabled`, `entry`, `kind`, `p17`, `recovery_attested`,
 `state_dir`, `supported_local_storage`, `v`, with `kind` equal to
-`swarma-dispatcher m0-config/2` and `v=2`; configuration /1 now refuses rather
-than acquiring new meaning. Missing, empty, oversized, unordered, duplicate,
+`swarma-dispatcher m0-config/3` and `v=3`; configurations /1 and /2 now refuse
+rather than acquiring new meaning. The required closed immutable `p17` service
+pins, two independent installation facts and closed composition are defined in
+[M0 section 3](m0-launch.md#3-protected-installation-currentness-and-ordering). Missing, empty, oversized, unordered, duplicate,
 out-of-range or malformed caller lists refuse attach with a named `callers`
 refusal. The configuration byte cap remains 4096, depth is at most 3, and the
 bounded canonical parser permits at most 256 tokens. The transport snapshots
@@ -100,10 +102,41 @@ activated by this exception. The reference-subset operation/result grammar and
 response-size examples below remain reference-only; M0 validates its own bodies
 and results behind the same framing, descriptor and deadline gates.
 
-The installation digest of the daemon's protected configuration is defined over
-both files as `SHA-256(CCJ-1({"m0":<sha256 hex of the M0 config bytes>,"server":<sha256 hex of server.json bytes>}))`,
-with exactly those two member names; the separate daemon configuration unit
-implements it, not this transport unit.
+The implemented installation digest (`compose.ConfigDigest`) is
+`SHA-256(CCJ-1({"m0":<lowercase sha256 hex of the M0 config bytes>,"server":<lowercase sha256 hex of server.json bytes>}))`,
+with exactly those two sorted member names, no domain and no final LF in the
+hashed object. With M0 closed/absent, omit the `m0` member entirely and hash
+`CCJ-1({"server":<lowercase sha256 hex of server.json bytes>})`.
+
+`LoadServer(path)` performs the same protected read, server parse, runtime
+identity checks and unmanaged pin checks, in that order, before any endpoint
+work. Its opaque `ServerSnapshot` retains those exact parsed bytes; `Bytes()`
+returns a copy and supplies no setter. `DaemonFromSnapshot(snapshot, ext)`
+consumes its parsed configuration at most once, never opens the configuration
+path, and retains the original managed-pin, endpoint publication, serve and
+shutdown path. Nil/zero/consumed snapshots refuse `ErrConfig` before endpoint
+work. Copying the opaque Go value shares its single-use token. `DaemonWith`
+is load plus serve; umask and signal setup precede transport file creation.
+The new functions refuse `ErrUnsupported` on non-Linux platforms. The former
+raw `ServerSnapshot(path)` read helper is now `ReadProtectedConfig(path)`;
+its protection semantics are unchanged for the separate M0 grammar.
+
+M0 `Attach` retains the bytes it parsed and `Extension.ConfigBytes()` returns
+a copy (nil-receiver safe). Immediately before consuming the server snapshot,
+the command writes one `config-digest HEX` startup line on stderr over exactly
+that snapshot and the attached extension's bytes. A closed extension contributes
+no M0 member. The daemon's own line is the authoritative statement of the
+configuration it serves, not a later read or a journal counter.
+
+`swarma-dispatcher config-digest --config PATH [--m0-config PATH]` reads each
+protected file once through the same loader/M0 parser, prints only lowercase
+hex and LF, and starts no listener. No M0 path or disabled M0 uses the
+server-only form; enabled M0 yields the two-file candidate, without attaching
+or proving that service admission will succeed. It can equal the daemon's line
+only if no protected replacement happened between their reads and the same
+M0 selection is actually served. The startup line remains authoritative;
+a mismatch means **restart or investigate**, never that the daemon is wrong.
+Neither digest changes authority or activates any service.
 
 ## Endpoint ownership, startup and shutdown
 

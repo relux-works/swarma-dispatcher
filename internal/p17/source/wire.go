@@ -15,7 +15,7 @@ import (
 )
 
 // Pin names the exact Source origin codec this client waits for.
-const Pin = "github.com/relux-works/a2a-swarm runorigin at f9d465ba460472ab6253cf82b8edaf8050e74ce6"
+const Pin = "github.com/relux-works/a2a-swarm runorigin at 5e4ec3cac7c0a6290ac3a8f3bfef8bf2678ba723"
 
 // HelloMessage is what Source announces after connect. Capability and
 // incarnation are announcements, not authentication.

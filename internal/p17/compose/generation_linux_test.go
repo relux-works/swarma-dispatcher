@@ -36,6 +36,8 @@ func privateDirectory(t *testing.T) string {
 }
 
 type rootFixture struct {
+	state          string
+	client         *source.Client
 	launcher       *launcher.Launcher
 	store          *runrecord.Store
 	quarantine     *sweep.Quarantine
@@ -70,11 +72,12 @@ func newRootFixture(t *testing.T) *rootFixture {
 	proc, err := fakes.NewProcTree(privateDirectory(t), "fixture-boot")
 	must(t, err)
 	must(t, proc.Add(os.Getpid(), [4]uint32{uid, uid, uid, uid}, 1))
-	f := &rootFixture{store: store, quarantine: q, source: &fakes.SourceScript{}, keymaker: &fakes.KeymakerScript{}}
+	f := &rootFixture{state: state, store: store, quarantine: q, source: &fakes.SourceScript{}, keymaker: &fakes.KeymakerScript{}}
 	f.sourceDialer = &fakes.SourceDialer{Script: f.source, Peer: source.Credential{UID: uid, PID: int32(os.Getpid())}}
 	f.keymakerDialer = &fakes.KeymakerDialer{Script: f.keymaker}
 	generations := source.StaticGenerations{uid: "11111111111111111111111111111111"}
 	client := &source.Client{Pins: source.Pins{Root: filepath.Dir(control), ControlDir: control, SourceUID: uid, SourceGeneration: "11111111111111111111111111111111"}, Dialer: f.sourceDialer, Wire: fakes.SourceWire{}, Generations: generations}
+	f.client = client
 	f.launcher, err = launcher.New(launcher.Config{Installation: sweep.Fresh, LauncherUID: uid, Station: "1", RequestTimeout: time.Second, ProcRoot: proc.Root, ProcMountInfo: proc.MountInfoPath()}, launcher.Deps{Placement: isolation.Fixed(30002), Source: client, Generations: generations, Keymaker: f.keymakerDialer, KeymakerWire: fakes.KeymakerWire{}, Records: store, Incarnations: proc.Incarnations(), Quarantine: q, Killer: &fakes.Killer{Tree: proc}})
 	must(t, err)
 	for _, report := range f.launcher.Restart(context.Background()) {
@@ -87,11 +90,33 @@ func (f *rootFixture) begin(generation string) (*launcher.Run, error) {
 	return f.launcher.Begin(context.Background(), runorigin.EventRef{RoomID: "!room:example", EventID: "$retained-event"}, keymaker.Principal{UID: 30002, Generation: generation})
 }
 
+func (f *rootFixture) ledgerIdentity(t *testing.T) os.FileInfo {
+	t.Helper()
+	// Hold the original inode open so an atomic lease/write/return cannot
+	// reuse its identity and masquerade as a read-only refusal.
+	h, err := os.Open(filepath.Join(f.state, sweep.QuarantineName))
+	must(t, err)
+	t.Cleanup(func() { must(t, h.Close()) })
+	info, err := h.Stat()
+	must(t, err)
+	return info
+}
+
 func rootBindAndEnd(t *testing.T, generation string) {
 	t.Helper()
-	f := newRootFixture(t)
+	newRootFixture(t).bindAndEnd(t, generation)
+}
+
+func (f *rootFixture) bindAndEnd(t *testing.T, generation string) {
+	t.Helper()
+	before := f.ledgerIdentity(t)
 	run, err := f.begin(generation)
 	must(t, err)
+	after, statErr := os.Stat(filepath.Join(f.state, sweep.QuarantineName))
+	must(t, statErr)
+	if os.SameFile(before, after) {
+		t.Fatal("valid Begin did not exercise the durable lease witness")
+	}
 	if run == nil || len(f.keymaker.Binds()) != 1 || len(f.store.Keys()) != 1 {
 		t.Fatal("32-hex positive did not bind")
 	}
@@ -112,7 +137,7 @@ func rootBindAndEnd(t *testing.T, generation string) {
 	}
 }
 
-// Claim: every nonzero 32-lowercase-hex generation, including numeric-looking and zero-prefixed tokens, binds unchanged; malformed spellings refuse with the original typed operation and zero contact/records beside a valid bind/end.
+// Claim: valid nonzero 32-lowercase-hex tokens bind unchanged; malformed, whitespace, LF and mixed-case spellings refuse with the exact operation before any lease/contact/record, beside a live lease/bind/end witness.
 func TestRunOriginGenerationContract(t *testing.T) {
 	valid := []string{strings.Repeat("c", 32), strings.Repeat("1", 32), strings.Repeat("0", 31) + "1"}
 	for _, generation := range valid {
@@ -122,10 +147,13 @@ func TestRunOriginGenerationContract(t *testing.T) {
 		{"decimal", "1"}, {"short", strings.Repeat("c", 31)}, {"long", strings.Repeat("c", 33)},
 		{"uppercase", strings.Repeat("C", 32)}, {"all-zero", strings.Repeat("0", 32)},
 		{"non-hex", strings.Repeat("g", 32)}, {"empty", ""},
+		{"leading-space", " " + strings.Repeat("c", 32)}, {"trailing-space", strings.Repeat("c", 32) + " "},
+		{"line-feed", strings.Repeat("c", 32) + "\n"}, {"mixed-case", strings.Repeat("c", 16) + "C" + strings.Repeat("c", 15)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rootBindAndEnd(t, valid[n%len(valid)])
 			f := newRootFixture(t)
+			before := f.ledgerIdentity(t)
 			run, err := f.begin(row.generation)
 			var refusal *codes.Refusal
 			if run != nil || !errors.As(err, &refusal) || refusal.Code != codes.OriginRefused || refusal.Op != "Source input generation" {
@@ -136,9 +164,14 @@ func TestRunOriginGenerationContract(t *testing.T) {
 			if verdict.Status != 16 {
 				t.Fatalf("generation refusal exit=%d", verdict.Status)
 			}
+			after, statErr := os.Stat(filepath.Join(f.state, sweep.QuarantineName))
+			must(t, statErr)
+			if !os.SameFile(before, after) {
+				t.Fatal("invalid generation took a durable lease")
+			}
 			dials, _ := f.sourceDialer.Dials()
 			if dials != 0 || f.keymakerDialer.Dials() != 0 || len(f.store.Keys()) != 0 || f.quarantine.Held(30002) {
-				t.Fatal("invalid generation contacted services, wrote records or retained its pre-check lease")
+				t.Fatal("invalid generation contacted services, wrote records or acquired a lease")
 			}
 		})
 	}

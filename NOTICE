@@ -2,7 +2,7 @@ swarma-dispatcher
 Copyright 2026 Alexey Grigorev and Ivan Oparin
 
 The P17 clients use the following Apache-2.0 licensed modules:
-- github.com/relux-works/a2a-swarm, v0.1.2-0.20261115214635-f9d465ba4604
+- github.com/relux-works/a2a-swarm, v0.1.2-0.20261117045736-5e4ec3cac7c0
 - github.com/relux-works/swarma-keymaker, v0.1.1-0.20261115215735-e5d8f2484f8c
 
 internal/p17/keymaker/testdata/vectors.json is an unchanged copy of the

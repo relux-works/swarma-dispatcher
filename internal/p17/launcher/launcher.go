@@ -365,6 +365,11 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 	if inputPrincipal.UID == 0 || (parent != nil && inputPrincipal.Generation == "") {
 		return nil, errors.New("launcher: input principal required")
 	}
+	// Root spelling is pure validation: refuse before any durable lease or
+	// service contact. Child generations retain Keymaker's opaque contract.
+	if parent == nil && !runorigin.ValidGeneration(inputPrincipal.Generation) {
+		return nil, codes.Refuse(codes.OriginRefused, "Source input generation", nil)
+	}
 	registration, perr := strconv.ParseUint(l.cfg.Station, 10, 64)
 	if perr != nil || registration == 0 || strconv.FormatUint(registration, 10) != l.cfg.Station {
 		return nil, errors.New("launcher: station registration must be a canonical positive integer")
@@ -413,11 +418,7 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 	var validated *source.Validated
 	var nonce string
 	if parent == nil {
-		// The user manager's opaque spelling is authoritative. Validate with
-		// the wire contract and pass it unchanged, never as a number.
-		if !runorigin.ValidGeneration(inputPrincipal.Generation) {
-			return nil, codes.Refuse(codes.OriginRefused, "Source input generation", nil)
-		}
+		// The user manager's validated opaque spelling passes unchanged.
 		input := runorigin.Principal{UID: inputPrincipal.UID, Generation: inputPrincipal.Generation}
 		// H1 and the validate step of H2, restarting from H1 on a lost validate.
 		for restarts := 0; ; restarts++ {
@@ -440,6 +441,12 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 				return nil, codes.Refuse(codes.OriginUnavailable, "validate lost after restarts", err)
 			}
 			return nil, err
+		}
+		// Every Wire must bind the caller's input, even when prepare and
+		// validate consistently echo the same substituted principal.
+		var sourceInput runorigin.Principal
+		if err := json.Unmarshal([]byte(validated.Bindings["input_principal"]), &sourceInput); err != nil || sourceInput != input {
+			return nil, codes.Refuse(codes.OriginRefused, "Source input principal differs from input", err).With("binding", "input_principal")
 		}
 		// The station binding must be present and equal, for every Wire: an
 		// absent binding is a refusal, never a skipped check.

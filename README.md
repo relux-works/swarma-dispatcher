@@ -638,9 +638,10 @@ Operator release never bypasses the zero-process proof or any non-terminal
 record, including its own ending record; `UIDReleased` remains false until the
 uid can actually return to the pool.
 
-Source's run-origin input generations are nonzero numeric values; root launcher
-input generations must therefore be canonical positive decimal strings. The native Keymaker
-client itself preserves opaque generation strings. The launcher retains the
+Root run-origin input generations are the user manager's opaque token: exactly
+32 lowercase hexadecimal characters, not all zero. The launcher validates with
+`runorigin.ValidGeneration` and passes the generation bytewise without conversion.
+Child generations stay opaque to the native Keymaker client. The launcher retains the
 original validated origin bytes; the native codec encodes their exact typed
 values into its canonical frame without changing any origin fact.
 

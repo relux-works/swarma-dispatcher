@@ -413,16 +413,6 @@ func (f *fixture) open() *Session {
 	f.t.Cleanup(func() { must(f.t, s.Close()) })
 	return s
 }
-func (f *fixture) assertNoContacts(s *Session) {
-	f.t.Helper()
-	dials, _ := f.source.Dials()
-	if s.quarantine.Held(30002) {
-		f.t.Fatal("generation pre-check leaked its lease")
-	}
-	if dials != 0 || f.keymakerDials.Load() != 0 || f.inner.starts != 0 || len(s.store.Keys()) != 0 {
-		f.t.Fatal("generation boundary contacted a service, started a child, or wrote a record")
-	}
-}
 func (f *fixture) record() *runrecord.Record {
 	return &runrecord.Record{Version: 1, Kind: "p17-run-record/1", Key: "fixture-record", LaunchNonce: "fixture-record", State: runrecord.Binding, LauncherUID: uint32(os.Getuid()), LauncherGeneration: "11111111111111111111111111111111", StationRegistration: "1", InputPrincipal: `{"uid":30002,"generation":"cccccccccccccccccccccccccccccccc"}`, Origin: json.RawMessage(`{}`), SourceIncarnation: "fixture-source", PreparedID: "fixture-prepare", BindRequestID: "fixture-bind", ChildUID: 30002, Launcher: &incarnation.Incarnation{UID: uint32(os.Getuid()), PID: os.Getpid(), StartTicks: 1, BootID: "fixture-boot"}}
 }

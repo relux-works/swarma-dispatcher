@@ -29,7 +29,7 @@ import (
 	"github.com/relux-works/swarma-dispatcher/internal/transport"
 )
 
-// Claim: each composed service client's witness observes one client dial after socket-path/pin checks, independently of the zero-contact generation control.
+// Claim: each composed service client's witness observes exactly one dial after socket-path/pin checks with the unchanged worker generation.
 func TestComposedClientWitnesses(t *testing.T) {
 	f := newFixture(t)
 	s := f.open()
@@ -107,10 +107,14 @@ func composedDispatchAndStop(t *testing.T, f *fixture) {
 	if saved != bind.InputPrincipal {
 		t.Fatal("durable principal drift")
 	}
-	// Release evidence is explicit for this retained run, not inferred from
-	// a successful bind, stop receipt or missing fixture child.
+	// Export is explicit for this run; no operator override may mask the
+	// acknowledged-end requirement for returning its lease.
 	f.deps.Export.(sweep.StaticWorkProductExport)[attempt.Key] = sweep.NoWorkingCopy
-	f.deps.Release.(sweep.StaticOperatorRelease)[attempt.Key] = 30002
+	operatorReleased, err := f.deps.Release.Released(attempt.Key, 30002)
+	must(t, err)
+	if operatorReleased {
+		t.Fatal("positive end must not use operator release")
+	}
 	body, err = s.Serve(30001, dispatchID, f.frame)
 	if !strings.Contains(body, `"ok":true`) {
 		t.Fatalf("dispatch replay: %s %v", body, err)
@@ -127,6 +131,9 @@ func composedDispatchAndStop(t *testing.T, f *fixture) {
 	attempt, ok = s.hook.Last(f.events.request.EffectID)
 	if !ok || !attempt.Ended || attempt.End == nil || !attempt.End.Acknowledged || attempt.EndErr != nil || len(f.keymakerScript.Ends()) != 1 || f.inner.stops != 1 || s.quarantine.Held(30002) {
 		t.Fatalf("cancel did not acknowledge end and return lease: attempt=%+v end=%+v stops=%d ends=%d held=%t", attempt, attempt.End, f.inner.stops, len(f.keymakerScript.Ends()), s.quarantine.Held(30002))
+	}
+	if !attempt.End.UIDReleased || attempt.End.Release.OperatorReleased || !attempt.End.Release.EndAcknowledged || !attempt.End.Release.WorkProductExportSatisfied || attempt.End.Release.Reason != "acknowledged end with work-product export" {
+		t.Fatalf("lease did not return through acknowledged end plus export: %+v", attempt.End.Release)
 	}
 	record, ok = s.store.Get(attempt.Key)
 	if !ok || record.State != runrecord.Ended {
@@ -161,8 +168,9 @@ func TestComposedGenerationMismatch(t *testing.T) {
 	body, err := s.Serve(30001, dispatchID, f.frame)
 	wireRefusal(t, body, err, "m0_start_invalidated")
 	attempt, ok := s.hook.Last(f.events.request.EffectID)
-	if !ok || !codes.Is(attempt.Err, codes.OriginRefused) {
-		t.Fatalf("generation mismatch accepted: %+v", attempt)
+	var refusal *codes.Refusal
+	if !ok || !errors.As(attempt.Err, &refusal) || refusal.Code != codes.OriginRefused || refusal.Op != "binding differs" || refusal.Detail["binding"] != "input_principal" {
+		t.Fatalf("wrong generation binding refusal: %+v", attempt)
 	}
 	dials, _ := f.source.Dials()
 	if dials != 1 || f.keymakerDials.Load() != 0 || len(s.store.Keys()) != 0 || f.inner.starts != 0 || s.quarantine.Held(30002) {

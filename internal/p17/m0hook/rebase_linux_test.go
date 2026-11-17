@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/relux-works/a2a-swarm/runorigin"
 	"github.com/relux-works/swarma-dispatcher/internal/journal"
 	"github.com/relux-works/swarma-dispatcher/internal/m0"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/codes"
@@ -32,7 +33,10 @@ func TestStopMatchesOriginalExecution(t *testing.T) {
 			case "uid":
 				req.Worker.UID++
 			case "generation":
-				req.Worker.Generation = "2"
+				req.Worker.Generation = "dddddddddddddddddddddddddddddddd"
+				if !runorigin.ValidGeneration(req.Worker.Generation) || req.Worker.Generation == startReq(effectA, cuid).Worker.Generation {
+					t.Fatal("foreign generation must be valid and distinct")
+				}
 			case "missing-execution":
 				req.ExecutionID = ""
 			}

@@ -107,12 +107,18 @@ func pinnedEnv(t *testing.T, mode string) (*source.Client, chan error) {
 		if err = json.Unmarshal(fakes.ValidOrigin(), &prepared.Origin); err != nil {
 			return err
 		}
+		if mode == "prepare-substitution" {
+			prepared.InputPrincipal.Generation = "dddddddddddddddddddddddddddddddd"
+		}
 		out, err := json.Marshal(prepared)
 		if err != nil {
 			return err
 		}
 		if strings.HasPrefix(mode, "prepare-generation-") {
 			return frame.Write(peer, malformedGenerationReply(out, strings.TrimPrefix(mode, "prepare-generation-")))
+		}
+		if mode == "prepare-substitution" {
+			return frame.Write(peer, out)
 		}
 		// Prepare and validate use the same immutable origin and full bindings.
 		if err = frame.Write(peer, out); err != nil {
@@ -227,6 +233,33 @@ func TestPinnedGenerations(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Claim: a valid different generation in the pinned prepare echo refuses at prepare, beside a live matching prepare/validate exchange.
+func TestPreparePrincipalEcho(t *testing.T) {
+	if err := pinnedGenerationExchange(t, "ok"); err != nil {
+		t.Fatal(err)
+	}
+	c, done := pinnedEnv(t, "prepare-substitution")
+	if !runorigin.ValidGeneration("dddddddddddddddddddddddddddddddd") {
+		t.Fatal("substitution must be a valid generation")
+	}
+	p, err := c.Prepare(context.Background(), strings.Repeat("b", 32))
+	if p != nil {
+		_ = p.Close()
+	}
+	select {
+	case e := <-done:
+		if e != nil {
+			t.Fatal(e)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("prepare echo fixture did not stop")
+	}
+	var refusal *codes.Refusal
+	if p != nil || !errors.As(err, &refusal) || refusal.Code != codes.OriginRefused || refusal.Op != "prepare" {
+		t.Fatalf("valid substituted prepare principal accepted: prepared=%t err=%v", p != nil, err)
 	}
 }
 

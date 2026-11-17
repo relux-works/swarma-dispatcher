@@ -211,7 +211,8 @@ func TestLauncherGenerationPolicy(t *testing.T) {
 				must(t, err)
 				return
 			}
-			if !codes.Is(err, codes.OriginRefused) {
+			var refusal *codes.Refusal
+			if !errors.As(err, &refusal) || refusal.Code != codes.OriginRefused || refusal.Op != "Source input generation" {
 				t.Fatalf("invalid root generation: %v", err)
 			}
 			if d, _ := e.srcDialer.Dials(); d != 0 || e.kmDialer.Dials() != 0 {

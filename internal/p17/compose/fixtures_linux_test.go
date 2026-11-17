@@ -81,14 +81,22 @@ func fixtureAncestorsSafe(dir string) bool {
 	}
 }
 
-// fixtureBase picks the temporary directory, or the checkout-local ignored
-// .temp directory when the temporary directory has unsafe ancestors (for
-// example a world-writable /tmp). Nothing is repaired; with neither usable the
-// test fails, so no installation control is silently skipped.
+// fixtureBase picks the temporary directory, then the CI runner's temporary
+// directory, then the checkout-local ignored .temp directory, taking the first
+// whose ancestors are protected (a world-writable /tmp is not). The runner
+// directory comes before the checkout because fixture socket paths must stay
+// within the Unix socket path limit, and a deep checkout path can exceed it.
+// Nothing is repaired; with none usable the test fails, so no installation
+// control is silently skipped.
 func fixtureBase(t *testing.T) string {
 	t.Helper()
 	if tmp, err := filepath.EvalSymlinks(os.TempDir()); err == nil && fixtureAncestorsSafe(tmp) {
 		return tmp
+	}
+	if runner := os.Getenv("RUNNER_TEMP"); runner != "" {
+		if dir, err := filepath.EvalSymlinks(runner); err == nil && filepath.IsAbs(dir) && fixtureAncestorsSafe(dir) {
+			return dir
+		}
 	}
 	local, err := filepath.Abs(filepath.Join("..", "..", "..", ".temp"))
 	if err == nil && fixtureAncestorsSafe(filepath.Dir(local)) {

@@ -34,7 +34,8 @@ type sourceHello struct {
 	Incarnation string `json:"incarnation"`
 }
 type sourcePrepare struct {
-	Nonce string `json:"nonce"`
+	Nonce          string              `json:"nonce"`
+	InputPrincipal runorigin.Principal `json:"input_principal"`
 }
 type sourcePrepared struct {
 	PreparedID  string            `json:"prepared_id"`
@@ -93,7 +94,7 @@ func (SourceWire) Hello(c net.Conn) (source.HelloMessage, error) {
 	return source.HelloMessage{Capability: m.Hello.Capability, Incarnation: m.Hello.Incarnation}, nil
 }
 func (SourceWire) Prepare(c net.Conn, req source.PrepareRequest) (source.PreparedMessage, error) {
-	if err := sendSource(c, sourceMsg{Prepare: &sourcePrepare{Nonce: req.LaunchNonce}}); err != nil {
+	if err := sendSource(c, sourceMsg{Prepare: &sourcePrepare{Nonce: req.LaunchNonce, InputPrincipal: req.InputPrincipal}}); err != nil {
 		return source.PreparedMessage{}, err
 	}
 	m, err := recvSource(c)
@@ -160,6 +161,7 @@ type SourceScript struct {
 	hellos      int
 	prepares    int
 	validates   []string
+	inputs      []runorigin.Principal
 	connections int
 }
 
@@ -173,6 +175,13 @@ func (s *SourceScript) Counts() (hellos, prepares, validates, connections int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.hellos, s.prepares, len(s.validates), s.connections
+}
+
+// Inputs returns the exact principals received by prepare, without conversion.
+func (s *SourceScript) Inputs() []runorigin.Principal {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]runorigin.Principal(nil), s.inputs...)
 }
 
 // ValidatedIDs returns the prepared IDs validate asked for, in order.
@@ -246,7 +255,15 @@ func (s *SourceScript) Serve(c net.Conn) {
 	}
 	s.mu.Lock()
 	s.prepares++
+	s.inputs = append(s.inputs, m.Prepare.InputPrincipal)
 	s.mu.Unlock()
+	input := m.Prepare.InputPrincipal
+	bindings := func() map[string]string {
+		out := s.bindings(conn)
+		b, _ := json.Marshal(input)
+		out["input_principal"] = string(b)
+		return out
+	}
 	switch prepareMode {
 	case "not-supported":
 		_ = sendSource(c, sourceMsg{Error: "origin_not_supported"})
@@ -263,7 +280,7 @@ func (s *SourceScript) Serve(c net.Conn) {
 	case "close":
 		return
 	}
-	if err := sendSource(c, sourceMsg{Prepared: &sourcePrepared{PreparedID: s.preparedID(conn), Incarnation: s.incarnation(), Bindings: s.bindings(conn)}}); err != nil {
+	if err := sendSource(c, sourceMsg{Prepared: &sourcePrepared{PreparedID: s.preparedID(conn), Incarnation: s.incarnation(), Bindings: bindings()}}); err != nil {
 		return
 	}
 	m, err = recvSource(c)
@@ -273,7 +290,7 @@ func (s *SourceScript) Serve(c net.Conn) {
 	s.mu.Lock()
 	s.validates = append(s.validates, m.Validate.PreparedID)
 	s.mu.Unlock()
-	v := &sourceValidated{PreparedID: s.preparedID(conn), Incarnation: s.incarnation(), Bindings: s.bindings(conn), Origin: json.RawMessage(s.origin())}
+	v := &sourceValidated{PreparedID: s.preparedID(conn), Incarnation: s.incarnation(), Bindings: bindings(), Origin: json.RawMessage(s.origin())}
 	switch validateMode {
 	case "refused":
 		_ = sendSource(c, sourceMsg{Error: "refused"})
@@ -294,6 +311,14 @@ func (s *SourceScript) Serve(c net.Conn) {
 		v.Bindings["prepared_id"] = v.PreparedID
 	case "binding-drift":
 		v.Bindings["station"] = "station-2"
+	case "generation-mismatch":
+		if input.Generation == "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" {
+			input.Generation = "ffffffffffffffffffffffffffffffff"
+		} else {
+			input.Generation = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+		}
+		b, _ := json.Marshal(input)
+		v.Bindings["input_principal"] = string(b)
 	case "extra-binding":
 		v.Bindings["extra"] = "1"
 	case "bad-origin":

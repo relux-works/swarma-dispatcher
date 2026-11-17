@@ -173,7 +173,7 @@ var event = runorigin.EventRef{RoomID: "!room:example", EventID: "$retained-even
 
 // principalFor is the input principal of R_i: its uid is the leased uid.
 func principalFor(uid uint32) keymaker.Principal {
-	return keymaker.Principal{UID: uid, Generation: "1"}
+	return keymaker.Principal{UID: uid, Generation: "cccccccccccccccccccccccccccccccc"}
 }
 
 // fixtureLauncher supplies the fixture event and the input principal whose

@@ -190,17 +190,24 @@ func TestRestartRequired(t *testing.T) {
 	must(t, err)
 }
 
-// Claim: canonical positive root generations bind; noncanonical roots refuse before contact; child generations remain opaque.
+// Claim: nonzero 32-lowercase-hex root generations bind unchanged; invalid roots refuse before contact beside valid controls; child-only generations retain their existing opaque contract.
 func TestLauncherGenerationPolicy(t *testing.T) {
-	for _, gen := range []string{"01", "0", "abc", "18446744073709551616", "1"} {
-		t.Run(gen, func(t *testing.T) {
+	const valid = "cccccccccccccccccccccccccccccccc"
+	for _, row := range []struct{ name, generation string }{{"leading", "01"}, {"zero", "0"}, {"nonhex", "abc"}, {"overflow", "18446744073709551616"}, {"decimal", "1"}, {"valid", valid}} {
+		t.Run(row.name, func(t *testing.T) {
+			gen := row.generation
+			control := newEnv(t)
+			run, err := control.build().Begin(context.Background(), "valid generation control")
+			must(t, err)
+			_, err = run.End(context.Background(), 0, true, nil)
+			must(t, err)
 			e := newEnv(t)
 			l := e.build()
 			l.Restart(context.Background())
 			p := principalFor(cuid)
 			p.Generation = gen
-			_, err := l.Launcher.Begin(context.Background(), event, p)
-			if gen == "1" {
+			_, err = l.Launcher.Begin(context.Background(), event, p)
+			if gen == valid {
 				must(t, err)
 				return
 			}

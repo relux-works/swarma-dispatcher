@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -172,20 +173,29 @@ type fixtureInner struct {
 	starts, stops int
 	startErr      error
 	atStart       func()
+	observation   m0.Observation
+	start         func(context.Context, m0.StartRequest, m0.CommitGate) (m0.StartReceipt, error)
 }
 
-func (i *fixtureInner) Start(context.Context, m0.StartRequest, m0.CommitGate) (m0.StartReceipt, error) {
+func (i *fixtureInner) Start(ctx context.Context, r m0.StartRequest, gate m0.CommitGate) (m0.StartReceipt, error) {
 	i.starts++
 	if i.atStart != nil {
 		i.atStart()
+	}
+	if i.start != nil {
+		return i.start(ctx, r, gate)
 	}
 	return m0.StartReceipt{}, i.startErr
 }
 func (i *fixtureInner) Stop(context.Context, m0.StopRequest) (m0.StopReceipt, error) {
 	i.stops++
+	i.observation = m0.ObservationAbsent
 	return m0.StopReceipt{Absent: true, Evidence: []byte("fixture fenced absence")}, nil
 }
-func (*fixtureInner) Observe(context.Context, m0.EffectQuery) (m0.Observation, error) {
+func (i *fixtureInner) Observe(context.Context, m0.EffectQuery) (m0.Observation, error) {
+	if i.observation != "" {
+		return i.observation, nil
+	}
 	return m0.ObservationUnknown, nil
 }
 
@@ -223,6 +233,9 @@ type fixture struct {
 	events               *fixtureEvents
 	inner                *fixtureInner
 	source               *fakes.SourceDialer
+	sourceScript         *fakes.SourceScript
+	keymakerScript       *fakes.KeymakerScript
+	proc                 *fakes.ProcTree
 	keymakerDials        atomic.Int32
 	keymakerAccepted     chan struct{}
 	frame, cancel        []byte
@@ -291,6 +304,7 @@ func newFixture(t *testing.T) *fixture {
 	must(t, err)
 	proc, err := fakes.NewProcTree(filepath.Join(f.root, "proc"), "fixture-boot")
 	must(t, err)
+	f.proc = proc
 	must(t, proc.Add(os.Getpid(), [4]uint32{uid, uid, uid, uid}, 1))
 	a, b, err := fakes.SocketPair()
 	must(t, err)
@@ -302,7 +316,9 @@ func newFixture(t *testing.T) *fixture {
 	f.gate = &fixtureGate{}
 	f.stops = &fixtureStops{}
 	f.events = &fixtureEvents{}
-	f.source = &fakes.SourceDialer{Script: &fakes.SourceScript{}, Peer: source.Credential{UID: uid, PID: int32(os.Getpid())}}
+	f.sourceScript = &fakes.SourceScript{}
+	f.keymakerScript = &fakes.KeymakerScript{}
+	f.source = &fakes.SourceDialer{Script: f.sourceScript, Peer: source.Credential{UID: uid, PID: int32(os.Getpid())}}
 	f.deps = DefaultDeps()
 	f.deps.Static = f.gate
 	f.deps.Stops = f.stops
@@ -315,13 +331,22 @@ func newFixture(t *testing.T) *fixture {
 	f.deps.Export = sweep.StaticWorkProductExport{"fixture": sweep.NoWorkingCopy}
 	f.deps.Release = sweep.StaticOperatorRelease{"fixture": 30002}
 	f.deps.sourceWire = fakes.SourceWire{}
+	f.deps.keymakerWire = fakes.KeymakerWire{}
 	f.deps.sourceDialer = f.source
 	f.deps.procRoot = proc.Root
 	f.deps.mountInfo = proc.MountInfoPath()
+	for _, path := range []string{filepath.Join(control, "origin.sock"), filepath.Join(f.root, "km/request.sock")} {
+		if len(path) >= 100 {
+			t.Fatalf("fixture socket path must be under 100 bytes, got %d", len(path))
+		}
+	}
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: filepath.Join(f.root, "km/request.sock"), Net: "unix"})
 	must(t, err)
 	must(t, os.Chmod(filepath.Join(f.root, "km/request.sock"), os.FileMode(f.cfg.P17.KeymakerMode)))
 	done := make(chan struct{})
+	var peersMu sync.Mutex
+	var peers []*net.UnixConn
+	var serving sync.WaitGroup
 	go func() {
 		defer close(done)
 		for {
@@ -330,13 +355,53 @@ func newFixture(t *testing.T) *fixture {
 				return
 			}
 			f.keymakerDials.Add(1)
-			f.keymakerAccepted <- struct{}{}
-			_ = c.Close()
+			select {
+			case f.keymakerAccepted <- struct{}{}:
+			default:
+			}
+			peersMu.Lock()
+			peers = append(peers, c)
+			peersMu.Unlock()
+			serving.Add(1)
+			go func() { defer serving.Done(); f.keymakerScript.Serve(c) }()
 		}
 	}()
-	t.Cleanup(func() { _ = listener.Close(); <-done })
+	t.Cleanup(func() {
+		_ = listener.Close()
+		<-done
+		peersMu.Lock()
+		for _, c := range peers {
+			_ = c.Close()
+		}
+		peersMu.Unlock()
+		serving.Wait()
+	})
 	return f
 }
+func (f *fixture) commitStart() {
+	f.inner.start = func(_ context.Context, r m0.StartRequest, gate m0.CommitGate) (m0.StartReceipt, error) {
+		installed, err := f.seams.Policy.Current()
+		if err != nil {
+			return m0.StartReceipt{}, err
+		}
+		if err := gate.Commit(m0.ReceiverFacts{DropVerified: true, Receiver: installed.Policy.Receiver, WorkerUID: r.Worker.UID, Generation: r.Worker.Generation, ControllerEpoch: r.ControllerEpoch, ExecutionID: r.ExecutionID, EffectID: r.EffectID}); err != nil {
+			return m0.StartReceipt{}, err
+		}
+		// ProcTree is a writable synthetic fixture, not the kernel's procfs.
+		// Its new directories need execute bits; restore the product umask
+		// before returning to either journal or launcher code.
+		previous := syscall.Umask(0077)
+		err = f.proc.Add(777, [4]uint32{r.Worker.UID, r.Worker.UID, r.Worker.UID, r.Worker.UID}, 42)
+		syscall.Umask(previous)
+		if err != nil {
+			return m0.StartReceipt{}, err
+		}
+		f.inner.observation = m0.ObservationPresent
+		now, err := f.seams.Clock.Now()
+		return m0.StartReceipt{Committed: true, CommitUnix: now.Unix, ExecUnix: now.Unix, Receipt: []byte("fixture committed receipt")}, err
+	}
+}
+
 func (f *fixture) read(string) ([]byte, error) { return append([]byte(nil), f.config...), nil }
 func (f *fixture) attach() (*Session, error) {
 	return Attach(context.Background(), "/configuration/m0.json", f.seams, f.deps, f.read)

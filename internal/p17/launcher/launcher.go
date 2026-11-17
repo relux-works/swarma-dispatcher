@@ -362,7 +362,7 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if inputPrincipal.UID == 0 || inputPrincipal.Generation == "" {
+	if inputPrincipal.UID == 0 || (parent != nil && inputPrincipal.Generation == "") {
 		return nil, errors.New("launcher: input principal required")
 	}
 	registration, perr := strconv.ParseUint(l.cfg.Station, 10, 64)
@@ -413,13 +413,12 @@ func (l *Launcher) begin(ctx context.Context, event *runorigin.EventRef, inputPr
 	var validated *source.Validated
 	var nonce string
 	if parent == nil {
-		// Source's numeric generation is a strict subset of Keymaker's opaque
-		// generation. Never silently coerce or default a different principal.
-		generation, gerr := strconv.ParseUint(inputPrincipal.Generation, 10, 64)
-		if gerr != nil || generation == 0 || strconv.FormatUint(generation, 10) != inputPrincipal.Generation {
-			return nil, codes.Refuse(codes.OriginRefused, "Source input generation", gerr)
+		// The user manager's opaque spelling is authoritative. Validate with
+		// the wire contract and pass it unchanged, never as a number.
+		if !runorigin.ValidGeneration(inputPrincipal.Generation) {
+			return nil, codes.Refuse(codes.OriginRefused, "Source input generation", nil)
 		}
-		input := runorigin.Principal{UID: inputPrincipal.UID, Generation: generation}
+		input := runorigin.Principal{UID: inputPrincipal.UID, Generation: inputPrincipal.Generation}
 		// H1 and the validate step of H2, restarting from H1 on a lost validate.
 		for restarts := 0; ; restarts++ {
 			nonce, err = l.nonce()

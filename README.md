@@ -379,18 +379,25 @@ envelope, and refuses later requests. A nil observer preserves existing M0
 behavior; an ordinary launcher error remains an unknown outcome, not fatal.
 The real statement verifier and every other service above remain unpinned.
 
-a real M0 dispatch through P17 is blocked until the run-origin generation contract accepts the user manager's 32-hex generation (open, cross-module).
+The RO-GEN generation boundary is closed: run-origin accepts the user manager's
+opaque generation, exactly 32 lowercase hexadecimal characters, not all zero.
+Root Begin validates that contract and preserves the exact bytes through Source,
+Keymaker and the durable record, without numeric conversion or normalization.
+Invalid spellings retain `run_origin_refused` / `Source input generation` before
+any Source or Keymaker contact. M0 shapes are unchanged.
 
-The composed control uses a valid signed M0 request and real constructors,
-state stores and restart pass, then checks the retained attempt is exactly
-`run_origin_refused` at `Source input generation`, with zero Source/Keymaker
-dials, P17 records or inner starts, and that the pre-check lease was returned.
-Adjacent contact controls dial each composed client once and observe count 1
-through the checked Source socket fixture and mode-matched Keymaker socket.
-It is not a successful launch: hygiene,
-bind, spawn, input release and stop are later gates. The two independent
-generation-domain controls retain a numeric root-client positive control and
-the unchanged 32-hex M0 domain. No conversion is supplied.
+The composed control uses a valid signed M0 request, real constructors, state
+stores and restart pass, with fake protocol peers and a synthetic child. It
+asserts Source prepare/validate, one Keymaker bind, one committed inner start,
+durable spawn/input-release records, replay without another bind/start, and a
+cancel with an acknowledged end. Explicit fixture export/release evidence permits
+the final lease return. A different valid Source generation binding refuses
+before Keymaker, records or spawn. Decimal, short/long, uppercase and all-zero
+spellings have pre-contact negatives beside unchanged-32-hex bind/end controls;
+the former opposite-domain decimal control is now negative for both layers.
+This closes the protocol/type incompatibility, not native receiver/helper,
+privilege separation, input-release service or operator-release qualification.
+Every unpinned producer above remains default-refusing and capacity-only.
 
 ### Configuration digest
 

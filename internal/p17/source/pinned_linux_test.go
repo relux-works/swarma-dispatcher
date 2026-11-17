@@ -3,11 +3,13 @@
 package source_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -36,13 +38,40 @@ func (d *pinnedDialer) Dial(string) (source.Conn, error) {
 	go func() { defer b.Close(); _ = b.SetDeadline(time.Now().Add(2 * time.Second)); d.done <- d.serve(b) }()
 	return pinnedPeer{a}, nil
 }
+func malformedGenerationReply(body []byte, mode string) []byte {
+	var value any
+	switch mode {
+	case "decimal":
+		value = "1"
+	case "short":
+		value = strings.Repeat("c", 31)
+	case "long":
+		value = strings.Repeat("c", 33)
+	case "uppercase":
+		value = strings.Repeat("C", 32)
+	case "zero":
+		value = strings.Repeat("0", 32)
+	case "number":
+		value = 19
+	case "null":
+		value = nil
+	case "non-hex":
+		value = strings.Repeat("g", 32)
+	}
+	raw, _ := json.Marshal(value)
+	return bytes.Replace(body, []byte(`"generation":"cccccccccccccccccccccccccccccccc"`), append([]byte(`"generation":`), raw...), 1)
+}
+
 func pinnedEnv(t *testing.T, mode string) (*source.Client, chan error) {
 	t.Helper()
 	e := newEnv(t, nil)
 	c := e.client
+	if n := len(filepath.Join(c.Pins.ControlDir, "origin.sock")); n >= 100 {
+		t.Fatalf("fixture socket path must be under 100 bytes, got %d", n)
+	}
 	c.Wire = source.Pinned{}
 	c.Event = runorigin.EventRef{RoomID: "!room:example", EventID: "$retained-event"}
-	c.InputPrincipal = runorigin.Principal{UID: 22001, Generation: 19}
+	c.InputPrincipal = runorigin.Principal{UID: 22001, Generation: "cccccccccccccccccccccccccccccccc"}
 	inc, prep := strings.Repeat("1", 32), strings.Repeat("2", 32)
 	d := &pinnedDialer{done: make(chan error, 1)}
 	d.serve = func(peer net.Conn) error {
@@ -82,6 +111,9 @@ func pinnedEnv(t *testing.T, mode string) (*source.Client, chan error) {
 		if err != nil {
 			return err
 		}
+		if strings.HasPrefix(mode, "prepare-generation-") {
+			return frame.Write(peer, malformedGenerationReply(out, strings.TrimPrefix(mode, "prepare-generation-")))
+		}
 		// Prepare and validate use the same immutable origin and full bindings.
 		if err = frame.Write(peer, out); err != nil {
 			return err
@@ -109,7 +141,7 @@ func pinnedEnv(t *testing.T, mode string) (*source.Client, chan error) {
 		case "uid":
 			prepared.InputPrincipal.UID++
 		case "generation":
-			prepared.InputPrincipal.Generation++
+			prepared.InputPrincipal.Generation = "dddddddddddddddddddddddddddddddd"
 		case "registration":
 			prepared.IdentityRegistrationNumber = "2"
 		case "incarnation":
@@ -134,6 +166,9 @@ func pinnedEnv(t *testing.T, mode string) (*source.Client, chan error) {
 		if err != nil {
 			return err
 		}
+		if strings.HasPrefix(mode, "validate-generation-") {
+			out = malformedGenerationReply(out, strings.TrimPrefix(mode, "validate-generation-"))
+		}
 		switch mode {
 		case "extra":
 			out = append([]byte(`{"extra":1,`), out[1:]...)
@@ -152,6 +187,47 @@ func pinnedEnv(t *testing.T, mode string) (*source.Client, chan error) {
 	}
 	c.Dialer = d
 	return c, d.done
+}
+
+func pinnedGenerationExchange(t *testing.T, mode string) error {
+	t.Helper()
+	c, done := pinnedEnv(t, mode)
+	p, err := c.Prepare(context.Background(), strings.Repeat("b", 32))
+	if err == nil {
+		var v *source.Validated
+		v, err = p.Validate(context.Background())
+		if err == nil {
+			var input runorigin.Principal
+			if json.Unmarshal([]byte(v.Bindings["input_principal"]), &input) != nil || input.Generation != "cccccccccccccccccccccccccccccccc" {
+				t.Fatal("Source validated principal drift")
+			}
+		}
+	}
+	select {
+	case e := <-done:
+		if e != nil {
+			t.Fatal(e)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Source generation fixture did not stop")
+	}
+	return err
+}
+
+// Claim: pinned prepare and validate each reject decimal, short, long, uppercase, zero, numeric/null and non-hex generation bodies beside a live unchanged-32-hex exchange.
+func TestPinnedGenerations(t *testing.T) {
+	for _, phase := range []string{"prepare", "validate"} {
+		for _, mode := range []string{"decimal", "short", "long", "uppercase", "zero", "number", "null", "non-hex"} {
+			t.Run(phase+"/"+mode, func(t *testing.T) {
+				if err := pinnedGenerationExchange(t, "ok"); err != nil {
+					t.Fatal(err)
+				}
+				if err := pinnedGenerationExchange(t, phase+"-generation-"+mode); !codes.Is(err, codes.OriginRefused) {
+					t.Fatalf("malformed generation accepted: %v", err)
+				}
+			})
+		}
+	}
 }
 
 // Claim: pin A round-trips full bindings once; drift, closed-schema violations and malformed origins refuse, while lost/dependency validate restarts.

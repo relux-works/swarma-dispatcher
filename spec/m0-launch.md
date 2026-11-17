@@ -398,15 +398,22 @@ returns `transport.ErrFatal` joined with that cause and no success envelope.
 Fatal is permanent for the extension and no later request is served. Nil
 observer preserves existing behavior; ordinary launcher errors stay unknown.
 
-a real M0 dispatch through P17 is blocked until the run-origin generation contract accepts the user manager's 32-hex generation (open, cross-module).
+RO-GEN closes the generation spelling incompatibility. Root Begin accepts only
+an opaque, nonzero 32-lowercase-hex generation and forwards its bytes unchanged
+to Source and Keymaker; it does not parse, pad, truncate or case-fold. Invalid
+spellings retain `run_origin_refused` / `Source input generation` before service
+contact. The M0 request/policy shapes are not changed by this client adaptation.
 
-The composed control therefore asserts exactly `run_origin_refused` at
-`Source input generation` on a valid M0 request, zero service dials/records/inner
-starts, the returned pre-check lease, and unchanged worker generation. Adjacent
-contact controls dial each composed client once and observe count 1 through
-valid Source control and mode-matched Keymaker sockets, beside the independent
-generation domain controls and the all-defaults capacity-only audit. It is not bind, spawn,
-input-release, native receiver or real dispatch qualification.
+The signed composed control now completes Source prepare/validate, one Keymaker
+bind, one committed inner start, durable spawn/input-release recording and an
+acknowledged end on cancel, with replay causing no second bind/start. Fake
+protocol peers, a synthetic child and explicit fixture export/release evidence
+make this composition evidence, not native service, receiver/helper, privilege
+separation, input-release or retained-stop/operator-release qualification.
+A different valid Source generation binding refuses before Keymaker/records/spawn;
+malformed, uppercase and all-zero tokens refuse before any service dial beside
+unchanged-32-hex controls. Decimal is now refused by both former boundary layers.
+The all-defaults capacity-only audit and every unpinned producer remain closed.
 
 Only the protected operator path may install, replace or remove policy,
 association, catalog or qualification pins, after exact-content owner acceptance.

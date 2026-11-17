@@ -191,7 +191,7 @@ func preparedResult(b []byte) (pinnedResult, error) {
 	if _, err := object(m["input_principal"], "uid", "generation"); err != nil {
 		return out, err
 	}
-	if err := json.Unmarshal(m["input_principal"], &out.input); err != nil || out.input.UID == 0 || out.input.Generation == 0 {
+	if err := json.Unmarshal(m["input_principal"], &out.input); err != nil || out.input.UID == 0 || !runorigin.ValidGeneration(out.input.Generation) {
 		return out, ErrRefused
 	}
 	if err := CheckOrigin(m["origin"]); err != nil {
@@ -211,7 +211,7 @@ func preparedResult(b []byte) (pinnedResult, error) {
 	return out, nil
 }
 func (Pinned) Prepare(c net.Conn, req PrepareRequest) (PreparedMessage, error) {
-	if !runorigin.LowerHex(req.RequestID, 32) || !runorigin.LowerHex(req.LaunchNonce, 32) || !opaque(req.Event.RoomID) || !opaque(req.Event.EventID) || req.InputPrincipal.UID == 0 || req.InputPrincipal.Generation == 0 {
+	if !runorigin.LowerHex(req.RequestID, 32) || !runorigin.LowerHex(req.LaunchNonce, 32) || !opaque(req.Event.RoomID) || !opaque(req.Event.EventID) || req.InputPrincipal.UID == 0 || !runorigin.ValidGeneration(req.InputPrincipal.Generation) {
 		return PreparedMessage{}, ErrRefused
 	}
 	if err := sourceWrite(c, struct {

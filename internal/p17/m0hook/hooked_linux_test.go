@@ -442,7 +442,7 @@ func startReq(effect string, uid uint32) m0.StartRequest {
 		EffectID:        effect,
 		ExecutionID:     "exec-1",
 		ControllerEpoch: 1,
-		Worker:          m0.Worker{UID: uid, Generation: "1"},
+		Worker:          m0.Worker{UID: uid, Generation: "cccccccccccccccccccccccccccccccc"},
 		ExecProfile:     "profile",
 		Entry:           []byte("{}"),
 		EntryDigest:     "sha256:0000000000000000000000000000000000000000000000000000000000000000",
@@ -451,7 +451,7 @@ func startReq(effect string, uid uint32) m0.StartRequest {
 }
 
 func stopReq(effect string, uid uint32) m0.StopRequest {
-	return m0.StopRequest{EffectID: effect, ExecutionID: "exec-1", Worker: m0.Worker{UID: uid, Generation: "1"}, Event: 1700000100, Detection: 1700000101}
+	return m0.StopRequest{EffectID: effect, ExecutionID: "exec-1", Worker: m0.Worker{UID: uid, Generation: "cccccccccccccccccccccccccccccccc"}, Event: 1700000100, Detection: 1700000101}
 }
 
 // Claim: a bound start records incarnations and release bookkeeping; Stop preserves its receipt, ends/sweeps once and explicitly retains unknown child status.

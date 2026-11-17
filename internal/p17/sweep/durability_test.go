@@ -65,7 +65,7 @@ func TestBeginQuarantineSyncFailure(t *testing.T) {
 					}
 					return f.Sync()
 				})
-				_, err = l.Begin(context.Background(), runorigin.EventRef{}, keymaker.Principal{UID: 2001, Generation: "1"})
+				_, err = l.Begin(context.Background(), runorigin.EventRef{}, keymaker.Principal{UID: 2001, Generation: "cccccccccccccccccccccccccccccccc"})
 				if failAt != 0 {
 					if !launcher.MustExit(err) || !errors.Is(err, sweep.ErrNotDurable) {
 						t.Fatalf("sync failure not MustExit: %v", err)

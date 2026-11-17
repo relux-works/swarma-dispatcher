@@ -162,12 +162,12 @@ func TestReentrantCalls(t *testing.T) {
 // Claim: the context marker recognizes same-run identities and rejects foreign runs or wiring instances, without relying on a deadlock timeout.
 func TestReentrantGuard(t *testing.T) {
 	h := &Hooked{}
-	e := &effect{id: "effect", execution: "execution", worker: m0.Worker{UID: 30001, Generation: "1"}}
+	e := &effect{id: "effect", execution: "execution", worker: m0.Worker{UID: 30001, Generation: "cccccccccccccccccccccccccccccccc"}}
 	ctx := context.WithValue(context.Background(), callKey{}, activeCall{h, []*effect{e}})
-	if !h.reentrant(ctx, "effect", "", m0.Worker{}) || !h.reentrant(ctx, "stop", "execution", m0.Worker{UID: 30001, Generation: "1"}) {
+	if !h.reentrant(ctx, "effect", "", m0.Worker{}) || !h.reentrant(ctx, "stop", "execution", m0.Worker{UID: 30001, Generation: "cccccccccccccccccccccccccccccccc"}) {
 		t.Fatal("same-run context not recognized")
 	}
-	if h.reentrant(ctx, "foreign", "foreign", m0.Worker{UID: 30001, Generation: "1"}) || (&Hooked{}).reentrant(ctx, "effect", "", m0.Worker{}) {
+	if h.reentrant(ctx, "foreign", "foreign", m0.Worker{UID: 30001, Generation: "cccccccccccccccccccccccccccccccc"}) || (&Hooked{}).reentrant(ctx, "effect", "", m0.Worker{}) {
 		t.Fatal("foreign context recognized as reentrant")
 	}
 }

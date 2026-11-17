@@ -229,7 +229,7 @@ func TestBeginEndpointPins(t *testing.T) {
 					}
 					dial := &countedUnixDialer{dial: d}
 					l, st, q, src := pinBeginFixture(t, dial)
-					run, err := l.Begin(context.Background(), runorigin.EventRef{RoomID: "!room:example", EventID: "$event"}, keymaker.Principal{UID: 2001, Generation: "1"})
+					run, err := l.Begin(context.Background(), runorigin.EventRef{RoomID: "!room:example", EventID: "$event"}, keymaker.Principal{UID: 2001, Generation: "cccccccccccccccccccccccccccccccc"})
 					_ = ln.Close()
 					<-done
 					if bad {

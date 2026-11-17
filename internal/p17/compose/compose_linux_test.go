@@ -19,6 +19,7 @@ import (
 	"github.com/relux-works/swarma-dispatcher/internal/journal"
 	"github.com/relux-works/swarma-dispatcher/internal/m0"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/codes"
+	"github.com/relux-works/swarma-dispatcher/internal/p17/fakes"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/keymaker"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/launcher"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/m0hook"
@@ -33,9 +34,8 @@ func TestComposedClientWitnesses(t *testing.T) {
 	f := newFixture(t)
 	s := f.open()
 	d := launcherDeps(f.cfg.P17, 30002, f.deps, s.store, s.quarantine)
-	// This is a client contact witness with a valid numeric principal, not a
-	// conversion of the worker tuple or a composed successful dispatch.
-	prepared, err := d.Source.PrepareFor(context.Background(), "fixture-contact", runorigin.EventRef{RoomID: "!room:example", EventID: "$retained-event"}, runorigin.Principal{UID: 30002, Generation: 1})
+	// The client receives the worker's authoritative generation unchanged.
+	prepared, err := d.Source.PrepareFor(context.Background(), "fixture-contact", runorigin.EventRef{RoomID: "!room:example", EventID: "$retained-event"}, runorigin.Principal{UID: 30002, Generation: "cccccccccccccccccccccccccccccccc"})
 	must(t, err)
 	must(t, prepared.Close())
 	if n, paths := f.source.Dials(); n != 1 || !reflect.DeepEqual(paths, []string{filepath.Join(f.cfg.P17.SourceControlDir, "origin.sock")}) {
@@ -54,32 +54,86 @@ func TestComposedClientWitnesses(t *testing.T) {
 	}
 }
 
-// Claim: the real composition passes the earlier M0 authentication, installation, time, journal and restart gates, forwards the unchanged worker tuple, then refuses exactly at Source input generation with zero service dials, records and inner starts.
-func TestComposedGenerationBoundary(t *testing.T) {
-	f := newFixture(t)
+func wireSuccess(t *testing.T, body string, err error) {
+	t.Helper()
+	must(t, err)
+	var response struct {
+		OK     bool            `json:"ok"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	must(t, json.Unmarshal([]byte(body), &response))
+	if !response.OK || len(response.Result) == 0 || len(response.Error) != 0 {
+		t.Fatalf("expected definite M0 success, got %s", body)
+	}
+}
+
+func composedDispatchAndStop(t *testing.T, f *fixture) {
+	t.Helper()
+	f.commitStart()
 	s := f.open()
 	body, err := s.Serve(30001, dispatchID, f.frame)
-	wireRefusal(t, body, err, "m0_start_invalidated")
+	if !strings.Contains(body, `"ok":true`) {
+		a, _ := s.hook.Last(f.events.request.EffectID)
+		t.Fatalf("dispatch: inner starts=%d hook error=%v response=%s error=%v", f.inner.starts, a.Err, body, err)
+	}
+	wireSuccess(t, body, err)
+	if f.events.calls != 1 || f.events.request.Worker.UID != 30002 || f.events.request.Worker.Generation != "cccccccccccccccccccccccccccccccc" || f.stops.verifications != 1 || f.stops.requests != 0 {
+		t.Fatal("dispatch bypassed identity or admission")
+	}
+	_, prepares, validates, _ := f.sourceScript.Counts()
+	inputs := f.sourceScript.Inputs()
+	if prepares != 1 || validates != 1 || len(inputs) != 1 || inputs[0] != (runorigin.Principal{UID: 30002, Generation: "cccccccccccccccccccccccccccccccc"}) {
+		t.Fatalf("Source did not prepare/validate the unchanged worker: %v", inputs)
+	}
+	if len(f.keymakerScript.Binds()) != 1 || f.inner.starts != 1 || len(s.store.Keys()) != 1 {
+		t.Fatal("dispatch did not bind and start exactly once")
+	}
+	_, bind, err := fakes.ParseBind(f.keymakerScript.Binds()[0])
+	must(t, err)
+	if bind.InputPrincipal != (keymaker.Principal{UID: 30002, Generation: inputs[0].Generation}) || !bytes.Equal(bind.Origin, fakes.ValidOrigin()) {
+		t.Fatal("Keymaker principal/origin drift")
+	}
 	attempt, ok := s.hook.Last(f.events.request.EffectID)
-	var refusal *codes.Refusal
-	if !ok || f.events.calls != 1 || !errors.As(attempt.Err, &refusal) || refusal.Code != "run_origin_refused" || refusal.Op != "Source input generation" {
-		t.Fatalf("expected exact generation boundary, got %v", attempt.Err)
+	if !ok || attempt.Err != nil || attempt.Key == "" {
+		t.Fatalf("hook did not retain successful dispatch: %+v", attempt)
 	}
-	if f.events.request.Worker.UID != 30002 || f.events.request.Worker.Generation != "cccccccccccccccccccccccccccccccc" || f.stops.verifications != 1 || f.stops.requests != 0 {
-		t.Fatal("an earlier gate, unchanged identity, or readiness-only probe was bypassed")
+	record, ok := s.store.Get(attempt.Key)
+	if !ok || record.State != runrecord.Bound || record.Child == nil || record.Child.UID != 30002 || record.Child.PID != 777 || !record.InputReleased || get(t, f.state, recordMarker) != "established\n" {
+		t.Fatalf("missing durable spawn/release: %+v", record)
 	}
-	f.assertNoContacts(s)
-	if !reflect.DeepEqual(f.gate.classes, []string{"start", "start"}) {
-		t.Fatalf("startup/dispatch classes: %v", f.gate.classes)
+	var saved keymaker.Principal
+	must(t, json.Unmarshal([]byte(record.InputPrincipal), &saved))
+	if saved != bind.InputPrincipal {
+		t.Fatal("durable principal drift")
 	}
+	// Release evidence is explicit for this retained run, not inferred from
+	// a successful bind, stop receipt or missing fixture child.
+	f.deps.Export.(sweep.StaticWorkProductExport)[attempt.Key] = sweep.NoWorkingCopy
+	f.deps.Release.(sweep.StaticOperatorRelease)[attempt.Key] = 30002
 	body, err = s.Serve(30001, dispatchID, f.frame)
-	wireRefusal(t, body, err, "m0_start_invalidated")
-	if f.events.calls != 1 {
-		t.Fatal("ordinary generation refusal repeated the launcher")
+	if !strings.Contains(body, `"ok":true`) {
+		t.Fatalf("dispatch replay: %s %v", body, err)
 	}
-	f.assertNoContacts(s)
+	wireSuccess(t, body, err)
+	if f.events.calls != 1 || f.inner.starts != 1 || len(f.keymakerScript.Binds()) != 1 {
+		t.Fatal("replay repeated dispatch")
+	}
 	if !reflect.DeepEqual(f.gate.classes, []string{"start", "start", "start"}) {
 		t.Fatal("already-recorded replay skipped Verify(start)")
+	}
+	body, err = s.Serve(30001, cancelID, f.cancel)
+	wireSuccess(t, body, err)
+	attempt, ok = s.hook.Last(f.events.request.EffectID)
+	if !ok || !attempt.Ended || attempt.End == nil || !attempt.End.Acknowledged || attempt.EndErr != nil || len(f.keymakerScript.Ends()) != 1 || f.inner.stops != 1 || s.quarantine.Held(30002) {
+		t.Fatalf("cancel did not acknowledge end and return lease: attempt=%+v end=%+v stops=%d ends=%d held=%t", attempt, attempt.End, f.inner.stops, len(f.keymakerScript.Ends()), s.quarantine.Held(30002))
+	}
+	record, ok = s.store.Get(attempt.Key)
+	if !ok || record.State != runrecord.Ended {
+		t.Fatal("end not durable")
+	}
+	if !reflect.DeepEqual(f.gate.classes, []string{"start", "start", "start", "end"}) {
+		t.Fatal("cancel skipped Verify(end)")
 	}
 	if !bytes.Equal(s.ConfigBytes(), f.config) {
 		t.Fatal("attached snapshot drift")
@@ -92,6 +146,27 @@ func TestComposedGenerationBoundary(t *testing.T) {
 	var nilExtension *m0.Extension
 	if nilExtension.ConfigBytes() != nil {
 		t.Fatal("nil ConfigBytes must be nil")
+	}
+}
+
+// Claim: signed M0 dispatch traverses the real composition, Source prepare/validate, one Keymaker bind, one committed inner spawn and durable release, then cancel acknowledges end; replay preserves exact 32-hex identity without another bind/start.
+func TestComposedDispatch(t *testing.T) { composedDispatchAndStop(t, newFixture(t)) }
+
+// Claim: a valid but different Source generation binding refuses before Keymaker, records or spawn and returns its lease, beside the complete composed dispatch-and-stop control.
+func TestComposedGenerationMismatch(t *testing.T) {
+	composedDispatchAndStop(t, newFixture(t))
+	f := newFixture(t)
+	f.sourceScript.SetValidateMode("generation-mismatch")
+	s := f.open()
+	body, err := s.Serve(30001, dispatchID, f.frame)
+	wireRefusal(t, body, err, "m0_start_invalidated")
+	attempt, ok := s.hook.Last(f.events.request.EffectID)
+	if !ok || !codes.Is(attempt.Err, codes.OriginRefused) {
+		t.Fatalf("generation mismatch accepted: %+v", attempt)
+	}
+	dials, _ := f.source.Dials()
+	if dials != 1 || f.keymakerDials.Load() != 0 || len(s.store.Keys()) != 0 || f.inner.starts != 0 || s.quarantine.Held(30002) {
+		t.Fatal("mismatched generation escaped Source or leaked its lease")
 	}
 }
 
@@ -183,10 +258,11 @@ func TestAdmissionAndStaticClasses(t *testing.T) {
 		t.Fatal("cancel bypassed end gate")
 	}
 	f.gate.err = nil
+	f.events.err = errFixture
 	body, err = s.Serve(30001, dispatchID, f.frame)
 	wireRefusal(t, body, err, "m0_start_invalidated")
 	if f.events.calls != 1 {
-		t.Fatal("pinned gates did not reach generation boundary")
+		t.Fatal("pinned gates did not reach the retained-event seam")
 	}
 	if !reflect.DeepEqual(f.gate.classes, []string{"start", "start", "end", "start"}) {
 		t.Fatalf("gate classes %v", f.gate.classes)

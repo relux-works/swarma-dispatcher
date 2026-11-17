@@ -65,8 +65,48 @@ func wireRefusal(t *testing.T, body string, err error, code string) {
 	}
 }
 
+// fixtureAncestorsSafe reports whether dir and every ancestor is a real
+// directory owned by root or this UID and not group- or other-writable, which
+// is what protectedDirectory requires of an installation path.
+func fixtureAncestorsSafe(dir string) bool {
+	uid := uint32(os.Geteuid())
+	for p := dir; ; p = filepath.Dir(p) {
+		var st syscall.Stat_t
+		if syscall.Lstat(p, &st) != nil || st.Mode&syscall.S_IFMT != syscall.S_IFDIR || (st.Uid != 0 && st.Uid != uid) || st.Mode&0022 != 0 {
+			return false
+		}
+		if p == "/" {
+			return true
+		}
+	}
+}
+
+// fixtureBase picks the temporary directory, or the checkout-local ignored
+// .temp directory when the temporary directory has unsafe ancestors (for
+// example a world-writable /tmp). Nothing is repaired; with neither usable the
+// test fails, so no installation control is silently skipped.
+func fixtureBase(t *testing.T) string {
+	t.Helper()
+	if tmp, err := filepath.EvalSymlinks(os.TempDir()); err == nil && fixtureAncestorsSafe(tmp) {
+		return tmp
+	}
+	local, err := filepath.Abs(filepath.Join("..", "..", "..", ".temp"))
+	if err == nil && fixtureAncestorsSafe(filepath.Dir(local)) {
+		if err := os.Mkdir(local, 0700); err == nil || os.IsExist(err) {
+			if fixtureAncestorsSafe(local) {
+				return local
+			}
+		}
+	}
+	t.Fatal("no fixture directory whose ancestors are all owned by root or this UID and not group/other-writable")
+	return ""
+}
+
 func privateDir(t *testing.T, parent, pattern string) string {
 	t.Helper()
+	if parent == "" {
+		parent = fixtureBase(t)
+	}
 	d, err := os.MkdirTemp(parent, pattern)
 	must(t, err)
 	must(t, os.Chmod(d, 0700))

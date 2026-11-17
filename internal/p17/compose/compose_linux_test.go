@@ -5,6 +5,7 @@ package compose
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,16 +13,46 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/relux-works/a2a-swarm/runorigin"
+	"github.com/relux-works/swarma-dispatcher/internal/journal"
 	"github.com/relux-works/swarma-dispatcher/internal/m0"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/codes"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/keymaker"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/launcher"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/m0hook"
+	"github.com/relux-works/swarma-dispatcher/internal/p17/runrecord"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/source"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/sweep"
 	"github.com/relux-works/swarma-dispatcher/internal/transport"
 )
+
+// Claim: each composed service client's witness observes one client dial after socket-path/pin checks, independently of the zero-contact generation control.
+func TestComposedClientWitnesses(t *testing.T) {
+	f := newFixture(t)
+	s := f.open()
+	d := launcherDeps(f.cfg.P17, 30002, f.deps, s.store, s.quarantine)
+	// This is a client contact witness with a valid numeric principal, not a
+	// conversion of the worker tuple or a composed successful dispatch.
+	prepared, err := d.Source.PrepareFor(context.Background(), "fixture-contact", runorigin.EventRef{RoomID: "!room:example", EventID: "$retained-event"}, runorigin.Principal{UID: 30002, Generation: 1})
+	must(t, err)
+	must(t, prepared.Close())
+	if n, paths := f.source.Dials(); n != 1 || !reflect.DeepEqual(paths, []string{filepath.Join(f.cfg.P17.SourceControlDir, "origin.sock")}) {
+		t.Fatalf("Source witness did not observe its composed client: %d %v", n, paths)
+	}
+	conn, err := d.Keymaker.Dial(context.Background())
+	must(t, err)
+	must(t, conn.Close())
+	select {
+	case <-f.keymakerAccepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Keymaker witness did not observe its composed client")
+	}
+	if f.keymakerDials.Load() != 1 {
+		t.Fatal("Keymaker witness must count exactly one contact")
+	}
+}
 
 // Claim: the real composition passes the earlier M0 authentication, installation, time, journal and restart gates, forwards the unchanged worker tuple, then refuses exactly at Source input generation with zero service dials, records and inner starts.
 func TestComposedGenerationBoundary(t *testing.T) {
@@ -47,6 +78,9 @@ func TestComposedGenerationBoundary(t *testing.T) {
 		t.Fatal("ordinary generation refusal repeated the launcher")
 	}
 	f.assertNoContacts(s)
+	if !reflect.DeepEqual(f.gate.classes, []string{"start", "start", "start"}) {
+		t.Fatal("already-recorded replay skipped Verify(start)")
+	}
 	if !bytes.Equal(s.ConfigBytes(), f.config) {
 		t.Fatal("attached snapshot drift")
 	}
@@ -138,22 +172,105 @@ func TestAdmissionAndStaticClasses(t *testing.T) {
 		t.Fatal("admission consumed or invented stop metadata")
 	}
 	f.gate.err = errors.New("fixture closed window")
-	_, err := s.Serve(30001, dispatchID, f.frame)
-	if err == nil || f.events.calls != 0 {
+	body, err := s.Serve(30001, dispatchID, f.frame)
+	wireRefusal(t, body, err, string(m0.CodeClosed))
+	if f.events.calls != 0 {
 		t.Fatal("dispatch bypassed static gate")
 	}
-	_, err = s.Serve(30001, cancelID, f.cancel)
-	if err == nil || f.inner.stops != 0 {
+	body, err = s.Serve(30001, cancelID, f.cancel)
+	wireRefusal(t, body, err, string(m0.CodeClosed))
+	if f.inner.stops != 0 {
 		t.Fatal("cancel bypassed end gate")
 	}
 	f.gate.err = nil
-	body, err := s.Serve(30001, dispatchID, f.frame)
+	body, err = s.Serve(30001, dispatchID, f.frame)
 	wireRefusal(t, body, err, "m0_start_invalidated")
 	if f.events.calls != 1 {
 		t.Fatal("pinned gates did not reach generation boundary")
 	}
 	if !reflect.DeepEqual(f.gate.classes, []string{"start", "start", "end", "start"}) {
 		t.Fatalf("gate classes %v", f.gate.classes)
+	}
+}
+
+// Claim: only bodies accepted by M0's own decoder are classified, matching its dispatch/cancel operation; ordinary verifier refusals are definite and fatal ones remain response-free.
+func TestStaticGateDecoder(t *testing.T) {
+	f := newFixture(t)
+	s := f.open()
+	f.gate.err = errors.New("fixture verifier refusal")
+	for _, body := range [][]byte{f.frame, f.cancel} {
+		r, err := m0.DecodeRequest(body)
+		must(t, err)
+		class := map[m0.Op]string{"dispatch": ClassStart, "cancel": ClassEnd}[r.Op]
+		f.gate.classes = nil
+		response, err := s.Serve(30001, r.RequestID, body)
+		wireRefusal(t, response, err, string(m0.CodeClosed))
+		if !reflect.DeepEqual(f.gate.classes, []string{class}) || f.events.calls != 0 || f.inner.stops != 0 {
+			t.Fatalf("classification differed from M0: %s %v", r.Op, f.gate.classes)
+		}
+	}
+	duplicate := bytes.Replace(f.frame, []byte(`"op":"dispatch"`), []byte(`"op":"cancel","op":"dispatch"`), 1)
+	if _, err := m0.DecodeRequest(duplicate); err == nil {
+		t.Fatal("duplicate control was not refused by M0")
+	}
+	f.gate.classes = nil
+	response, err := s.Serve(30001, dispatchID, duplicate)
+	if response != "" || !errors.Is(err, transport.ErrInvalid) || len(f.gate.classes) != 0 {
+		t.Fatalf("duplicate body was classified: %q %v %v", response, err, f.gate.classes)
+	}
+	f.gate.err = transport.ErrFatal
+	response, err = s.Serve(30001, dispatchID, f.frame)
+	if response != "" || !errors.Is(err, transport.ErrFatal) {
+		t.Fatalf("fatal verifier became a definite ordinary refusal: %q %v", response, err)
+	}
+}
+
+// Claim: P17 journal initialization and established recovery require their own attestations even when both M0 attestations are true; each true P17 neighbor is accepted.
+func TestP17JournalAttestations(t *testing.T) {
+	for _, member := range []string{"supported_local_storage", "recovery_attested"} {
+		t.Run(member, func(t *testing.T) {
+			control := newFixture(t)
+			s := control.open()
+			f := newFixture(t)
+			if member == "recovery_attested" {
+				must(t, s.store.Create(control.record()))
+				must(t, s.Close())
+				facts, err := (installation{dir: control.state}).prepare()
+				must(t, err)
+				if !facts.journalEstablished {
+					t.Fatal("positive record fact missing")
+				}
+				// Open the actual established P17 journal with its true attestation.
+				mask := uint32(0177)
+				owner := &sweep.Quarantine{}
+				must(t, owner.Start(control.state, sweep.Established))
+				defer owner.Close()
+				store, err := runrecord.Open(journal.Config{Directory: control.state, Records: "records", Inputs: "inputs", DeclaredUmask: &mask, SupportedLocalStorage: true, RecoveryPrerequisiteEstablished: true, ConsumerBudget: 4 << 20}, owner)
+				must(t, err)
+				must(t, store.Close())
+				prior := f.open()
+				must(t, prior.store.Create(f.record()))
+				must(t, prior.Close())
+			}
+			var config map[string]any
+			must(t, json.Unmarshal(f.config, &config))
+			config["p17"].(map[string]any)[member] = false
+			f.config = encode(t, config)
+			if config[member] != true {
+				t.Fatal("control must keep the independent M0 attestation true")
+			}
+			opened, err := f.attach()
+			if opened != nil || err == nil {
+				t.Fatalf("P17 inherited the M0 attestation for %s: %v", member, err)
+			}
+			if member == "supported_local_storage" {
+				if !errors.Is(err, runrecord.ErrConfig) || !strings.Contains(err.Error(), "local storage attestation") {
+					t.Fatalf("wrong storage refusal: %v", err)
+				}
+			} else if journal.ClassOf(err) != journal.InvalidState || !strings.Contains(err.Error(), "recovery attestation required") {
+				t.Fatalf("wrong recovery refusal: %v", err)
+			}
+		})
 	}
 }
 

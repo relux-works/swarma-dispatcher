@@ -176,14 +176,17 @@ func (i installation) priorRecords() (bool, error) {
 	return found, err
 }
 
-func (i installation) emptyIntentState() error {
+func (i installation) emptyState(intent bool) error {
 	entries, err := os.ReadDir(i.dir)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
 		n := e.Name()
-		if n == ledgerMarker || n == recordMarker || n == bootstrapName || n == "launcher.lock" || n == sweep.QuarantineName || strings.HasPrefix(n, ".install-") || strings.HasPrefix(n, ".quarantine-") {
+		if n == bootstrapName || strings.HasPrefix(n, ".install-") {
+			continue
+		}
+		if intent && (n == ledgerMarker || n == recordMarker || n == "launcher.lock" || n == sweep.QuarantineName || strings.HasPrefix(n, ".quarantine-")) {
 			continue
 		}
 		if (n == "records" || n == "inputs") && e.IsDir() {
@@ -243,11 +246,13 @@ func (i installation) prepare() (bootFacts, error) {
 		return facts, ErrInstallation
 	}
 	if !ledgerExists {
-		if !errors.Is(ledgerErr, os.ErrNotExist) {
+		// Record intent and every quarantine artifact follow durable ledger intent.
+		// Their presence without it is loss of authority, never a fresh install.
+		if recordExists || i.emptyState(false) != nil {
 			return facts, ErrInstallation
 		}
-		if err := i.emptyIntentState(); err != nil {
-			return facts, err
+		if !errors.Is(ledgerErr, os.ErrNotExist) {
+			return facts, ErrInstallation
 		}
 		if err := i.write(ledgerMarker, "starting\n"); err != nil {
 			return facts, err
@@ -257,7 +262,7 @@ func (i installation) prepare() (bootFacts, error) {
 	facts.ledger = sweep.Established
 	facts.firstStart = ledger == "starting\n"
 	if facts.firstStart {
-		if err := i.emptyIntentState(); err != nil {
+		if err := i.emptyState(true); err != nil {
 			return facts, err
 		}
 		if errors.Is(ledgerErr, os.ErrNotExist) {

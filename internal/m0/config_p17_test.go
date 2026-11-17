@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-const fixtureP17 = `{"bind_timeout_ms":1000,"keymaker_gid":30004,"keymaker_mode":432,"keymaker_socket_dir":"/run/keymaker","keymaker_socket_name":"request.sock","keymaker_uid":30003,"source_control_dir":"/run/source","source_generation":"11111111111111111111111111111111","source_socket_name":"origin.sock","source_uid":30002,"state_dir":"/var/lib/p17","station":"1"}`
+const fixtureP17 = `{"bind_timeout_ms":1000,"keymaker_gid":30004,"keymaker_mode":432,"keymaker_socket_dir":"/run/keymaker","keymaker_socket_name":"request.sock","keymaker_uid":30003,"recovery_attested":true,"source_control_dir":"/run/source","source_generation":"11111111111111111111111111111111","source_socket_name":"origin.sock","source_uid":30002,"state_dir":"/var/lib/p17","station":"1","supported_local_storage":true}`
 const configP17Control = `{"callers":[{"dev":1,"dir":"/example/caller","ino":2,"uid":30001}],"enabled":false,"entry":"initialize","kind":"swarma-dispatcher m0-config/3","p17":` + fixtureP17 + `,"recovery_attested":true,"state_dir":"/var/lib/m0","supported_local_storage":true,"v":3}`
 
 // Claim: configuration /3 validates every immutable P17 pin even while disabled, refuses /1 and /2, and excludes worker identities and mutable installation facts.
@@ -19,7 +19,7 @@ func TestP17Configuration(t *testing.T) {
 	for _, row := range []struct{ old, replacement, detail string }{
 		{`"v":3`, `"v":2`, "configuration version must be 3"}, {`"v":3`, `"v":1`, "configuration version must be 3"},
 		{`"p17":` + fixtureP17 + `,`, "", "configuration: missing member: p17"},
-		{`"station":"1"`, `"station":"1","worker_uid":30001`, "p17: unknown member: worker_uid"},
+		{`"station":"1","supported_local_storage":true`, `"station":"1","supported_local_storage":true,"worker_uid":30001`, "p17: unknown member: worker_uid"},
 		{`"bind_timeout_ms":1000,`, `"bind_timeout_ms":1000,"installation":"fresh",`, "p17: unknown member: installation"},
 		{`"source_uid":30002`, `"source_uid":0`, "p17: member range: source_uid"},
 		{`"keymaker_uid":30003`, `"keymaker_uid":4294967295`, "p17: member range: keymaker_uid"},
@@ -50,6 +50,55 @@ func TestP17Configuration(t *testing.T) {
 	}
 }
 
+// Claim: disabled M0 still requires boolean P17-local storage/recovery attestations, accepts either explicit boolean, and never substitutes the independent top-level values.
+func TestP17AttestationConfiguration(t *testing.T) {
+	for _, member := range []string{"supported_local_storage", "recovery_attested"} {
+		for _, flag := range []bool{false, true} {
+			var document map[string]any
+			must(t, json.Unmarshal([]byte(configP17Control), &document))
+			p17 := document["p17"].(map[string]any)
+			p17[member] = flag
+			good, err := json.Marshal(document)
+			must(t, err)
+			cfg, err := ParseConfig(good)
+			must(t, err)
+			parsed := map[string]bool{"supported_local_storage": cfg.P17.SupportedLocalStorage, "recovery_attested": cfg.P17.RecoveryAttested}[member]
+			if parsed != flag || !cfg.SupportedLocalStorage || !cfg.RecoveryAttested {
+				t.Fatalf("attestation scopes coupled for %s", member)
+			}
+			for _, invalid := range []any{nil, "true", 1} {
+				p17[member] = invalid
+				bad, err := json.Marshal(document)
+				must(t, err)
+				_, err = ParseConfig(bad)
+				r, ok := err.(*Refusal)
+				if !ok || r.Code != CodeRequestInvalid || r.Detail != "p17: member type: "+member {
+					t.Fatalf("invalid %s accepted or wrong refusal: %v", member, err)
+				}
+				_, err = ParseConfig(good)
+				must(t, err)
+			}
+		}
+	}
+}
+
+// Claim: a genuine /2 document (kind /2, v:2, no p17) refuses at the missing-p17 boundary beside a complete /3 control.
+func TestGenuineV2ConfigurationRefusal(t *testing.T) {
+	_, err := ParseConfig([]byte(configP17Control))
+	must(t, err)
+	var legacy map[string]any
+	must(t, json.Unmarshal([]byte(configP17Control), &legacy))
+	legacy["kind"], legacy["v"] = "swarma-dispatcher m0-config/2", 2
+	delete(legacy, "p17")
+	body, err := json.Marshal(legacy)
+	must(t, err)
+	_, err = ParseConfig(body)
+	r, ok := err.(*Refusal)
+	if !ok || r.Code != CodeRequestInvalid || r.Detail != "configuration: missing member: p17" {
+		t.Fatalf("genuine /2 wrong refusal: %v", err)
+	}
+}
+
 // Claim: every P17 member is required and named on omission; the complete immutable pin object remains a valid control for each omission.
 func TestP17RequiredMembers(t *testing.T) {
 	for _, row := range []struct{ name, detail string }{
@@ -57,6 +106,7 @@ func TestP17RequiredMembers(t *testing.T) {
 		{"keymaker_socket_dir", "p17: missing member: keymaker_socket_dir"}, {"keymaker_socket_name", "p17: missing member: keymaker_socket_name"}, {"keymaker_uid", "p17: missing member: keymaker_uid"},
 		{"source_control_dir", "p17: missing member: source_control_dir"}, {"source_generation", "p17: missing member: source_generation"}, {"source_socket_name", "p17: missing member: source_socket_name"},
 		{"source_uid", "p17: missing member: source_uid"}, {"state_dir", "p17: missing member: state_dir"}, {"station", "p17: missing member: station"},
+		{"supported_local_storage", "p17: missing member: supported_local_storage"}, {"recovery_attested", "p17: missing member: recovery_attested"},
 	} {
 		name := row.name
 		var doc map[string]any

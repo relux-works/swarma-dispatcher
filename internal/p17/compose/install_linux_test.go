@@ -58,7 +58,11 @@ func TestFirstStartInterruptions(t *testing.T) {
 			}
 			// An actual process loss can leave either client's non-authoritative temp.
 			put(t, f.state, ".install-interrupted", "partial")
-			put(t, f.state, ".quarantine-interrupted", "partial")
+			// A client temporary is reachable only after Start creates its lock,
+			// which itself follows both durable installation-intent markers.
+			if _, err := os.Stat(filepath.Join(f.state, "launcher.lock")); err == nil {
+				put(t, f.state, ".quarantine-interrupted", "partial")
+			}
 			f.deps.step = nil
 			s := f.open()
 			if get(t, f.state, ledgerMarker) != "established\n" || get(t, f.state, recordMarker) != "initialize\n" || !s.store.Pending() {
@@ -82,12 +86,24 @@ func TestFirstStartInterruptions(t *testing.T) {
 
 // Claim: missing/incorrect independent markers never infer fresh over an existing ledger, journal or record, while the empty protected installation beside each refusal boots successfully.
 func TestInstallationNoInference(t *testing.T) {
-	for _, name := range []string{"ledger-without-marker", "nonzero-ledger-under-intent", "journal-without-marker", "record-without-marker", "journal-under-initialize", "established-without-record-fact"} {
+	for _, name := range []string{"ledger-without-marker", "nonzero-ledger-under-intent", "journal-without-marker", "record-without-marker", "journal-under-initialize", "established-without-record-fact", "ledger and marker removed, record fact present", "only launcher.lock present", "only quarantine temporary present"} {
 		t.Run(name, func(t *testing.T) {
 			control := newFixture(t)
 			control.open()
 			f := newFixture(t)
 			switch name {
+			case "ledger and marker removed, record fact present":
+				s := f.open()
+				must(t, s.quarantine.Hold(30002, "fixture-hold"))
+				must(t, s.Close())
+				// Isolate the record fact as the remaining proof of advancement.
+				for _, n := range []string{ledgerMarker, sweep.QuarantineName, "launcher.lock"} {
+					must(t, os.Remove(filepath.Join(f.state, n)))
+				}
+			case "only launcher.lock present":
+				put(t, f.state, "launcher.lock", "")
+			case "only quarantine temporary present":
+				put(t, f.state, ".quarantine-interrupted", "partial")
 			case "ledger-without-marker":
 				put(t, f.state, "quarantine.json", `{"version":1,"entries":{}}`)
 			case "nonzero-ledger-under-intent":
@@ -114,6 +130,32 @@ func TestInstallationNoInference(t *testing.T) {
 				t.Fatalf("prior state admitted or wrong boundary: %v", err)
 			}
 		})
+	}
+}
+
+// Claim: a real durable first Create without its record-fact flip refuses boot without repair, beside a wrapper-created record whose established fact is accepted.
+func TestRecordCreateCrashRefusal(t *testing.T) {
+	control := newFixture(t)
+	s := control.open()
+	must(t, s.quarantine.Hold(30002, "fixture-record"))
+	must(t, s.store.Create(control.record()))
+	must(t, s.Close())
+	facts, err := (installation{dir: control.state}).prepare()
+	if err != nil || !facts.journalEstablished {
+		t.Fatalf("durable established record control: %+v %v", facts, err)
+	}
+	f := newFixture(t)
+	interrupted := f.open()
+	must(t, interrupted.quarantine.Hold(30002, "fixture-record"))
+	must(t, interrupted.store.Store.Create(f.record()))
+	must(t, interrupted.Close())
+	before := get(t, f.state, "journal")
+	ledgerBefore := get(t, f.state, sweep.QuarantineName)
+	if opened, err := f.attach(); opened != nil || !errors.Is(err, ErrInstallation) {
+		t.Fatalf("first Create without established fact admitted: %v", err)
+	}
+	if get(t, f.state, recordMarker) != "initialize\n" || get(t, f.state, "journal") != before || get(t, f.state, sweep.QuarantineName) != ledgerBefore {
+		t.Fatal("refusing startup repaired or changed ambiguous record authority")
 	}
 }
 

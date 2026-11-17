@@ -374,7 +374,13 @@ func DaemonWith(configPath string, ext Extension) error {
 
 // DaemonFromSnapshot consumes a protected snapshot without reopening its path.
 func DaemonFromSnapshot(s *ServerSnapshot, ext Extension) error {
-	return daemonFromSnapshot(s, ext, daemonCalls{endpointPin, createEndpointCalls, admissionCalls{peerUID, principalPin}})
+	return DaemonFromSnapshotContext(context.Background(), s, ext)
+}
+
+// DaemonFromSnapshotContext keeps a process owner's earlier signal cancellation
+// across startup and serving, without changing snapshot consumption or cleanup.
+func DaemonFromSnapshotContext(ctx context.Context, s *ServerSnapshot, ext Extension) error {
+	return daemonFromSnapshot(s, ext, daemonCalls{endpointPin, createEndpointCalls, admissionCalls{peerUID, principalPin}}, ctx)
 }
 
 type daemonCalls struct {
@@ -385,10 +391,14 @@ type daemonCalls struct {
 
 // The shared lifecycle installs umask and signal handling before any file
 // creation. Both public entry points use exactly the same serve/cleanup path.
-func daemonFromSnapshot(snapshot *ServerSnapshot, ext Extension, calls daemonCalls) (result error) {
+func daemonFromSnapshot(snapshot *ServerSnapshot, ext Extension, calls daemonCalls, parents ...context.Context) (result error) {
 	// Set once before product concurrency/file creation. New socket inode starts 0600.
 	syscall.Umask(0177)
-	ctx, cancel := context.WithCancel(context.Background())
+	parent := context.Background()
+	if len(parents) != 0 && parents[0] != nil {
+		parent = parents[0]
+	}
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	stop := &shutdown{cancel: cancel}
 	defer func() {
@@ -408,6 +418,9 @@ func daemonFromSnapshot(snapshot *ServerSnapshot, ext Extension, calls daemonCal
 			select {
 			case <-signals:
 				stop.request(nil)
+			case <-parent.Done():
+				stop.request(nil)
+				return
 			case <-signalDone:
 				return
 			}

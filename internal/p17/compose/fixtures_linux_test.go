@@ -216,6 +216,7 @@ type fixture struct {
 	inner                *fixtureInner
 	source               *fakes.SourceDialer
 	keymakerDials        atomic.Int32
+	keymakerAccepted     chan struct{}
 	frame, cancel        []byte
 }
 
@@ -223,10 +224,10 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	previous := syscall.Umask(0077)
 	t.Cleanup(func() { syscall.Umask(previous) })
-	f := &fixture{t: t}
+	f := &fixture{t: t, keymakerAccepted: make(chan struct{}, 16)}
 	f.root = privateDir(t, "", "composition-")
 	t.Cleanup(func() { must(t, os.RemoveAll(f.root)) })
-	for _, p := range []string{"p17", "p17/records", "p17/inputs", "m0", "m0/records", "m0/inputs", "km", "caller", "proc"} {
+	for _, p := range []string{"p17", "p17/records", "p17/inputs", "m0", "m0/records", "m0/inputs", "km", "source", "caller", "proc"} {
 		must(t, os.Mkdir(filepath.Join(f.root, p), 0700))
 	}
 	f.state = filepath.Join(f.root, "p17")
@@ -273,7 +274,10 @@ func newFixture(t *testing.T) *fixture {
 	rt, err := m0.Initialize(journal.Config{Directory: f.m0state, Records: "records", Inputs: "inputs", DeclaredUmask: &mask, SupportedLocalStorage: true, RecoveryPrerequisiteEstablished: true, ConsumerBudget: 4 << 20}, f.seams)
 	must(t, err)
 	must(t, rt.Close())
-	p17 := map[string]any{"bind_timeout_ms": 1000, "keymaker_gid": os.Getgid(), "keymaker_mode": 384, "keymaker_socket_dir": filepath.Join(f.root, "km"), "keymaker_socket_name": "request.sock", "keymaker_uid": uid, "source_control_dir": filepath.Join(f.root, "source"), "source_generation": "11111111111111111111111111111111", "source_socket_name": "origin.sock", "source_uid": uid, "state_dir": f.state, "station": "1"}
+	control, stopSource, err := fakes.ControlDir(filepath.Join(f.root, "source"), nil)
+	must(t, err)
+	t.Cleanup(stopSource)
+	p17 := map[string]any{"supported_local_storage": true, "recovery_attested": true, "bind_timeout_ms": 1000, "keymaker_gid": os.Getgid(), "keymaker_mode": 384, "keymaker_socket_dir": filepath.Join(f.root, "km"), "keymaker_socket_name": "request.sock", "keymaker_uid": uid, "source_control_dir": control, "source_generation": "11111111111111111111111111111111", "source_socket_name": "origin.sock", "source_uid": uid, "state_dir": f.state, "station": "1"}
 	f.config = encode(t, map[string]any{"callers": []any{map[string]any{"dev": 1, "dir": filepath.Join(f.root, "caller"), "ino": 2, "uid": 30001}}, "enabled": true, "entry": "established", "kind": "swarma-dispatcher m0-config/3", "p17": p17, "recovery_attested": true, "state_dir": f.m0state, "supported_local_storage": true, "v": 3})
 	f.cfg, err = m0.ParseConfig(f.config)
 	must(t, err)
@@ -295,7 +299,7 @@ func newFixture(t *testing.T) *fixture {
 	f.deps.Static = f.gate
 	f.deps.Stops = f.stops
 	f.deps.Events = f.events
-	f.deps.ChildInterface = fixtureInterface{hygiene.Launch{Argv: []string{"/usr/bin/fixture-worker"}, Env: []string{"PATH=/usr/bin", "HOME=/home/worker"}, ProtectedPaths: []string{f.state, filepath.Join(f.root, "source/origin.sock")}, ProtectedFDs: []int{fa, fb}, InheritedFDs: []int{0, 1, 2}}}
+	f.deps.ChildInterface = fixtureInterface{hygiene.Launch{Argv: []string{"/usr/bin/fixture-worker"}, Env: []string{"PATH=/usr/bin", "HOME=/home/worker"}, ProtectedPaths: []string{f.state, filepath.Join(f.cfg.P17.SourceControlDir, "origin.sock")}, ProtectedFDs: []int{fa, fb}, InheritedFDs: []int{0, 1, 2}}}
 	f.deps.ChildIncarnations = fixtureChild{incarnation.Incarnation{UID: 30002, PID: 777, StartTicks: 42, BootID: "fixture-boot"}}
 	f.deps.Generations = source.StaticGenerations{uid: "11111111111111111111111111111111"}
 	f.deps.Incarnations = proc.Incarnations()
@@ -308,6 +312,7 @@ func newFixture(t *testing.T) *fixture {
 	f.deps.mountInfo = proc.MountInfoPath()
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: filepath.Join(f.root, "km/request.sock"), Net: "unix"})
 	must(t, err)
+	must(t, os.Chmod(filepath.Join(f.root, "km/request.sock"), os.FileMode(f.cfg.P17.KeymakerMode)))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -317,6 +322,7 @@ func newFixture(t *testing.T) *fixture {
 				return
 			}
 			f.keymakerDials.Add(1)
+			f.keymakerAccepted <- struct{}{}
 			_ = c.Close()
 		}
 	}()
@@ -337,6 +343,9 @@ func (f *fixture) open() *Session {
 func (f *fixture) assertNoContacts(s *Session) {
 	f.t.Helper()
 	dials, _ := f.source.Dials()
+	if s.quarantine.Held(30002) {
+		f.t.Fatal("generation pre-check leaked its lease")
+	}
 	if dials != 0 || f.keymakerDials.Load() != 0 || f.inner.starts != 0 || len(s.store.Keys()) != 0 {
 		f.t.Fatal("generation boundary contacted a service, started a child, or wrote a record")
 	}

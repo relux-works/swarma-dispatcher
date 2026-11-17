@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,16 +18,18 @@ import (
 	"github.com/relux-works/swarma-dispatcher/internal/transport"
 )
 
-const fixtureM0 = `{"callers":[{"dev":1,"dir":"/example/caller","ino":2,"uid":30001}],"enabled":true,"entry":"established","kind":"swarma-dispatcher m0-config/3","p17":{"bind_timeout_ms":1000,"keymaker_gid":30004,"keymaker_mode":432,"keymaker_socket_dir":"/run/keymaker","keymaker_socket_name":"request.sock","keymaker_uid":30003,"source_control_dir":"/run/source","source_generation":"11111111111111111111111111111111","source_socket_name":"origin.sock","source_uid":30002,"state_dir":"/var/lib/p17","station":"1"},"recovery_attested":true,"state_dir":"/var/lib/m0","supported_local_storage":true,"v":3}`
+const fixtureM0 = `{"callers":[{"dev":1,"dir":"/example/caller","ino":2,"uid":30001}],"enabled":true,"entry":"established","kind":"swarma-dispatcher m0-config/3","p17":{"bind_timeout_ms":1000,"keymaker_gid":30004,"keymaker_mode":432,"keymaker_socket_dir":"/run/keymaker","keymaker_socket_name":"request.sock","keymaker_uid":30003,"recovery_attested":true,"source_control_dir":"/run/source","source_generation":"11111111111111111111111111111111","source_socket_name":"origin.sock","source_uid":30002,"state_dir":"/var/lib/p17","station":"1","supported_local_storage":true},"recovery_attested":true,"state_dir":"/var/lib/m0","supported_local_storage":true,"v":3}`
 
 type fixtureServer struct {
 	bytes   []byte
 	serves  int
 	onServe func(transport.Extension) error
+	context context.Context
 }
 
 func (s *fixtureServer) Bytes() []byte { return append([]byte(nil), s.bytes...) }
-func (s *fixtureServer) Serve(e transport.Extension) error {
+func (s *fixtureServer) Serve(ctx context.Context, e transport.Extension) error {
+	s.context = ctx
 	s.serves++
 	if s.onServe != nil {
 		return s.onServe(e)
@@ -73,7 +76,7 @@ func TestCommandSnapshotTranscript(t *testing.T) {
 	extension := &fixtureExtension{bytes: m0bytes}
 	loads, reads := 0, 0
 	var stdout, stderr bytes.Buffer
-	calls := commandCalls{load: func(string) (serverInstance, error) { loads++; return server, nil }, read: func(string) ([]byte, error) { reads++; return append([]byte(nil), m0bytes...), nil }, attach: func(path string, read func(string) ([]byte, error)) (extensionInstance, error) {
+	calls := commandCalls{load: func(string) (serverInstance, error) { loads++; return server, nil }, read: func(string) ([]byte, error) { reads++; return append([]byte(nil), m0bytes...), nil }, attach: func(_ context.Context, path string, read func(string) ([]byte, error)) (extensionInstance, error) {
 		b, err := read(path)
 		if err != nil {
 			return nil, err
@@ -107,7 +110,7 @@ func TestConfigDigestCommand(t *testing.T) {
 		}
 		loads, reads, attaches := 0, 0, 0
 		var stdout, stderr bytes.Buffer
-		calls := commandCalls{load: func(string) (serverInstance, error) { loads++; return server, nil }, read: func(string) ([]byte, error) { reads++; return []byte(body), nil }, attach: func(string, func(string) ([]byte, error)) (extensionInstance, error) {
+		calls := commandCalls{load: func(string) (serverInstance, error) { loads++; return server, nil }, read: func(string) ([]byte, error) { reads++; return []byte(body), nil }, attach: func(context.Context, string, func(string) ([]byte, error)) (extensionInstance, error) {
 			attaches++
 			return nil, errors.New("unexpected attach")
 		}}
@@ -151,7 +154,9 @@ func TestDefaultDaemonCapacityOnly(t *testing.T) {
 	}
 	// A selected fixture is handed through; selection itself is not hardcoded off.
 	ext := &fixtureExtension{bytes: []byte(fixtureM0)}
-	calls.attach = func(string, func(string) ([]byte, error)) (extensionInstance, error) { return ext, nil }
+	calls.attach = func(context.Context, string, func(string) ([]byte, error)) (extensionInstance, error) {
+		return ext, nil
+	}
 	server.onServe = func(e transport.Extension) error {
 		if e != ext {
 			t.Fatal("selected fixture was not handed through")
@@ -168,10 +173,12 @@ func TestCommandFatalAndTranscriptFailure(t *testing.T) {
 	for _, kind := range []string{"fatal", "write"} {
 		server := &fixtureServer{bytes: []byte("server snapshot")}
 		ext := &fixtureExtension{bytes: []byte(fixtureM0)}
-		calls := commandCalls{load: func(string) (serverInstance, error) { return server, nil }, attach: func(string, func(string) ([]byte, error)) (extensionInstance, error) { return ext, nil }}
+		calls := commandCalls{load: func(string) (serverInstance, error) { return server, nil }, attach: func(context.Context, string, func(string) ([]byte, error)) (extensionInstance, error) {
+			return ext, nil
+		}}
 		var stderr io.Writer = io.Discard
 		if kind == "fatal" {
-			calls.attach = func(string, func(string) ([]byte, error)) (extensionInstance, error) {
+			calls.attach = func(context.Context, string, func(string) ([]byte, error)) (extensionInstance, error) {
 				return nil, errors.Join(transport.ErrFatal, syscall.EIO, &m0.Refusal{Code: m0.CodeClosed})
 			}
 		} else {
@@ -188,7 +195,9 @@ func TestCommandFatalAndTranscriptFailure(t *testing.T) {
 			t.Fatal("failed transcript leaked extension")
 		}
 		ext.closes = 0
-		calls.attach = func(string, func(string) ([]byte, error)) (extensionInstance, error) { return ext, nil }
+		calls.attach = func(context.Context, string, func(string) ([]byte, error)) (extensionInstance, error) {
+			return ext, nil
+		}
 		if err := runWith([]string{"--config", "/configuration/server.json", "--m0-config", "/configuration/m0.json"}, io.Discard, io.Discard, calls); err != nil || server.serves != 1 || ext.closes != 1 {
 			t.Fatalf("valid startup control: %v", err)
 		}

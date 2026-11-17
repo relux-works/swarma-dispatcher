@@ -241,8 +241,9 @@ object `{"callers","enabled","entry","kind","p17","recovery_attested","state_dir
 with `kind` `swarma-dispatcher m0-config/3`, `v=3`, `entry` `initialize` or
 `established`, and an absolute `state_dir` that already contains the journal
 `records` and `inputs` directories. The transport server configuration is
-unchanged. `recovery_attested` is the operator's recovery-prerequisite
-attestation for the journal; without it an established reopen refuses
+unchanged. Top-level `supported_local_storage` and `recovery_attested` apply
+only to the M0 journal in its top-level `state_dir`. `recovery_attested` is the
+operator's recovery-prerequisite attestation for that journal; without it an established reopen refuses
 `m0_recovery_held`. A journal sync failure makes the daemon exit and must not be
 reopened in the same boot.
 The protected `callers` list contains 1..4 ascending managed UID/directory pins admitted only to M0 frames while the extension is attached, with the same pin rechecks and slot limits; configurations /1 and /2 now refuse.
@@ -279,6 +280,7 @@ closed `p17` object, including when `enabled:false`:
 | `keymaker_uid`, `keymaker_gid`, `keymaker_mode` | Service UID/GID `1..4294967294`; mode as a decimal integer `1..511` (for example `432` is `0660`) |
 | `state_dir` | Absolute canonical P17 state directory, neither equal to, inside, nor containing M0 `state_dir` |
 | `station`, `bind_timeout_ms` | Canonical positive decimal uint64 station string; integer timeout `1..2000` ms |
+| `supported_local_storage`, `recovery_attested` | Required booleans, independently attesting the P17 journal's local storage and established-recovery prerequisite in P17 `state_dir`; never inherited from M0 |
 
 Unknown, missing, duplicate or malformed pins refuse `request_invalid` with a
 named detail. There is no worker UID, UID range or mutable progress in `p17`:
@@ -298,8 +300,14 @@ fsync. The initialize fact precedes the first quarantine start. Explicit
 `starting` intent permits only empty record/input directories, reserved
 non-authoritative temporaries/locks, and an optional client-format ZERO-entry
 ledger; any journal, record, nonzero ledger or unrelated state refuses. No
-marker plus prior state never means fresh. This intent covers interruption
-before or after the client's atomic ledger publication without wedging boot.
+marker plus prior state never means fresh. Without `.ledger-install`, only
+`.composition.lock`, `.install-*` and empty `records`/`inputs` are allowed:
+`.record-install`, `launcher.lock` or `.quarantine-*` proves the protocol has
+advanced and refuses even if the ledger itself was removed. No interruption
+can leave those artifacts without the earlier directory-fsynced ledger intent;
+treat the missing ledger intent as lost authority, not a fresh installation. Reachable
+intent states cover interruption before or after the client's atomic ledger
+publication without wedging boot.
 
 Boot takes the shared quarantine/launcher lock first, immediately flips its
 ledger fact after successful `Quarantine.Start`, then initializes/opens one
@@ -313,6 +321,40 @@ separate; the daemon never edits configuration to track installation progress.
 Shutdown stops/drains extension admission, closes the M0 extension, closes the
 P17 store, then closes quarantine and bootstrap ownership. Closing is not a
 child-absence receipt, release permission or qualification of retained stops.
+
+If boot refuses after a crash between the first durable record `Create` and
+`.record-install=established`, keep forward admission disabled and stop the
+daemon before disposition. Preserve the protected P17 directory and inspect
+both installation markers, `quarantine.json`, the journal, `records` and
+`inputs`, and the corresponding effect/generation/retained-stop inventory.
+The initialize marker beside a journal/record is ambiguous authority, not an
+absence receipt; retain all UID holds. The daemon never repairs this state.
+Only a qualified operator recovery procedure under exclusive ownership may
+validate the existing journal/first record, reconcile every possible effect and
+hold, establish the independent P17 recovery prerequisite, and durably publish
+`.record-install=established` (atomic replacement plus file/directory fsync),
+leaving the ledger and record history intact. Then restart under the protected
+configuration and inspect its new authoritative digest and restart outcome.
+If that evidence cannot be established, keep the scope quarantined/offline and
+use the existing retained-stop/operator-release disposition; any reprovisioning
+requires separately authorized reconciliation, never deletion of the ledger,
+journal or markers to manufacture a fresh install. No operator repair tool or
+new release authority is supplied here.
+
+Static-gate classification uses `m0.DecodeRequest`, before authentication,
+correlation/ownership checks and replay lookup. A malformed/duplicate-member
+body is never classified. An ordinary verifier refusal yields a definite M0
+refusal envelope; fatal duty still suppresses the response. Replays of an
+already-recorded dispatch still pass `Verify(start)`; the verifier unit will
+decide whether that stays. Decoded cancels pass `Verify(end)` before M0 checks
+ownership, not just after ownership has been established.
+
+The command installs its SIGTERM/SIGINT handler before `LoadServer` or attach
+(including H6), and propagates the same cancellation into snapshot serving.
+SIGTERM during load/attach returns gracefully after unwinding; a fatal exit duty
+is never hidden by cancellation. Umask protection still precedes every file
+creation. Must-exit and `ErrFatal` retain exit status 1 and the operator hint:
+`journal sync failure: process exit required; recovery is held until host restart or operator disposition`.
 
 | Refusing default | Producer that must pin it |
 | --- | --- |
@@ -342,7 +384,10 @@ a real M0 dispatch through P17 is blocked until the run-origin generation contra
 The composed control uses a valid signed M0 request and real constructors,
 state stores and restart pass, then checks the retained attempt is exactly
 `run_origin_refused` at `Source input generation`, with zero Source/Keymaker
-dials, P17 records or inner starts. It is not a successful launch: hygiene,
+dials, P17 records or inner starts, and that the pre-check lease was returned.
+Adjacent contact controls dial each composed client once and observe count 1
+through the checked Source socket fixture and mode-matched Keymaker socket.
+It is not a successful launch: hygiene,
 bind, spawn, input release and stop are later gates. The two independent
 generation-domain controls retain a numeric root-client positive control and
 the unchanged 32-hex M0 domain. No conversion is supplied.

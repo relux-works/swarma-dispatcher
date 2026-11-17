@@ -101,16 +101,7 @@ func (e *Extension) Serve(peer uint32, id string, body []byte) (response string,
 		if MustExit(err) {
 			return "", errors.Join(transport.ErrFatal, err)
 		}
-		code := CodeOf(err)
-		if code == "" {
-			code = CodeRequestInvalid
-		}
-		detail := ""
-		var r *Refusal
-		if errors.As(err, &r) && r != nil {
-			detail = r.Detail
-		}
-		return refusalEnvelope(id, code, detail), nil
+		return RefusalResponse(id, err), nil
 	}
 	return resultEnvelope(id, res), nil
 }
@@ -126,6 +117,22 @@ func sanitize(s string) string {
 		b = append(b, c)
 	}
 	return string(b)
+}
+
+// RefusalResponse encodes a definite pre-effect refusal with the same bounded
+// envelope as Extension. Callers must handle fatal exit duties before using it;
+// id is the transport-validated connection correlation ID.
+func RefusalResponse(id string, err error) string {
+	code := CodeOf(err)
+	if code == "" {
+		code = CodeRequestInvalid
+	}
+	detail := ""
+	var r *Refusal
+	if errors.As(err, &r) && r != nil {
+		detail = r.Detail
+	}
+	return refusalEnvelope(id, code, detail)
 }
 
 func refusalEnvelope(id string, code Code, detail string) string {

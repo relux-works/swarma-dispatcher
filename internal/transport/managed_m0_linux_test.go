@@ -153,7 +153,7 @@ func attachedM0(t *testing.T, real, stale bool) (*m0.Extension, []byte, *current
 	if fs.Type != 0xEF53 && fs.Type != 0x58465342 {
 		t.Fatal("M0 socket control requires ext4 or XFS")
 	}
-	p17 := map[string]any{"bind_timeout_ms": 1000, "keymaker_gid": 30004, "keymaker_mode": 432, "keymaker_socket_dir": "/run/keymaker", "keymaker_socket_name": "request.sock", "keymaker_uid": 30003, "source_control_dir": "/run/source", "source_generation": "11111111111111111111111111111111", "source_socket_name": "origin.sock", "source_uid": 30002, "state_dir": filepath.Join(dir, "..", "p17"), "station": "1"}
+	p17 := map[string]any{"supported_local_storage": true, "recovery_attested": true, "bind_timeout_ms": 1000, "keymaker_gid": 30004, "keymaker_mode": 432, "keymaker_socket_dir": "/run/keymaker", "keymaker_socket_name": "request.sock", "keymaker_uid": 30003, "source_control_dir": "/run/source", "source_generation": "11111111111111111111111111111111", "source_socket_name": "origin.sock", "source_uid": 30002, "state_dir": filepath.Join(dir, "..", "p17"), "station": "1"}
 	cfg := encode(t, map[string]any{"callers": []transport.Principal{pin}, "enabled": true, "entry": "initialize", "kind": m0.ConfigKind, "p17": p17, "recovery_attested": true, "state_dir": dir, "supported_local_storage": true, "v": 3})
 	gens := &currentGenerations{policy: policy, stale: stale}
 	now := policy.NotBefore + 10

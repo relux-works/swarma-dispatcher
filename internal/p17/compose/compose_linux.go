@@ -4,7 +4,6 @@ package compose
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -163,24 +162,28 @@ func (s *Session) Serve(peer uint32, id string, body []byte) (response string, r
 			response, resultErr = "", errors.Join(resultErr, transport.ErrFatal, err)
 		}
 	}()
-	var header struct {
-		Kind string `json:"kind"`
-		Op   string `json:"op"`
-	}
-	if json.Unmarshal(body, &header) == nil && header.Kind == m0.RequestKind {
+	// Classify with M0's decoder, before authentication as at startup. Invalid
+	// bodies go to the extension unchanged and never invoke the verifier.
+	request, decodeErr := m0.DecodeRequest(body)
+	if decodeErr == nil {
 		class := ""
-		if header.Op == "dispatch" {
+		if request.Op == "dispatch" {
 			class = ClassStart
 		}
-		if header.Op == "cancel" {
+		if request.Op == "cancel" {
 			class = ClassEnd
 		}
 		if class != "" {
 			if err := s.gate.Verify(class); err != nil {
-				if m0.MustExit(err) || launcher.MustExit(err) {
+				if errors.Is(err, transport.ErrFatal) || m0.MustExit(err) || launcher.MustExit(err) {
 					s.latch.fail(err)
+					return "", err
 				}
-				return "", err
+				code := m0.CodeOf(err)
+				if code == "" {
+					code = m0.CodeClosed
+				}
+				return m0.RefusalResponse(id, &m0.Refusal{Code: code, Detail: "static gate refused " + class, Cause: err}), nil
 			}
 		}
 	}
@@ -300,7 +303,7 @@ func Attach(ctx context.Context, path string, seams m0.Seams, d Deps, read func(
 		}
 	}
 	umask := uint32(0177)
-	jc := journal.Config{Directory: cfg.P17.StateDir, Records: "records", Inputs: "inputs", DeclaredUmask: &umask, SupportedLocalStorage: cfg.SupportedLocalStorage, RecoveryPrerequisiteEstablished: cfg.RecoveryAttested, ConsumerBudget: 4 << 20}
+	jc := journal.Config{Directory: cfg.P17.StateDir, Records: "records", Inputs: "inputs", DeclaredUmask: &umask, SupportedLocalStorage: cfg.P17.SupportedLocalStorage, RecoveryPrerequisiteEstablished: cfg.P17.RecoveryAttested, ConsumerBudget: 4 << 20}
 	var store *runrecord.Store
 	if facts.journalEstablished {
 		store, err = runrecord.Open(jc, s.quarantine)

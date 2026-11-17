@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/relux-works/swarma-dispatcher/internal/m0"
 	"github.com/relux-works/swarma-dispatcher/internal/p17/compose"
@@ -19,7 +21,7 @@ const usage = "usage: swarma-dispatcher [config-digest] --config /absolute/serve
 
 type serverInstance interface {
 	Bytes() []byte
-	Serve(transport.Extension) error
+	Serve(context.Context, transport.Extension) error
 }
 type extensionInstance interface {
 	transport.Extension
@@ -29,14 +31,14 @@ type extensionInstance interface {
 type loadedServer struct{ snapshot *transport.ServerSnapshot }
 
 func (s loadedServer) Bytes() []byte { return s.snapshot.Bytes() }
-func (s loadedServer) Serve(ext transport.Extension) error {
-	return transport.DaemonFromSnapshot(s.snapshot, ext)
+func (s loadedServer) Serve(ctx context.Context, ext transport.Extension) error {
+	return transport.DaemonFromSnapshotContext(ctx, s.snapshot, ext)
 }
 
 type commandCalls struct {
 	load   func(string) (serverInstance, error)
 	read   func(string) ([]byte, error)
-	attach func(string, func(string) ([]byte, error)) (extensionInstance, error)
+	attach func(context.Context, string, func(string) ([]byte, error)) (extensionInstance, error)
 }
 
 func productionCalls() commandCalls {
@@ -49,8 +51,8 @@ func productionCalls() commandCalls {
 			return loadedServer{s}, nil
 		},
 		read: transport.ReadProtectedConfig,
-		attach: func(path string, read func(string) ([]byte, error)) (extensionInstance, error) {
-			s, err := compose.Attach(context.Background(), path, m0.DefaultSeams(), compose.DefaultDeps(), read)
+		attach: func(ctx context.Context, path string, read func(string) ([]byte, error)) (extensionInstance, error) {
+			s, err := compose.Attach(ctx, path, m0.DefaultSeams(), compose.DefaultDeps(), read)
 			if err != nil {
 				return nil, err
 			}
@@ -61,12 +63,25 @@ func productionCalls() commandCalls {
 
 func main() {
 	if err := runWith(os.Args[1:], os.Stdout, os.Stderr, productionCalls()); err != nil {
-		fmt.Fprintln(os.Stderr, "dispatcher refused:", err)
+		reportRefusal(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func runWith(args []string, stdout, stderr io.Writer, calls commandCalls) error {
+func fatalDuty(err error) bool { return errors.Is(err, transport.ErrFatal) || m0.MustExit(err) }
+
+func reportRefusal(stderr io.Writer, err error) {
+	if fatalDuty(err) {
+		fmt.Fprintln(stderr, "journal sync failure: process exit required; recovery is held until host restart or operator disposition")
+	}
+	fmt.Fprintln(stderr, "dispatcher refused:", err)
+}
+
+func runWith(args []string, stdout, stderr io.Writer, calls commandCalls) (resultErr error) {
+	// Register before protected reads or attach. The same cancellation reaches
+	// the serving lifecycle, so there is no signal handoff window before listen.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
 	digestOnly := len(args) > 0 && args[0] == "config-digest"
 	if digestOnly {
 		args = args[1:]
@@ -75,6 +90,9 @@ func runWith(args []string, stdout, stderr io.Writer, calls commandCalls) error 
 		return errors.New(usage)
 	}
 	server, err := calls.load(args[1])
+	if ctx.Err() != nil && !fatalDuty(err) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -94,9 +112,15 @@ func runWith(args []string, stdout, stderr io.Writer, calls commandCalls) error 
 				config = nil
 			}
 		} else {
-			attached, err = calls.attach(args[3], calls.read)
+			attached, err = calls.attach(ctx, args[3], calls.read)
+			if attached != nil {
+				defer func() { resultErr = errors.Join(resultErr, attached.Close()) }()
+			}
+			if ctx.Err() != nil && !fatalDuty(err) {
+				return nil
+			}
 			if err != nil {
-				if errors.Is(err, transport.ErrFatal) || m0.MustExit(err) || m0.CodeOf(err) != m0.CodeClosed {
+				if fatalDuty(err) || m0.CodeOf(err) != m0.CodeClosed {
 					return err
 				}
 				if _, writeErr := fmt.Fprintln(stderr, "m0 closed, capacity-only:", err); writeErr != nil {
@@ -108,6 +132,9 @@ func runWith(args []string, stdout, stderr io.Writer, calls commandCalls) error 
 			}
 		}
 	}
+	if ctx.Err() != nil {
+		return nil
+	}
 	if digestOnly {
 		_, err := fmt.Fprintln(stdout, compose.ConfigDigest(server.Bytes(), config))
 		return err
@@ -116,9 +143,5 @@ func runWith(args []string, stdout, stderr io.Writer, calls commandCalls) error 
 	if attached != nil {
 		ext = attached
 	}
-	err = digest.AnnounceAndServe(server.Bytes(), config, stderr, func() error { return server.Serve(ext) })
-	if attached != nil {
-		err = errors.Join(err, attached.Close())
-	}
-	return err
+	return digest.AnnounceAndServe(server.Bytes(), config, stderr, func() error { return server.Serve(ctx, ext) })
 }

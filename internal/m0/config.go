@@ -31,7 +31,8 @@ type DaemonConfig struct {
 	P17                   P17Config
 }
 
-// P17Config contains immutable service pins, never worker identity or progress.
+// P17Config contains immutable service pins and per-journal attestations,
+// never worker identity or mutable installation progress.
 type P17Config struct {
 	SourceControlDir, SourceSocketName, SourceGeneration string
 	SourceUID                                            uint32
@@ -39,6 +40,7 @@ type P17Config struct {
 	KeymakerUID, KeymakerGID, KeymakerMode               uint32
 	StateDir, Station                                    string
 	BindTimeoutMS                                        int64
+	SupportedLocalStorage, RecoveryAttested              bool
 }
 
 func configMembers(v *value, prefix string, keys ...string) error {
@@ -64,8 +66,20 @@ func configMembers(v *value, prefix string, keys ...string) error {
 
 func decodeP17(v *value, m0dir string) (P17Config, error) {
 	var p P17Config
-	if err := configMembers(v, "p17", "bind_timeout_ms", "keymaker_gid", "keymaker_mode", "keymaker_socket_dir", "keymaker_socket_name", "keymaker_uid", "source_control_dir", "source_generation", "source_socket_name", "source_uid", "state_dir", "station"); err != nil {
+	if err := configMembers(v, "p17", "bind_timeout_ms", "keymaker_gid", "keymaker_mode", "keymaker_socket_dir", "keymaker_socket_name", "keymaker_uid", "recovery_attested", "source_control_dir", "source_generation", "source_socket_name", "source_uid", "state_dir", "station", "supported_local_storage"); err != nil {
 		return p, err
+	}
+	for _, f := range []struct {
+		name string
+		dst  *bool
+	}{
+		{"supported_local_storage", &p.SupportedLocalStorage}, {"recovery_attested", &p.RecoveryAttested},
+	} {
+		flag, ok := v.member(f.name).flag()
+		if !ok {
+			return p, invalid("p17: member type: " + f.name)
+		}
+		*f.dst = flag
 	}
 	for _, f := range []struct {
 		name string
